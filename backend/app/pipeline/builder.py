@@ -38,7 +38,10 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
         )
 
         stt = DeepgramSTTService(api_key=self.deepgram_api_key)
-        tts = DeepgramTTSService(api_key=self.deepgram_api_key)
+        tts = DeepgramTTSService(
+            api_key=self.deepgram_api_key,
+            settings=DeepgramTTSService.Settings(voice="aura-2-amalthea-en")
+        )
         
         # Groq LLM running llama-3.3-70b-versatile
         llm = GroqLLMService(
