@@ -16,6 +16,7 @@ from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransp
 from backend.app.core.interfaces.pipeline_builder import IPipelineBuilder
 from backend.app.core.config import Settings
 from backend.app.pipeline.accumulator import TranscriptAccumulator
+from backend.app.pipeline.playback_buffer import PlaybackBufferProcessor
 
 class LocalPipecatPipelineBuilder(IPipelineBuilder):
     """Sets up local hardware audio transport and chains STT/Groq/TTS/Accumulator elements."""
@@ -55,16 +56,17 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
             user_params=LLMUserAggregatorParams(
                 vad_analyzer=SileroVADAnalyzer(
                     params=VADParams(
-                        confidence=0.5,      # Lower confidence requirement (default 0.7)
-                        min_volume=0.1,      # Lower volume threshold (default 0.6)
-                        start_secs=0.2,
-                        stop_secs=0.2
+                        confidence=0.7,      # Standard confidence requirement (default 0.7)
+                        min_volume=0.25,     # Increased volume threshold to filter noise
+                        start_secs=0.3,      # Ignore brief clicks/pops
+                        stop_secs=0.4        # Allow natural breathing pauses
                     )
                 )
             ),
         )
 
         accumulator = TranscriptAccumulator(transcript_callback)
+        playback_buffer = PlaybackBufferProcessor(buffer_size=5)
 
         # Sequentially connect audio frames flow
         pipeline = Pipeline([
@@ -74,6 +76,7 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
             accumulator,            # Catch dialogue text
             llm,                    # Feed text history to Groq LLaMA model
             tts,                    # Convert response text -> assistant speech
+            playback_buffer,        # Buffer output audio chunks to prevent jitter cracks
             transport.output(),     # Play synthesized speech on system speakers
             assistant_aggregator,   # Aggregate assistant words
         ])
@@ -89,7 +92,7 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
         # Trigger initial spoken greetings frame
         context.add_message({
             "role": "system", 
-            "content": "Initiate the mock interview by introducing yourself as Sheela, welcoming the candidate by extracting their name from the resume, and asking: 'Please introduce yourself, [Name]'. Then follow with: 'Alright, let's start the interview with a basic technical question...'"
+            "content": "Initiate the mock interview by introducing yourself as Sheela, welcoming the candidate by extracting their name from the resume, and asking: 'Please introduce yourself, [Name]'."
         })
 
         return pipeline, context, worker

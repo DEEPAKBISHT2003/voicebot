@@ -24,3 +24,14 @@ interviews/
 # OS-specific files
 .DS_Store
 Thumbs.db
+
+# IDE Configurations
+.vscode/
+.idea/
+
+# Logs
+*.log
+
+# Jupyter Notebooks Checkpoints
+.ipynb_checkpoints/
+
