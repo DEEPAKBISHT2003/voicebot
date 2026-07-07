@@ -17,6 +17,7 @@ from backend.app.core.interfaces.pipeline_builder import IPipelineBuilder
 from backend.app.core.config import Settings
 from backend.app.pipeline.accumulator import TranscriptAccumulator
 from backend.app.pipeline.playback_buffer import PlaybackBufferProcessor
+from backend.app.pipeline.mic_gate import MicGateProcessor, MicUnmuterProcessor
 
 class LocalPipecatPipelineBuilder(IPipelineBuilder):
     """Sets up local hardware audio transport and chains STT/Groq/TTS/Accumulator elements."""
@@ -70,10 +71,16 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
 
         accumulator = TranscriptAccumulator(transcript_callback)
         playback_buffer = PlaybackBufferProcessor(buffer_size=5)
+        
+        # Shared state for microphone gating (starts disabled)
+        shared_state = {"mic_enabled": False}
+        mic_gate = MicGateProcessor(shared_state)
+        mic_unmuter = MicUnmuterProcessor(shared_state)
 
         # Sequentially connect audio frames flow
         pipeline = Pipeline([
             transport.input(),      # Capture audio raw data from system microphone
+            mic_gate,               # Block mic inputs until the AI greeting ends
             stt,                    # Convert user audio -> text
             user_aggregator,        # Aggregate user words
             accumulator,            # Catch dialogue text
@@ -81,6 +88,7 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
             tts,                    # Convert response text -> assistant speech
             playback_buffer,        # Buffer output audio chunks to prevent jitter cracks
             transport.output(),     # Play synthesized speech on system speakers
+            mic_unmuter,            # Detects end of first greeting to toggle mic_gate
             assistant_aggregator,   # Aggregate assistant words
         ])
 
@@ -95,7 +103,7 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
         # Trigger initial spoken greetings frame
         context.add_message({
             "role": "system", 
-            "content": "Initiate the mock interview by introducing yourself as Sheela, welcoming the candidate by extracting their name from the resume, and asking: 'Please introduce yourself, [Name]'."
+            "content": "Initiate the mock interview by introducing yourself as Miaaa, welcoming the candidate by extracting their name from the resume, and asking: 'Please introduce yourself, [Name]'."
         })
 
         return pipeline, context, worker
