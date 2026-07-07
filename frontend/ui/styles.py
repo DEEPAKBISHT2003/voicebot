@@ -157,5 +157,20 @@ def apply_custom_styles() -> None:
             0%, 100% { height: 15px; }
             50% { height: 45px; }
         }
+
+        /* Streamlit Native Bordered Container Custom Override */
+        div[data-testid="stVerticalBlockBorder"] {
+            background: rgba(255, 255, 255, 0.03) !important;
+            border: 1px solid rgba(255, 255, 255, 0.08) !important;
+            border-radius: 20px !important;
+            padding: 30px !important;
+            backdrop-filter: blur(25px) !important;
+            margin-bottom: 25px !important;
+            transition: border 0.3s ease, box-shadow 0.3s ease !important;
+        }
+        div[data-testid="stVerticalBlockBorder"]:hover {
+            border-color: rgba(167, 139, 250, 0.3) !important;
+            box-shadow: 0 10px 40px rgba(124, 58, 237, 0.15) !important;
+        }
     </style>
     """, unsafe_allow_html=True)
