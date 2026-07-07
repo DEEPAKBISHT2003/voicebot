@@ -28,6 +28,9 @@ Thumbs.db
 # IDE Configurations
 .vscode/
 .idea/
+.antigravityignore
+.gemini/
+
 
 # Logs
 *.log

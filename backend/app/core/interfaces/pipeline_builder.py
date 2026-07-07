@@ -10,6 +10,7 @@ class IPipelineBuilder(ABC):
     def build_pipeline(
         self, 
         system_instruction: str, 
+        session_id: Optional[str] = None,
         transcript_callback: Optional[Callable[[dict], None]] = None
     ) -> Tuple[Pipeline, LLMContext, PipelineWorker]:
         """Construct, connect, and wrap Pipecat components (STT, LLM, TTS, Accumulators)."""

@@ -44,7 +44,7 @@ class LocalBotRunner(IBotRunner):
         
         # Build pipeline workers
         pipeline_builder = LocalPipecatPipelineBuilder(self.deepgram_api_key, self.groq_api_key)
-        _, _, worker = pipeline_builder.build_pipeline(system_instruction, transcript_callback)
+        _, _, worker = pipeline_builder.build_pipeline(system_instruction, session_id, transcript_callback)
         self._worker = worker
         
         # Start daemon thread execution

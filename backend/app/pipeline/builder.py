@@ -1,3 +1,5 @@
+import os
+import wave
 from typing import Callable, Optional, Tuple
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
@@ -12,6 +14,7 @@ from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.services.deepgram.tts import DeepgramTTSService
 from pipecat.services.groq.llm import GroqLLMService
 from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
+from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 
 from backend.app.core.interfaces.pipeline_builder import IPipelineBuilder
 from backend.app.core.config import Settings
@@ -28,6 +31,7 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
     def build_pipeline(
         self, 
         system_instruction: str, 
+        session_id: Optional[str] = None,
         transcript_callback: Optional[Callable[[dict], None]] = None
     ) -> Tuple[Pipeline, LLMContext, PipelineWorker]:
         # Connect PyAudio local input/output device streams
@@ -69,7 +73,36 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
             ),
         )
 
-        accumulator = TranscriptAccumulator(transcript_callback)
+        # Double accumulators: user_accumulator is placed before user_aggregator,
+        # assistant_accumulator is placed after llm.
+        user_accumulator = TranscriptAccumulator(transcript_callback)
+        assistant_accumulator = TranscriptAccumulator(transcript_callback)
+        
+        # Audio buffer processor for recording
+        audio_buffer = AudioBufferProcessor(
+            num_channels=1,
+            auto_start_recording=True
+        )
+
+        @audio_buffer.event_handler("on_audio_data")
+        async def on_audio_data(processor, audio, sample_rate, num_channels):
+            if not session_id:
+                return
+            directory = os.path.join(Settings.DEFAULT_STORAGE_DIR, session_id)
+            os.makedirs(directory, exist_ok=True)
+            recording_path = os.path.join(directory, "recording.wav")
+            try:
+                with wave.open(recording_path, "wb") as wf:
+                    wf.setnchannels(num_channels)
+                    wf.setsampwidth(2)  # 16-bit
+                    wf.setframerate(sample_rate)
+                    wf.writeframes(audio)
+                from loguru import logger
+                logger.info(f"Saved complete session recording to {recording_path}")
+            except Exception as e:
+                from loguru import logger
+                logger.error(f"Failed to save audio recording: {e}")
+
         playback_buffer = PlaybackBufferProcessor(buffer_size=5)
         
         # Shared state for microphone gating (starts disabled)
@@ -82,12 +115,14 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
             transport.input(),      # Capture audio raw data from system microphone
             mic_gate,               # Block mic inputs until the AI greeting ends
             stt,                    # Convert user audio -> text
+            user_accumulator,       # Catch candidate speech text before aggregator consumption
             user_aggregator,        # Aggregate user words
-            accumulator,            # Catch dialogue text
             llm,                    # Feed text history to Groq LLaMA model
+            assistant_accumulator,  # Catch interviewer response text after LLM generation
             tts,                    # Convert response text -> assistant speech
             playback_buffer,        # Buffer output audio chunks to prevent jitter cracks
             transport.output(),     # Play synthesized speech on system speakers
+            audio_buffer,           # Record audio of user and bot
             mic_unmuter,            # Detects end of first greeting to toggle mic_gate
             assistant_aggregator,   # Aggregate assistant words
         ])
@@ -107,3 +142,4 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
         })
 
         return pipeline, context, worker
+

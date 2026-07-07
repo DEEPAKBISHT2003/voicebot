@@ -1,8 +1,8 @@
 import os
 import sys
 import time
-import uuid
 import datetime
+import httpx
 from dotenv import load_dotenv
 import streamlit as st
 
@@ -10,9 +10,7 @@ import streamlit as st
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Import SOLID services
-from backend.app.runner.bot_runner_impl import LocalBotRunner
 from backend.app.parsers.factory import DocumentParserFactory
-from backend.app.repositories.json_repository import JSONFileInterviewRepository
 from frontend.ui.styles import apply_custom_styles
 
 load_dotenv(override=True)
@@ -31,7 +29,7 @@ st.set_page_config(
 apply_custom_styles()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 2. Session State Initialization (DIP)
+# 2. Session State Initialization
 # ──────────────────────────────────────────────────────────────────────────────
 if "initialized" not in st.session_state:
     st.session_state.initialized = True
@@ -42,17 +40,12 @@ if "initialized" not in st.session_state:
     st.session_state.resume_text = ""
     st.session_state.custom_prompt_text = ""
     st.session_state.is_active = False
-    
-    # Extract API keys from backend config settings
-    deepgram_key = os.getenv("DEEPGRAM_API_KEY", "")
-    groq_key = os.getenv("GROQ_API_KEY", "")
-    
-    # Initialize SOLID components
-    st.session_state.repo = JSONFileInterviewRepository()
-    st.session_state.bot_runner = LocalBotRunner(deepgram_key, groq_key)
 
-# Check API Keys
+# Check API Keys (Warning if not loaded in backend environment)
 keys_loaded = bool(os.getenv("DEEPGRAM_API_KEY") and os.getenv("GROQ_API_KEY"))
+
+# Backend base URL configuration
+BACKEND_URL = "http://localhost:8000"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 3. Sidebar Panel
@@ -66,7 +59,10 @@ with st.sidebar:
         st.markdown(f"**Status:** :green[Active]")
         st.markdown("---")
         if st.button("🔴 Stop Interview", key="stop_sidebar_btn", use_container_width=True):
-            st.session_state.bot_runner.stop()
+            try:
+                httpx.post(f"{BACKEND_URL}/api/interviews/{st.session_state.session_id}/stop")
+            except Exception:
+                pass
             st.session_state.is_active = False
             st.session_state.status = "Interview Stopped."
             st.rerun()
@@ -142,44 +138,31 @@ with tab_interview:
         if st.button("🚀 Start Voice Interview", type="primary", disabled=not ready_to_start, use_container_width=True):
             st.session_state.jd_text = jd_input
             st.session_state.custom_prompt_text = custom_prompt_input
-            st.session_state.session_id = str(uuid.uuid4())
             st.session_state.transcript = []
             st.session_state.status = "Initializing..."
             st.session_state.timestamp = datetime.datetime.now().isoformat()
             
-            # Setup Callbacks
-            def make_transcript_callback(sess_id):
-                def callback(entry):
-                    st.session_state.transcript.append(entry)
-                    # Persist instantly
-                    st.session_state.repo.save_session(
-                        sess_id,
-                        {
-                            "session_id": sess_id,
-                            "timestamp": st.session_state.timestamp,
-                            "jd": st.session_state.jd_text,
-                            "resume": st.session_state.resume_text,
-                            "custom_prompt": st.session_state.custom_prompt_text,
-                            "transcript": st.session_state.transcript
-                        }
-                    )
-                return callback
-                
-            def status_callback(status_str):
-                st.session_state.status = status_str
-
-            # Start background thread bot
-            st.session_state.bot_runner.start(
-                jd=st.session_state.jd_text,
-                resume=st.session_state.resume_text,
-                session_id=st.session_state.session_id,
-                status_callback=status_callback,
-                transcript_callback=make_transcript_callback(st.session_state.session_id),
-                custom_prompt=st.session_state.custom_prompt_text
-            )
-            
-            st.session_state.is_active = True
-            st.rerun()
+            # Request backend server to generate UUID, create folder, and start the local audio loop
+            try:
+                response = httpx.post(
+                    f"{BACKEND_URL}/api/interviews/start",
+                    json={
+                        "jd": st.session_state.jd_text,
+                        "resume": st.session_state.resume_text,
+                        "custom_prompt": st.session_state.custom_prompt_text
+                    },
+                    timeout=15.0
+                )
+                if response.status_code == 200:
+                    res_data = response.json()
+                    st.session_state.session_id = res_data["session_id"]
+                    st.session_state.status = res_data["status"]
+                    st.session_state.is_active = True
+                    st.rerun()
+                else:
+                    st.error(f"Backend failed to start mock interview: {response.text}")
+            except Exception as e:
+                st.error(f"Failed to connect to backend server: {e}. Please ensure the backend is running.")
             
     else:
         # Active interview session loop UI in native container styled with glassmorphism
@@ -198,7 +181,10 @@ with tab_interview:
             
             # Stop Controls
             if st.button("🛑 Stop & Save Interview", type="primary", use_container_width=True):
-                st.session_state.bot_runner.stop()
+                try:
+                    httpx.post(f"{BACKEND_URL}/api/interviews/{st.session_state.session_id}/stop")
+                except Exception:
+                    pass
                 st.session_state.is_active = False
                 st.session_state.status = "Interview Completed and Saved."
                 st.rerun()
@@ -206,8 +192,21 @@ with tab_interview:
         st.subheader("Dialogue Script (Saves Automatically)")
         transcript_container = st.empty()
         
-        # Active polling loop to draw transcripts dynamically while thread is running
-        while st.session_state.bot_runner.is_running():
+        # Active polling loop to draw transcripts dynamically while thread/runner is active on backend
+        while st.session_state.is_active:
+            try:
+                response = httpx.get(f"{BACKEND_URL}/api/interviews/{st.session_state.session_id}/status")
+                if response.status_code == 200:
+                    res_data = response.json()
+                    st.session_state.status = res_data["status"]
+                    st.session_state.transcript = res_data["transcript"]
+                    st.session_state.is_active = res_data["is_active"]
+                else:
+                    st.session_state.is_active = False
+            except Exception as e:
+                st.session_state.status = f"Backend polling error: {e}"
+                st.session_state.is_active = False
+            
             # Update status
             status_placeholder.markdown(f"**Current Status:** `{st.session_state.status}`")
             
@@ -228,6 +227,9 @@ with tab_interview:
                     </div>
                     """, unsafe_allow_html=True)
                 st.markdown('</div>', unsafe_allow_html=True)
+            
+            if not st.session_state.is_active:
+                break
                 
             time.sleep(0.5)
             
@@ -254,25 +256,20 @@ with tab_records:
     with st.container(border=True):
         st.subheader("Saved Interview Transcripts")
         
-        # Load all files in directory
-        directory = "interviews"
-        if not os.path.exists(directory) or len(os.listdir(directory)) == 0:
+        # Load all records from backend
+        detailed_records = []
+        try:
+            response = httpx.get(f"{BACKEND_URL}/api/interviews")
+            if response.status_code == 200:
+                detailed_records = response.json()
+            else:
+                st.error("Failed to load interview history from backend API.")
+        except Exception as e:
+            st.error(f"Cannot connect to backend server: {e}. Please ensure it is running.")
+            
+        if len(detailed_records) == 0:
             st.info("No saved interviews found yet. Complete a mock interview to save records.")
         else:
-            files = [f.replace(".json", "") for f in os.listdir(directory) if f.endswith(".json")]
-            
-            # Sort files by timestamp if possible
-            detailed_records = []
-            for fid in files:
-                try:
-                    rec = st.session_state.repo.load_session(fid)
-                    detailed_records.append(rec)
-                except Exception:
-                    pass
-                    
-            # Sort by timestamp descending
-            detailed_records.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
-            
             # Selection options
             record_labels = []
             record_map = {}
@@ -298,11 +295,12 @@ with tab_records:
                 st.markdown(f"**Session Identifier:** `{record_data['session_id']}`")
                 st.markdown(f"**Completed Timestamp:** `{record_data.get('timestamp', 'Unknown')}`")
                 
-                exp_jd, exp_resume, exp_custom, exp_script = st.tabs([
+                exp_jd, exp_resume, exp_custom, exp_script, exp_recording = st.tabs([
                     "📝 Job Description Context", 
                     "📄 Candidate Resume Context", 
                     "⚙️ Custom Guidelines",
-                    "💬 Interview Transcript"
+                    "💬 Interview Transcript",
+                    "🔊 Play Voice Recording"
                 ])
                 
                 with exp_jd:
@@ -334,3 +332,13 @@ with tab_records:
                             </div>
                             """, unsafe_allow_html=True)
                         st.markdown('</div>', unsafe_allow_html=True)
+                        
+                with exp_recording:
+                    st.markdown("### Play recorded voice conversation")
+                    rec_url = f"{BACKEND_URL}/api/interviews/{record_data['session_id']}/recording"
+                    # Check if recording file exists locally
+                    recording_path = os.path.join("interviews", record_data['session_id'], "recording.wav")
+                    if os.path.exists(recording_path):
+                        st.audio(rec_url, format="audio/wav")
+                    else:
+                        st.info("No audio recording found for this session.")

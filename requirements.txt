@@ -4,3 +4,5 @@ pyaudio
 pypdf
 python-dotenv
 loguru
+fastapi
+httpx
