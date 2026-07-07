@@ -10,7 +10,8 @@ class IBotRunner(ABC):
         resume: str, 
         session_id: str, 
         status_callback: Optional[Callable[[str], None]] = None, 
-        transcript_callback: Optional[Callable[[dict], None]] = None
+        transcript_callback: Optional[Callable[[dict], None]] = None,
+        custom_prompt: Optional[str] = None
     ) -> None:
         """Start the voice loop in a background thread."""
         pass

@@ -40,6 +40,7 @@ if "initialized" not in st.session_state:
     st.session_state.transcript = []
     st.session_state.jd_text = ""
     st.session_state.resume_text = ""
+    st.session_state.custom_prompt_text = ""
     st.session_state.is_active = False
     
     # Extract API keys from backend config settings
@@ -126,6 +127,14 @@ with tab_interview:
             elif st.session_state.resume_text:
                 st.info("Resume text loaded from active session.")
                 
+            st.markdown("<br>", unsafe_allow_html=True)
+            custom_prompt_input = st.text_area(
+                "Custom System Instructions / Guidelines (Optional)",
+                placeholder="Examples:\n- 'Conduct the entire mock interview in Spanish'\n- 'Focus heavily on Python and SQL questions'\n- 'Be extremely formal and strict'",
+                height=130,
+                value=st.session_state.custom_prompt_text
+            )
+                
         st.markdown("</div>", unsafe_allow_html=True)
         
         # Start Trigger
@@ -134,6 +143,7 @@ with tab_interview:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("🚀 Start Voice Interview", type="primary", disabled=not ready_to_start, use_container_width=True):
             st.session_state.jd_text = jd_input
+            st.session_state.custom_prompt_text = custom_prompt_input
             st.session_state.session_id = str(uuid.uuid4())
             st.session_state.transcript = []
             st.session_state.status = "Initializing..."
@@ -151,6 +161,7 @@ with tab_interview:
                             "timestamp": st.session_state.timestamp,
                             "jd": st.session_state.jd_text,
                             "resume": st.session_state.resume_text,
+                            "custom_prompt": st.session_state.custom_prompt_text,
                             "transcript": st.session_state.transcript
                         }
                     )
@@ -165,7 +176,8 @@ with tab_interview:
                 resume=st.session_state.resume_text,
                 session_id=st.session_state.session_id,
                 status_callback=status_callback,
-                transcript_callback=make_transcript_callback(st.session_state.session_id)
+                transcript_callback=make_transcript_callback(st.session_state.session_id),
+                custom_prompt=st.session_state.custom_prompt_text
             )
             
             st.session_state.is_active = True
@@ -290,13 +302,21 @@ with tab_records:
             st.markdown(f"**Session Identifier:** `{record_data['session_id']}`")
             st.markdown(f"**Completed Timestamp:** `{record_data.get('timestamp', 'Unknown')}`")
             
-            exp_jd, exp_resume, exp_script = st.tabs(["📝 Job Description Context", "📄 Candidate Resume Context", "💬 Interview Transcript"])
+            exp_jd, exp_resume, exp_custom, exp_script = st.tabs([
+                "📝 Job Description Context", 
+                "📄 Candidate Resume Context", 
+                "⚙️ Custom Guidelines",
+                "💬 Interview Transcript"
+            ])
             
             with exp_jd:
                 st.text_area("Job Description Details", value=record_data.get("jd", ""), height=250, disabled=True)
                 
             with exp_resume:
                 st.text_area("Candidate Resume Context", value=record_data.get("resume", ""), height=250, disabled=True)
+                
+            with exp_custom:
+                st.text_area("Custom System Instructions", value=record_data.get("custom_prompt", "None"), height=250, disabled=True)
                 
             with exp_script:
                 script_list = record_data.get("transcript", [])

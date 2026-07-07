@@ -28,7 +28,8 @@ class LocalBotRunner(IBotRunner):
         resume: str, 
         session_id: str, 
         status_callback: Optional[Callable[[str], None]] = None, 
-        transcript_callback: Optional[Callable[[dict], None]] = None
+        transcript_callback: Optional[Callable[[dict], None]] = None,
+        custom_prompt: Optional[str] = None
     ) -> None:
         if self.is_running():
             logger.warning("Bot runner is already active.")
@@ -39,7 +40,7 @@ class LocalBotRunner(IBotRunner):
         
         # Build prompt guidelines
         prompt_builder = InterviewPromptBuilder()
-        system_instruction = prompt_builder.build_system_instruction(jd, resume)
+        system_instruction = prompt_builder.build_system_instruction(jd, resume, custom_prompt)
         
         # Build pipeline workers
         pipeline_builder = LocalPipecatPipelineBuilder(self.deepgram_api_key, self.groq_api_key)
