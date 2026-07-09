@@ -45,7 +45,7 @@ if "initialized" not in st.session_state:
 keys_loaded = bool(os.getenv("DEEPGRAM_API_KEY") and os.getenv("GROQ_API_KEY"))
 
 # Backend base URL configuration
-BACKEND_URL = "http://localhost:8000"
+BACKEND_URL = "http://127.0.0.1:8000"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 3. Sidebar Panel
@@ -168,6 +168,137 @@ with tab_interview:
         # Active interview session loop UI in native container styled with glassmorphism
         with st.container(border=True):
             st.markdown(f"### 🎙️ Session: {st.session_state.session_id[:8]}... — Mock Interview Screen is Live")
+            
+            html_audio_streamer = f"""
+            <div style="display:none;">WebSocket Audio Streamer</div>
+            <script>
+                const session_id = "{st.session_state.session_id}";
+                
+                if (window.activeAudioSession === session_id) {{
+                    console.log("Audio session already running:", session_id);
+                }} else {{
+                    // Clean up any existing active session first
+                    if (window.stopAudio) {{
+                        try {{
+                            window.stopAudio();
+                        }} catch(e) {{
+                            console.error("Error stopping previous session:", e);
+                        }}
+                    }}
+                    
+                    window.activeAudioSession = session_id;
+                    const wsUrl = "ws://" + (window.location.hostname === "localhost" ? "127.0.0.1" : window.location.hostname) + ":8000/api/ws/interview/" + session_id;
+                    
+                    // Attach references to window so they persist across Streamlit reruns
+                    window.audioWS = null;
+                    window.audioContext = null;
+                    window.micStream = null;
+                    window.scriptProcessor = null;
+                    window.nextStartTime = 0;
+                    
+                    window.playChunk = function(audioData) {{
+                        if (!window.audioContext) return;
+                        if (window.audioContext.state === 'suspended') {{
+                            window.audioContext.resume();
+                        }}
+                        
+                        const audioBuffer = window.audioContext.createBuffer(1, audioData.length, 16000);
+                        audioBuffer.getChannelData(0).set(audioData);
+                        
+                        const sourceNode = window.audioContext.createBufferSource();
+                        sourceNode.buffer = audioBuffer;
+                        sourceNode.connect(window.audioContext.destination);
+                        
+                        const currentTime = window.audioContext.currentTime;
+                        if (window.nextStartTime < currentTime) {{
+                            window.nextStartTime = currentTime;
+                        }}
+                        
+                        sourceNode.start(window.nextStartTime);
+                        window.nextStartTime += audioBuffer.duration;
+                    }};
+                    
+                    window.stopAudio = function() {{
+                        if (window.scriptProcessor) {{
+                            try {{ window.scriptProcessor.disconnect(); }} catch(e) {{}}
+                            window.scriptProcessor = null;
+                        }}
+                        if (window.micStream) {{
+                            try {{ window.micStream.getTracks().forEach(track => track.stop()); }} catch(e) {{}}
+                            window.micStream = null;
+                        }}
+                        if (window.audioContext) {{
+                            try {{ window.audioContext.close(); }} catch(e) {{}}
+                            window.audioContext = null;
+                        }}
+                        if (window.audioWS) {{
+                            try {{ window.audioWS.close(); }} catch(e) {{}}
+                            window.audioWS = null;
+                        }}
+                        window.activeAudioSession = null;
+                    }};
+                    
+                    async function startAudio() {{
+                        try {{
+                            window.audioContext = new (window.AudioContext || window.webkitAudioContext)({{ sampleRate: 16000 }});
+                            window.micStream = await navigator.mediaDevices.getUserMedia({{ audio: {{
+                                echoCancellation: true,
+                                noiseSuppression: true,
+                                autoGainControl: true
+                            }} }});
+                            
+                            const source = window.audioContext.createMediaStreamSource(window.micStream);
+                            window.scriptProcessor = window.audioContext.createScriptProcessor(4096, 1, 1);
+                            
+                            window.scriptProcessor.onaudioprocess = (e) => {{
+                                const inputData = e.inputBuffer.getChannelData(0);
+                                const pcmBuffer = new Int16Array(inputData.length);
+                                for (let i = 0; i < inputData.length; i++) {{
+                                    let val = Math.max(-1, Math.min(1, inputData[i]));
+                                    pcmBuffer[i] = val < 0 ? val * 0x8000 : val * 0x7FFF;
+                                }}
+                                
+                                if (window.audioWS && window.audioWS.readyState === WebSocket.OPEN) {{
+                                    window.audioWS.send(pcmBuffer.buffer);
+                                }}
+                            }};
+                            
+                            source.connect(window.scriptProcessor);
+                            window.scriptProcessor.connect(window.audioContext.destination);
+                            
+                            window.audioWS = new WebSocket(wsUrl);
+                            window.audioWS.binaryType = "blob";
+                            
+                            window.audioWS.onmessage = async (event) => {{
+                                if (event.data instanceof Blob) {{
+                                    const arrayBuffer = await event.data.arrayBuffer();
+                                    const int16Array = new Int16Array(arrayBuffer);
+                                    const float32Array = new Float32Array(int16Array.length);
+                                    for (let i = 0; i < int16Array.length; i++) {{
+                                        float32Array[i] = int16Array[i] / (int16Array[i] < 0 ? 0x8000 : 0x7FFF);
+                                    }}
+                                    window.playChunk(float32Array);
+                                }}
+                            }};
+                            
+                            window.audioWS.onclose = () => {{
+                                window.stopAudio();
+                            }};
+                            
+                        }} catch (err) {{
+                            console.error("Audio init error:", err);
+                        }}
+                    }}
+                    
+                    startAudio();
+                    
+                    window.onbeforeunload = () => {{
+                        window.stopAudio();
+                    }};
+                }}
+            </script>
+            """
+            st.html(html_audio_streamer, unsafe_allow_javascript=True)
             
             # Audio Waveform Animation
             st.markdown(f"""

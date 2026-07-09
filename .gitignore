@@ -1,11 +1,17 @@
-# Credentials
+# Credentials & Environments
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
 
 # Python Virtual Environments
 .venv/
 venv/
 ENV/
 env/
+.python-version
 
 # Python Cache & Compiled Code
 __pycache__/
@@ -14,27 +20,51 @@ __pycache__/
 *.pyd
 .pytest_cache/
 .mypy_cache/
+.ipynb_checkpoints/
 
 # Local Interview Transcripts & Data
 interviews/
+*.wav
+*.mp3
+*.pcm
 
-# Streamlit Local Configurations
+# Database Files
+*.db
+*.sqlite
+*.sqlite3
+
+# Build & Packaging
+build/
+dist/
+*.egg-info/
+
+# Streamlit Local Configurations & Cache
 .streamlit/
+.streamlit/config.toml
+.streamlit/secrets.toml
+
+# IDE & Editor Configurations
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
 
 # OS-specific files
 .DS_Store
+.DS_Store?
+._*
 Thumbs.db
+ehthumbs.db
 
-# IDE Configurations
-.vscode/
-.idea/
+# Logs & Temporary Files
+*.log
+logs/
+temp/
+tmp/
+scratch/
 .antigravityignore
 .gemini/
-
-
-# Logs
-*.log
-
-# Jupyter Notebooks Checkpoints
-.ipynb_checkpoints/
 

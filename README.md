@@ -25,8 +25,7 @@ c:\Users\Dell\Desktop\demo/
 │   │   │       ├── document_parser.py    # Abstraction for document parsers
 │   │   │       ├── prompt_builder.py     # Abstraction for prompt system
 │   │   │       ├── repository.py         # Abstraction for session storage
-│   │   │       ├── pipeline_builder.py   # Abstraction for Pipecat pipeline wireframes
-│   │   │       └── bot_runner.py         # Abstraction for thread loop runners
+│   │   │       └── pipeline_builder.py   # Abstraction for Pipecat pipeline wireframes
 │   │   ├── parsers/                      # Resume parsing strategies
 │   │   │   ├── pdf_parser.py             # PDF text extractor
 │   │   │   ├── txt_parser.py             # Plain text/markdown parser
@@ -35,11 +34,9 @@ c:\Users\Dell\Desktop\demo/
 │   │   │   └── interview_prompt.py       # Interview instructions & identity (Sheela)
 │   │   ├── repositories/                 # Storage repositories
 │   │   │   └── json_repository.py        # Local JSON disk serializer (DIP compliant)
-│   │   ├── pipeline/                     # Pipecat pipelines
-│   │   │   ├── accumulator.py            # Custom Dialogue logger processor
-│   │   │   └── builder.py                # Pipeline connector (STT -> LLM -> TTS)
-│   │   └── runner/                       # Async thread runner managers
-│   │       └── bot_runner_impl.py        # Local bot background daemon thread runner
+│   │   └── pipeline/                     # Pipecat pipelines
+│   │       ├── accumulator.py            # Custom Dialogue logger processor
+│   │       └── builder.py                # Pipeline connector (STT -> LLM -> TTS)
 └── frontend/                             # User Interfaces
     ├── app.py                            # Streamlit layout controls and pages
     └── ui/

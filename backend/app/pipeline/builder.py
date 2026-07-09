@@ -1,6 +1,6 @@
 import os
 import wave
-from typing import Callable, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.pipeline.pipeline import Pipeline
@@ -32,15 +32,32 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
         self, 
         system_instruction: str, 
         session_id: Optional[str] = None,
-        transcript_callback: Optional[Callable[[dict], None]] = None
+        transcript_callback: Optional[Callable[[dict], None]] = None,
+        websocket: Optional[Any] = None
     ) -> Tuple[Pipeline, LLMContext, PipelineWorker]:
-        # Connect PyAudio local input/output device streams
-        transport = LocalAudioTransport(
-            LocalAudioTransportParams(
-                audio_in_enabled=True,
-                audio_out_enabled=True,
+        if websocket is not None:
+            from pipecat.transports.websocket.fastapi import FastAPIWebsocketTransport, FastAPIWebsocketParams
+            from backend.app.pipeline.serializer import RawPCMAudioSerializer
+            
+            transport = FastAPIWebsocketTransport(
+                websocket=websocket,
+                params=FastAPIWebsocketParams(
+                    audio_in_enabled=True,
+                    audio_in_sample_rate=16000,
+                    audio_out_enabled=True,
+                    audio_out_sample_rate=16000,
+                    add_wav_header=False,
+                    serializer=RawPCMAudioSerializer(sample_rate=16000),
+                )
             )
-        )
+        else:
+            # Connect PyAudio local input/output device streams
+            transport = LocalAudioTransport(
+                LocalAudioTransportParams(
+                    audio_in_enabled=True,
+                    audio_out_enabled=True,
+                )
+            )
 
         stt = DeepgramSTTService(api_key=self.deepgram_api_key)
         tts = DeepgramTTSService(

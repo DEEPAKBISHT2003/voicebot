@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Callable, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
@@ -11,7 +11,8 @@ class IPipelineBuilder(ABC):
         self, 
         system_instruction: str, 
         session_id: Optional[str] = None,
-        transcript_callback: Optional[Callable[[dict], None]] = None
+        transcript_callback: Optional[Callable[[dict], None]] = None,
+        websocket: Optional[Any] = None
     ) -> Tuple[Pipeline, LLMContext, PipelineWorker]:
         """Construct, connect, and wrap Pipecat components (STT, LLM, TTS, Accumulators)."""
         pass
