@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   db:
     image: postgres:15-alpine
@@ -27,11 +25,11 @@ services:
     volumes:
       - ./interviews:/app/interviews
     environment:
-      - DATABASE_URL=postgres://postgres:1234@db:5432/interview
+      - DATABASE_URL=${DATABASE_URL:-postgres://postgres:1234@db:5432/interview}
       - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
       - GROQ_API_KEY=${GROQ_API_KEY}
-      - FRONTEND_URL=http://localhost:8502
-      - BACKEND_URL=http://localhost:8000
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:8502}
+      - BACKEND_URL=${BACKEND_URL:-http://localhost:8000}
 
   frontend:
     build:
@@ -46,8 +44,8 @@ services:
     volumes:
       - ./interviews:/app/interviews
     environment:
-      - BACKEND_URL=http://backend:8000
-      - BACKEND_PORT=8000
+      - BACKEND_URL=${BACKEND_URL_INTERNAL:-http://backend:8000}
+      - BACKEND_PORT=${BACKEND_PORT:-8000}
       - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
       - GROQ_API_KEY=${GROQ_API_KEY}
 
