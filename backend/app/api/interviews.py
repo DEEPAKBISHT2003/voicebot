@@ -27,13 +27,13 @@ class StartSessionRequest(BaseModel):
     custom_prompt: str = ""
 
 @router.post("/interviews/start")
-def start_interview(
+async def start_interview(
     req: StartSessionRequest,
     repo=Depends(get_repo),
     active_sessions=Depends(get_active_sessions)
 ):
     try:
-        session_id = repo.create_session(
+        session_id = await repo.create_session(
             jd=req.jd,
             resume=req.resume,
             custom_prompt=req.custom_prompt
@@ -89,10 +89,10 @@ async def websocket_endpoint(
     )
     
     def make_transcript_callback(sid):
-        def callback(entry):
+        async def callback(entry):
             if sid in active_sessions:
                 active_sessions[sid]["transcript"].append(entry)
-                repo.save_session(
+                await repo.save_session(
                     sid,
                     {
                         "session_id": sid,
@@ -130,7 +130,7 @@ async def websocket_endpoint(
     finally:
         sess["is_active"] = False
         sess["status"] = "Mock Interview Stopped."
-        repo.save_session(
+        await repo.save_session(
             session_id,
             {
                 "session_id": session_id,
@@ -162,7 +162,7 @@ async def stop_interview(
         except Exception as e:
             logger.warning(f"Failed to cancel pipeline worker: {e}")
             
-    repo.save_session(
+    await repo.save_session(
         session_id,
         {
             "session_id": session_id,
@@ -177,7 +177,7 @@ async def stop_interview(
     return {"status": "Stopped"}
 
 @router.get("/interviews/{session_id}/status")
-def get_session_status(
+async def get_session_status(
     session_id: str,
     repo=Depends(get_repo),
     active_sessions=Depends(get_active_sessions)
@@ -191,7 +191,7 @@ def get_session_status(
             "transcript": sess["transcript"]
         }
     try:
-        data = repo.load_session(session_id)
+        data = await repo.load_session(session_id)
         return {
             "session_id": session_id,
             "is_active": False,
@@ -202,12 +202,12 @@ def get_session_status(
         raise HTTPException(status_code=404, detail="Session not found.")
 
 @router.get("/interviews")
-def list_interviews(
+async def list_interviews(
     repo=Depends(get_repo),
     active_sessions=Depends(get_active_sessions)
 ):
     try:
-        session_ids = repo.list_sessions()
+        session_ids = await repo.list_sessions()
         detailed_records = []
         for sid in session_ids:
             try:
@@ -222,7 +222,7 @@ def list_interviews(
                         "transcript": sess["transcript"]
                     })
                 else:
-                    rec = repo.load_session(sid)
+                    rec = await repo.load_session(sid)
                     detailed_records.append(rec)
             except Exception:
                 pass
@@ -232,7 +232,7 @@ def list_interviews(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/interviews/{session_id}")
-def get_interview(
+async def get_interview(
     session_id: str,
     repo=Depends(get_repo),
     active_sessions=Depends(get_active_sessions)
@@ -248,7 +248,7 @@ def get_interview(
             "transcript": sess["transcript"]
         }
     try:
-        return repo.load_session(session_id)
+        return await repo.load_session(session_id)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Session not found.")
 
@@ -259,3 +259,4 @@ def get_recording(session_id: str):
     if not os.path.exists(recording_path):
         raise HTTPException(status_code=404, detail="Recording audio not found.")
     return FileResponse(recording_path, media_type="audio/wav", filename="recording.wav")
+

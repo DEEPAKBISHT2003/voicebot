@@ -11,7 +11,7 @@ class JSONFileInterviewRepository(IInterviewRepository):
         self.directory = directory
         os.makedirs(self.directory, exist_ok=True)
 
-    def create_session(self, jd: str, resume: str, custom_prompt: str) -> str:
+    async def create_session(self, jd: str, resume: str, custom_prompt: str) -> str:
         session_id = str(uuid.uuid4())
         session_dir = os.path.join(self.directory, session_id)
         os.makedirs(session_dir, exist_ok=True)
@@ -33,17 +33,17 @@ class JSONFileInterviewRepository(IInterviewRepository):
             "custom_prompt": custom_prompt,
             "transcript": []
         }
-        self.save_session(session_id, initial_data)
+        await self.save_session(session_id, initial_data)
         return session_id
         
-    def save_session(self, session_id: str, data: dict) -> None:
+    async def save_session(self, session_id: str, data: dict) -> None:
         session_dir = os.path.join(self.directory, session_id)
         os.makedirs(session_dir, exist_ok=True)
         file_path = os.path.join(session_dir, "session.json")
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4, default=str)
             
-    def load_session(self, session_id: str) -> dict:
+    async def load_session(self, session_id: str) -> dict:
         session_dir = os.path.join(self.directory, session_id)
         file_path = os.path.join(session_dir, "session.json")
         
@@ -58,7 +58,7 @@ class JSONFileInterviewRepository(IInterviewRepository):
         with open(file_path, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    def list_sessions(self) -> list[str]:
+    async def list_sessions(self) -> list[str]:
         if not os.path.exists(self.directory):
             return []
         sessions = []

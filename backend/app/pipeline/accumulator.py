@@ -1,3 +1,4 @@
+import asyncio
 from typing import Callable, List, Dict, Optional
 from loguru import logger
 from pipecat.frames.frames import (
@@ -28,7 +29,10 @@ class TranscriptAccumulator(FrameProcessor):
                 self.history.append(entry)
                 logger.info(f"User transcript: {text}")
                 if self.callback:
-                    self.callback(entry)
+                    if asyncio.iscoroutinefunction(self.callback):
+                        await self.callback(entry)
+                    else:
+                        self.callback(entry)
                     
         # Assistant speech tracking
         elif isinstance(frame, LLMFullResponseStartFrame):
@@ -44,7 +48,10 @@ class TranscriptAccumulator(FrameProcessor):
                 self.history.append(entry)
                 logger.info(f"Assistant response: {clean_text}")
                 if self.callback:
-                    self.callback(entry)
+                    if asyncio.iscoroutinefunction(self.callback):
+                        await self.callback(entry)
+                    else:
+                        self.callback(entry)
             self._current_assistant_text = []
             
         await self.push_frame(frame, direction)

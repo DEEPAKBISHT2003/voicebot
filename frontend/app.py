@@ -3,6 +3,8 @@ import sys
 import time
 import datetime
 import httpx
+import socket
+from urllib.parse import urlparse
 from dotenv import load_dotenv
 import streamlit as st
 
@@ -14,6 +16,17 @@ from backend.app.parsers.factory import DocumentParserFactory
 from frontend.ui.styles import apply_custom_styles
 
 load_dotenv(override=True)
+
+def get_local_ip() -> str:
+    """Retrieve the primary local IP address of the laptop dynamically."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 1. Page Config & CSS (Premium Design System)
@@ -44,8 +57,15 @@ if "initialized" not in st.session_state:
 # Check API Keys (Warning if not loaded in backend environment)
 keys_loaded = bool(os.getenv("DEEPGRAM_API_KEY") and os.getenv("GROQ_API_KEY"))
 
-# Backend base URL configuration
-BACKEND_URL = "http://127.0.0.1:8000"
+# Backend URL configurations resolved dynamically
+LOCAL_IP = get_local_ip()
+BACKEND_URL = os.getenv("BACKEND_URL", f"http://{LOCAL_IP}:8000")
+
+# Derive WebSocket connection port
+parsed_url = urlparse(BACKEND_URL)
+BACKEND_PORT = parsed_url.port or (443 if parsed_url.scheme == "https" else 80)
+
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 3. Sidebar Panel
@@ -187,7 +207,10 @@ with tab_interview:
                     }}
                     
                     window.activeAudioSession = session_id;
-                    const wsUrl = "ws://" + (window.location.hostname === "localhost" ? "127.0.0.1" : window.location.hostname) + ":8000/api/ws/interview/" + session_id;
+                    const wsHost = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") ? "127.0.0.1" : window.location.hostname;
+                    const wsPort = "{BACKEND_PORT}";
+                    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+                    const wsUrl = wsProtocol + "//" + wsHost + ":" + wsPort + "/api/ws/interview/" + session_id;
                     
                     // Attach references to window so they persist across Streamlit reruns
                     window.audioWS = null;
@@ -210,8 +233,9 @@ with tab_interview:
                         sourceNode.connect(window.audioContext.destination);
                         
                         const currentTime = window.audioContext.currentTime;
-                        if (window.nextStartTime < currentTime) {{
-                            window.nextStartTime = currentTime;
+                        const jitterBuffer = 0.15; // 150ms safety buffer to absorb network delay
+                        if (window.nextStartTime < currentTime + jitterBuffer) {{
+                            window.nextStartTime = currentTime + jitterBuffer;
                         }}
                         
                         sourceNode.start(window.nextStartTime);
