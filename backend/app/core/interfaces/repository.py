@@ -13,7 +13,14 @@ class IInterviewRepository(ABC):
         pass
 
     @abstractmethod
-    async def create_session(self, jd: str, resume: str, custom_prompt: str) -> str:
+    async def create_session(
+        self, 
+        jd: str, 
+        resume: str, 
+        custom_prompt: str, 
+        resume_filename: str = "resume.txt", 
+        resume_base64: str = ""
+    ) -> str:
         """Create a new interview session folder, generate UUID, and write initial files."""
         pass
 

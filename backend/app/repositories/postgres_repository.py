@@ -11,7 +11,14 @@ class PostgresInterviewRepository(IInterviewRepository):
         self.directory = directory
         os.makedirs(self.directory, exist_ok=True)
 
-    async def create_session(self, jd: str, resume: str, custom_prompt: str) -> str:
+    async def create_session(
+        self, 
+        jd: str, 
+        resume: str, 
+        custom_prompt: str, 
+        resume_filename: str = "resume.txt", 
+        resume_base64: str = ""
+    ) -> str:
         # Generate a unique session ID
         session_id = uuid.uuid4()
         
@@ -26,6 +33,18 @@ class PostgresInterviewRepository(IInterviewRepository):
         # Save Resume file locally
         with open(os.path.join(session_dir, "resume.txt"), "w", encoding="utf-8") as f:
             f.write(resume)
+            
+        # Decode and save the original resume file if provided
+        if resume_base64:
+            try:
+                import base64
+                file_bytes = base64.b64decode(resume_base64)
+                target_name = "resume.pdf" if resume_filename.lower().endswith(".pdf") else "resume.txt"
+                with open(os.path.join(session_dir, target_name), "wb") as f:
+                    f.write(file_bytes)
+            except Exception as e:
+                from loguru import logger
+                logger.error(f"Error saving raw resume file: {e}")
             
         # Save session metadata in database
         await InterviewSessionModel.create(

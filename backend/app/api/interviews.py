@@ -25,6 +25,8 @@ class StartSessionRequest(BaseModel):
     jd: str
     resume: str
     custom_prompt: str = ""
+    resume_filename: str = "resume.txt"
+    resume_base64: str = ""
 
 @router.post("/interviews/start")
 async def start_interview(
@@ -36,7 +38,9 @@ async def start_interview(
         session_id = await repo.create_session(
             jd=req.jd,
             resume=req.resume,
-            custom_prompt=req.custom_prompt
+            custom_prompt=req.custom_prompt,
+            resume_filename=req.resume_filename,
+            resume_base64=req.resume_base64
         )
     except Exception as e:
         logger.error(f"Failed to create session folder: {e}")
@@ -259,4 +263,17 @@ def get_recording(session_id: str):
     if not os.path.exists(recording_path):
         raise HTTPException(status_code=404, detail="Recording audio not found.")
     return FileResponse(recording_path, media_type="audio/wav", filename="recording.wav")
+
+@router.get("/interviews/{session_id}/resume")
+def get_resume(session_id: str):
+    directory = os.path.join(Settings.DEFAULT_STORAGE_DIR, session_id)
+    pdf_path = os.path.join(directory, "resume.pdf")
+    txt_path = os.path.join(directory, "resume.txt")
+    
+    if os.path.exists(pdf_path):
+        return FileResponse(pdf_path, media_type="application/pdf", filename="resume.pdf")
+    elif os.path.exists(txt_path):
+        return FileResponse(txt_path, media_type="text/plain", filename="resume.txt")
+    else:
+        raise HTTPException(status_code=404, detail="Resume file not found.")
 

@@ -28,6 +28,23 @@ def get_local_ip() -> str:
     except Exception:
         return "127.0.0.1"
 
+def extract_candidate_name(resume_text: str) -> str:
+    """Dynamically extracts the candidate's name from the resume text (first line)."""
+    if not resume_text:
+        return "Unknown Candidate"
+    lines = [line.strip() for line in resume_text.split("\n") if line.strip()]
+    if not lines:
+        return "Unknown Candidate"
+    first_line = lines[0]
+    # Clean up name from email, phone numbers, pipes, or commas
+    name = first_line.split(',')[0].split('|')[0].split('+')[0].split(' - ')[0].strip()
+    words = name.split()
+    if len(words) > 4:
+        name = " ".join(words[:3])
+    if not name or name.isdigit():
+        return "Candidate"
+    return name
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 1. Page Config & CSS (Premium Design System)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -53,6 +70,7 @@ if "initialized" not in st.session_state:
     st.session_state.resume_text = ""
     st.session_state.custom_prompt_text = ""
     st.session_state.is_active = False
+    st.session_state.selected_record_id = ""
 
 # Check API Keys (Warning if not loaded in backend environment)
 keys_loaded = bool(os.getenv("DEEPGRAM_API_KEY") and os.getenv("GROQ_API_KEY"))
@@ -132,10 +150,14 @@ with tab_interview:
                 )
                 
                 if resume_file:
+                    # Save raw bytes and original name in session state
+                    st.session_state.resume_raw_bytes = resume_file.getvalue()
+                    st.session_state.resume_filename = resume_file.name
+                    
                     # Extract text using SOLID Factory & Parser
                     try:
                         parser = DocumentParserFactory.get_parser(resume_file.name)
-                        extracted_resume = parser.parse(resume_file.read(), resume_file.name)
+                        extracted_resume = parser.parse(st.session_state.resume_raw_bytes, resume_file.name)
                         st.success(f"Successfully extracted {len(extracted_resume)} characters from Resume!")
                         st.session_state.resume_text = extracted_resume
                     except Exception as e:
@@ -164,12 +186,19 @@ with tab_interview:
             
             # Request backend server to generate UUID, create folder, and start the local audio loop
             try:
+                import base64
+                resume_base64 = ""
+                if "resume_raw_bytes" in st.session_state and st.session_state.resume_raw_bytes:
+                    resume_base64 = base64.b64encode(st.session_state.resume_raw_bytes).decode("utf-8")
+                
                 response = httpx.post(
                     f"{BACKEND_URL}/api/interviews/start",
                     json={
                         "jd": st.session_state.jd_text,
                         "resume": st.session_state.resume_text,
-                        "custom_prompt": st.session_state.custom_prompt_text
+                        "custom_prompt": st.session_state.custom_prompt_text,
+                        "resume_filename": st.session_state.get("resume_filename", "resume.txt"),
+                        "resume_base64": resume_base64
                     },
                     timeout=15.0
                 )
@@ -425,75 +454,142 @@ with tab_records:
         if len(detailed_records) == 0:
             st.info("No saved interviews found yet. Complete a mock interview to save records.")
         else:
-            # Selection options
-            record_labels = []
-            record_map = {}
+            # Date and text filters
+            st.markdown("#### 🔍 Filter past interview sessions")
+            col_search, col_start, col_end = st.columns([2, 1, 1])
+            with col_search:
+                search_query = st.text_input("Search by Candidate Name or Session UUID", placeholder="Type search text...")
+            with col_start:
+                start_date = st.date_input("Start Date", value=datetime.date.today() - datetime.timedelta(days=90))
+            with col_end:
+                end_date = st.date_input("End Date", value=datetime.date.today())
+                
+            # Filter records list
+            filtered_records = []
             for r in detailed_records:
+                name = extract_candidate_name(r.get("resume", ""))
                 sid = r["session_id"]
-                ts = r.get("timestamp", "Unknown date")
-                try:
-                    dt = datetime.datetime.fromisoformat(ts)
-                    ts_str = dt.strftime("%Y-%m-%d %H:%M:%S")
-                except Exception:
-                    ts_str = ts
-                    
-                label = f"Session {sid[:8]}... (Date: {ts_str})"
-                record_labels.append(label)
-                record_map[label] = r
+                ts = r.get("timestamp", "")
                 
-            selected_label = st.selectbox("Select Interview Session", record_labels)
-            
-            if selected_label:
-                record_data = record_map[selected_label]
-                st.markdown("---")
+                # Date filtering
+                if ts:
+                    try:
+                        dt = datetime.datetime.fromisoformat(ts).date()
+                        if start_date and dt < start_date:
+                            continue
+                        if end_date and dt > end_date:
+                            continue
+                    except Exception:
+                        pass
                 
-                st.markdown(f"**Session Identifier:** `{record_data['session_id']}`")
-                st.markdown(f"**Completed Timestamp:** `{record_data.get('timestamp', 'Unknown')}`")
-                
-                exp_jd, exp_resume, exp_custom, exp_script, exp_recording = st.tabs([
-                    "📝 Job Description Context", 
-                    "📄 Candidate Resume Context", 
-                    "⚙️ Custom Guidelines",
-                    "💬 Interview Transcript",
-                    "🔊 Play Voice Recording"
-                ])
-                
-                with exp_jd:
-                    st.text_area("Job Description Details", value=record_data.get("jd", ""), height=250, disabled=True)
-                    
-                with exp_resume:
-                    st.text_area("Candidate Resume Context", value=record_data.get("resume", ""), height=250, disabled=True)
-                    
-                with exp_custom:
-                    st.text_area("Custom System Instructions", value=record_data.get("custom_prompt", "None"), height=250, disabled=True)
-                    
-                with exp_script:
-                    script_list = record_data.get("transcript", [])
-                    if not script_list:
-                        st.warning("No dialog script logged for this session.")
-                    else:
-                        st.markdown('<div class="bubble-container">', unsafe_allow_html=True)
-                        for msg in script_list:
-                            role = msg["role"]
-                            text = msg["text"]
-                            role_lbl = "🗣️ Candidate" if role == "user" else "🤖 AI Interviewer"
-                            role_cls = "bubble-user" if role == "user" else "bubble-assistant"
-                            role_badge_cls = "role-user" if role == "user" else "role-assistant"
-                            
-                            st.markdown(f"""
-                            <div class="{role_cls}">
-                                <div class="role-badge {role_badge_cls}">{role_lbl}</div>
-                                <div>{text}</div>
-                            </div>
-                            """, unsafe_allow_html=True)
-                        st.markdown('</div>', unsafe_allow_html=True)
+                # Text filtering
+                if search_query:
+                    q = search_query.lower()
+                    if q not in name.lower() and q not in sid.lower():
+                        continue
                         
-                with exp_recording:
-                    st.markdown("### Play recorded voice conversation")
-                    rec_url = f"{BACKEND_URL}/api/interviews/{record_data['session_id']}/recording"
-                    # Check if recording file exists locally
-                    recording_path = os.path.join("interviews", record_data['session_id'], "recording.wav")
-                    if os.path.exists(recording_path):
-                        st.audio(rec_url, format="audio/wav")
-                    else:
-                        st.info("No audio recording found for this session.")
+                filtered_records.append((name, sid, ts, r))
+                
+            if len(filtered_records) == 0:
+                st.info("No matching interview sessions found with the current filters.")
+            else:
+                st.markdown("<br>", unsafe_allow_html=True)
+                # Table Header
+                col_h_name, col_h_uuid, col_h_date, col_h_action = st.columns([3, 4, 3, 2])
+                col_h_name.markdown("**Candidate Name**")
+                col_h_uuid.markdown("**Session UUID**")
+                col_h_date.markdown("**Completed Timestamp**")
+                col_h_action.markdown("**Action**")
+                st.markdown("<hr style='margin: 4px 0 12px 0;'>", unsafe_allow_html=True)
+                
+                # Table Rows
+                for name, sid, ts, r in filtered_records:
+                    col_name, col_uuid, col_date, col_action = st.columns([3, 4, 3, 2])
+                    col_name.write(name)
+                    col_uuid.code(sid[:18] + "...")
+                    
+                    ts_str = "Unknown"
+                    if ts:
+                        try:
+                            dt = datetime.datetime.fromisoformat(ts)
+                            ts_str = dt.strftime("%Y-%m-%d %H:%M:%S")
+                        except Exception:
+                            ts_str = ts
+                    col_date.write(ts_str)
+                    
+                    if col_action.button("📂 View Record", key=f"btn_{sid}", use_container_width=True):
+                        st.session_state.selected_record_id = sid
+                        
+            # Display detailed panels if a record is selected
+            if st.session_state.selected_record_id:
+                record_data = next((r for r in detailed_records if r["session_id"] == st.session_state.selected_record_id), None)
+                if record_data:
+                    st.markdown("---")
+                    cand_name = extract_candidate_name(record_data.get("resume", ""))
+                    st.markdown(f"### 📂 Displaying Transcript for Candidate: **{cand_name}**")
+                    st.markdown(f"**Session Identifier:** `{record_data['session_id']}`")
+                    st.markdown(f"**Completed Timestamp:** `{record_data.get('timestamp', 'Unknown')}`")
+                    
+                    exp_jd, exp_resume, exp_custom, exp_script, exp_recording = st.tabs([
+                        "📝 Job Description Context", 
+                        "📄 Candidate Resume Context", 
+                        "⚙️ Custom Guidelines",
+                        "💬 Interview Transcript",
+                        "🔊 Play Voice Recording"
+                    ])
+                    
+                    with exp_jd:
+                        st.text_area("Job Description Details", value=record_data.get("jd", ""), height=250, disabled=True)
+                        
+                    with exp_resume:
+                        session_id = record_data['session_id']
+                        pdf_path = os.path.join("interviews", session_id, "resume.pdf")
+                        
+                        if os.path.exists(pdf_path):
+                            st.markdown(f"""
+                            <iframe id="resume-viewer-iframe" style="width:100%; height:700px; border:none; border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,0.15);"></iframe>
+                            <script>
+                                (function() {{
+                                    const host = (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") ? "127.0.0.1" : window.location.hostname;
+                                    const port = "{BACKEND_PORT}";
+                                    const protocol = window.location.protocol;
+                                    const url = protocol + "//" + host + ":" + port + "/api/interviews/{session_id}/resume";
+                                    document.getElementById("resume-viewer-iframe").src = url;
+                                }})();
+                            </script>
+                            """, unsafe_allow_html=True)
+                        else:
+                            st.text_area("Candidate Resume Context (Extracted Text Fallback)", value=record_data.get("resume", ""), height=250, disabled=True)
+                            
+                    with exp_custom:
+                        st.text_area("Custom System Instructions", value=record_data.get("custom_prompt", "None"), height=250, disabled=True)
+                        
+                    with exp_script:
+                        script_list = record_data.get("transcript", [])
+                        if not script_list:
+                            st.warning("No dialog script logged for this session.")
+                        else:
+                            st.markdown('<div class="bubble-container">', unsafe_allow_html=True)
+                            for msg in script_list:
+                                role = msg["role"]
+                                text = msg["text"]
+                                role_lbl = "🗣️ Candidate" if role == "user" else "🤖 AI Interviewer"
+                                role_cls = "bubble-user" if role == "user" else "bubble-assistant"
+                                role_badge_cls = "role-user" if role == "user" else "role-assistant"
+                                
+                                st.markdown(f"""
+                                <div class="{role_cls}">
+                                    <div class="role-badge {role_badge_cls}">{role_lbl}</div>
+                                    <div>{text}</div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                            st.markdown('</div>', unsafe_allow_html=True)
+                            
+                    with exp_recording:
+                        st.markdown("### Play recorded voice conversation")
+                        rec_url = f"{BACKEND_URL}/api/interviews/{record_data['session_id']}/recording"
+                        recording_path = os.path.join("interviews", record_data['session_id'], "recording.wav")
+                        if os.path.exists(recording_path):
+                            st.audio(rec_url, format="audio/wav")
+                        else:
+                            st.info("No audio recording found for this session.")
