@@ -587,9 +587,8 @@ with tab_records:
                             
                     with exp_recording:
                         st.markdown("### Play recorded voice conversation")
-                        rec_url = f"{BACKEND_URL}/api/interviews/{record_data['session_id']}/recording"
                         recording_path = os.path.join("interviews", record_data['session_id'], "recording.wav")
                         if os.path.exists(recording_path):
-                            st.audio(rec_url, format="audio/wav")
+                            st.audio(recording_path, format="audio/wav")
                         else:
                             st.info("No audio recording found for this session.")
