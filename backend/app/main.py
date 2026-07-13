@@ -13,18 +13,13 @@ Settings.validate()
 
 app = FastAPI(title="AI Mock Interviewer Backend")
 
-# Setup CORS middleware strictly from FRONTEND_URL environment variable (supports comma-separated list)
-allowed_origins = []
-if Settings.FRONTEND_URL:
-    for origin in Settings.FRONTEND_URL.split(","):
-        cleaned_origin = origin.strip()
-        if cleaned_origin and cleaned_origin not in allowed_origins:
-            allowed_origins.append(cleaned_origin)
+# Setup CORS middleware strictly from FRONTEND_URL environment variable
+allowed_origins = [o.strip() for o in Settings.FRONTEND_URL.split(",") if o.strip()] if Settings.FRONTEND_URL else []
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_credentials=True,
+    allow_credentials="*" not in allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
