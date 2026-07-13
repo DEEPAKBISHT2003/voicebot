@@ -83,6 +83,15 @@ BACKEND_URL = os.getenv("BACKEND_URL", f"http://{LOCAL_IP}:8000")
 parsed_url = urlparse(BACKEND_URL)
 BACKEND_PORT = parsed_url.port or (443 if parsed_url.scheme == "https" else 80)
 
+# ── Startup diagnostic logs (visible in docker logs / terminal) ───────────────
+print("=" * 60)
+print(f"[FRONTEND CONFIG] LOCAL_IP        : {LOCAL_IP}")
+print(f"[FRONTEND CONFIG] BACKEND_URL     : {BACKEND_URL}  (env={'set' if os.getenv('BACKEND_URL') else 'NOT SET — using fallback'})")
+print(f"[FRONTEND CONFIG] BACKEND_PORT    : {BACKEND_PORT}")
+print(f"[FRONTEND CONFIG] DEEPGRAM KEY    : {'✅ loaded' if os.getenv('DEEPGRAM_API_KEY') else '❌ MISSING'}")
+print(f"[FRONTEND CONFIG] GROQ KEY        : {'✅ loaded' if os.getenv('GROQ_API_KEY') else '❌ MISSING'}")
+print("=" * 60)
+
 
 
 # ──────────────────────────────────────────────────────────────────────────────
