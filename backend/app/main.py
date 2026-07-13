@@ -13,14 +13,17 @@ Settings.validate()
 
 app = FastAPI(title="AI Mock Interviewer Backend")
 
-# Setup CORS middleware to allow Streamlit frontend connections
+# Setup CORS middleware strictly from FRONTEND_URL environment variable (supports comma-separated list)
+allowed_origins = []
+if Settings.FRONTEND_URL:
+    for origin in Settings.FRONTEND_URL.split(","):
+        cleaned_origin = origin.strip()
+        if cleaned_origin and cleaned_origin not in allowed_origins:
+            allowed_origins.append(cleaned_origin)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        Settings.FRONTEND_URL,
-        "http://localhost:8502",
-        "http://127.0.0.1:8502"
-    ],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
