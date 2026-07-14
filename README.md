@@ -2,7 +2,7 @@
 
 An AI-powered, real-time voice screening mock interviewer designed to help candidates prepare for interviews. The platform dynamically parses candidate resumes, reads target Job Descriptions (JD), extracts candidate details, and conducts interactive technical and behavioral screening screens over local microphone and speaker hardware.
 
-Built with a modular, **SOLID design pattern** architecture, it features a fully decoupled FastAPI backend, a Streamlit frontend with a client-side playout jitter buffer, and a PostgreSQL database layer with Tortoise ORM.
+Built with a modular, **SOLID design pattern** architecture, it features a fully decoupled FastAPI backend, a React + Vite + TypeScript frontend with client-side playout buffering, and a PostgreSQL database layer with Tortoise ORM.
 
 ---
 
@@ -27,11 +27,11 @@ demo/
 │       ├── prompts/                      # LLM prompt templates
 │       ├── repositories/                 # PostgreSQL and JSON disk repository patterns
 │       └── pipeline/                     # Pipecat real-time audio orchestration pipeline
-└── frontend/                             # Streamlit UI Presentation
-    ├── Dockerfile                        # Frontend container recipe
-    ├── app.py                            # Streamlit layout controls and pages
-    └── ui/
-        └── styles.py                     # Custom HSL dark glassmorphism CSS theme
+└── frontend-new/                         # React SPA Frontend UI
+    ├── Dockerfile                        # Frontend Nginx container recipe
+    ├── nginx.conf                        # Nginx server & routing configuration
+    ├── package.json                      # Node packages configuration
+    └── src/                              # React application source code
 ```
 
 ---
@@ -44,7 +44,7 @@ demo/
 * **TTS (Text-to-Speech)**: Deepgram API WebSocket streams.
 * **Database**: PostgreSQL (v15+) with Tortoise ORM.
 * **Audio Playout Jitter Buffer**: Client-side (JS) 150ms buffer in the browser to ensure staccato-free playback.
-* **Web UI**: Streamlit Server (Python) & HTML5/JS Audio Capture.
+* **Web UI**: React, Vite, TypeScript, Tailwind CSS, TanStack Query, React Hook Form.
 
 ---
 
@@ -122,11 +122,12 @@ uv run uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 #### Step 4: Start the Frontend App
-In a separate terminal window, start the Streamlit client:
+In a separate terminal window, start the React development server:
 ```bash
-uv run streamlit run frontend/app.py --server.port 8502
+cd frontend-new
+npm run dev
 ```
-Now, open your browser and navigate to **[http://localhost:8502](http://localhost:8502)**.
+Now, open your browser and navigate to **[http://localhost:3000](http://localhost:3000)**.
 
 ---
 

@@ -72,3 +72,11 @@ scratch/
 .antigravityignore
 .gemini/
 
+# Node modules
+node_modules/
+frontend-new/node_modules/
+frontend-new/dist/
+
+VAD.md
+backend_api_docs.md
+

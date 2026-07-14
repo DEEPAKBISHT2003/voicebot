@@ -1,4 +1,3 @@
-streamlit
 pipecat-ai[local,groq,deepgram]
 pyaudio
 pypdf
