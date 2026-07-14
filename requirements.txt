@@ -7,3 +7,4 @@ fastapi
 httpx
 tortoise-orm
 asyncpg
+uvicorn
