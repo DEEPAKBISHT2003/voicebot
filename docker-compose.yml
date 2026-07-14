@@ -35,6 +35,8 @@ services:
     build:
       context: ./frontend-new
       dockerfile: Dockerfile
+      args:
+        - VITE_BACKEND_URL=${BACKEND_URL}
     container_name: voicebot-frontend
     restart: always
     depends_on:

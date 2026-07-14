@@ -6,7 +6,7 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig(({ mode }) => {
   // Load environment variables from parent directory (root workspace folder)
   const env = loadEnv(mode, '../', '')
-  const backendUrl = env.BACKEND_URL || 'http://localhost:8000'
+  const backendUrl = env.BACKEND_URL || env.VITE_BACKEND_URL || 'http://localhost:8000'
   const frontendUrl = env.FRONTEND_URL || 'http://localhost:3000'
 
   // Extract port from FRONTEND_URL if it's a valid web URL (e.g. not "*")
