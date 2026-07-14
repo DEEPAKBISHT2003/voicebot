@@ -40,3 +40,15 @@ export const getResumeUrl = (sessionId: string): string => {
   const base = import.meta.env.VITE_API_URL || '/api';
   return `${base}/interviews/${sessionId}/resume`;
 };
+
+export const parseResumeFile = async (file: File): Promise<string> => {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const res = await api.post<{ text: string }>('/interviews/parse-resume', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
+  });
+  return res.data.text;
+};

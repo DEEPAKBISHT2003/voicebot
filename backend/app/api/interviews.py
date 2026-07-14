@@ -1,8 +1,9 @@
 import os
 import datetime
 from typing import Dict, Any
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends, UploadFile, File
 from fastapi.responses import FileResponse
+from backend.app.parsers.factory import DocumentParserFactory
 from pydantic import BaseModel
 from loguru import logger
 
@@ -20,6 +21,20 @@ from backend.app.api.deps import (
 )
 
 router = APIRouter(prefix="/api")
+
+@router.post("/interviews/parse-resume")
+async def parse_resume(file: UploadFile = File(...)):
+    try:
+        parser = DocumentParserFactory.get_parser(file.filename)
+        file_bytes = await file.read()
+        text = parser.parse(file_bytes, file.filename)
+        return {"text": text, "filename": file.filename}
+    except ValueError as ve:
+        logger.error(f"Unsupported file format for parsing: {ve}")
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Failed to parse resume: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to parse resume: {e}")
 
 class StartSessionRequest(BaseModel):
     jd: str

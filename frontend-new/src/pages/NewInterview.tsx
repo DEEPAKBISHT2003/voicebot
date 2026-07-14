@@ -7,8 +7,7 @@ import { Upload, FileText, AlertCircle, Sparkles } from 'lucide-react';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { TextArea } from '../components/TextArea';
-import { startInterview } from '../api/interview';
-import { extractTextFromPDF } from '../utils/pdf';
+import { startInterview, parseResumeFile } from '../api/interview';
 
 const schema = zod.object({
   jd: zod.string().min(10, 'Job description must be at least 10 characters.'),
@@ -22,6 +21,7 @@ export const NewInterview: React.FC = () => {
   const navigate = useNavigate();
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isParsing, setIsParsing] = useState(false);
   
   // File upload state
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
@@ -41,49 +41,41 @@ export const NewInterview: React.FC = () => {
     },
   });
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     setUploadedFile(file);
     setErrorMsg(null);
+    setIsParsing(true);
 
-    // Convert file to base64
+    // Convert file to base64 for session submission
     const reader = new FileReader();
     reader.onload = (event) => {
       const result = event.target?.result as string;
-      // Get only the base64 payload part (remove headers like "data:application/pdf;base64,")
       const base64Data = result.split(',')[1] || result;
       setFileBase64(base64Data);
-
-      // If it's a text file, prefill the resume text area automatically
-      if (file.type === 'text/plain' || file.name.endsWith('.txt')) {
-        const textReader = new FileReader();
-        textReader.onload = (tEvent) => {
-          const text = tEvent.target?.result as string;
-          setValue('resume', text);
-        };
-        textReader.readAsText(file);
-      } else if (file.type === 'application/pdf') {
-        const arrayBufferReader = new FileReader();
-        arrayBufferReader.onload = async (abEvent) => {
-          try {
-            const arrayBuffer = abEvent.target?.result as ArrayBuffer;
-            const extractedText = await extractTextFromPDF(arrayBuffer);
-            if (!extractedText || extractedText.trim().length === 0) {
-              setErrorMsg('We detected zero text in this PDF (it might be a scanned image). Please manually paste or type your resume details in the text box below.');
-            } else {
-              setValue('resume', extractedText);
-            }
-          } catch (err) {
-            console.error('Failed to parse PDF text:', err);
-            setErrorMsg('Failed to automatically extract PDF text. Please copy/paste the plain text manually below.');
-          }
-        };
-        arrayBufferReader.readAsArrayBuffer(file);
-      }
     };
     reader.readAsDataURL(file);
+
+    try {
+      // Call backend parser endpoint directly
+      const extractedText = await parseResumeFile(file);
+      if (!extractedText || extractedText.trim().length === 0) {
+        setErrorMsg('We detected zero text in this file. Please manually paste or type your resume details in the text box below.');
+      } else {
+        setValue('resume', extractedText);
+      }
+    } catch (err: any) {
+      console.error('Failed to parse resume file:', err);
+      setErrorMsg(
+        err.response?.data?.detail || 
+        err.message || 
+        'Failed to automatically parse the file. Please manually paste or type your resume details in the text box below.'
+      );
+    } finally {
+      setIsParsing(false);
+    }
   };
 
   const onSubmit = async (data: FormData) => {
@@ -150,18 +142,28 @@ export const NewInterview: React.FC = () => {
                 accept=".txt,.pdf"
                 className="absolute inset-0 opacity-0 cursor-pointer"
                 onChange={handleFileUpload}
+                disabled={isParsing || isSubmitting}
               />
-              <Upload className="h-8 w-8 text-muted-gray group-hover:text-primary mb-2 transition-colors" />
-              {uploadedFile ? (
-                <div className="flex items-center gap-2 text-sm text-primary font-medium">
-                  <FileText className="h-4 w-4 text-primary" />
-                  {uploadedFile.name} ({(uploadedFile.size / 1024).toFixed(1)} KB)
+              {isParsing ? (
+                <div className="text-center">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-2" />
+                  <p className="text-sm text-primary font-medium">Parsing resume file...</p>
                 </div>
               ) : (
-                <div className="text-center">
-                  <p className="text-sm text-primary font-medium">Click or drag PDF or TXT to upload</p>
-                  <p className="text-xs text-muted-gray mt-1">Supports PDF, TXT up to 10MB</p>
-                </div>
+                <>
+                  <Upload className="h-8 w-8 text-muted-gray group-hover:text-primary mb-2 transition-colors" />
+                  {uploadedFile ? (
+                    <div className="flex items-center gap-2 text-sm text-primary font-medium">
+                      <FileText className="h-4 w-4 text-primary" />
+                      {uploadedFile.name} ({(uploadedFile.size / 1024).toFixed(1)} KB)
+                    </div>
+                  ) : (
+                    <div className="text-center">
+                      <p className="text-sm text-primary font-medium">Click or drag PDF or TXT to upload</p>
+                      <p className="text-xs text-muted-gray mt-1">Supports PDF, TXT up to 10MB</p>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </div>
@@ -191,7 +193,7 @@ export const NewInterview: React.FC = () => {
             type="button"
             variant="outline"
             onClick={() => navigate('/')}
-            disabled={isSubmitting}
+            disabled={isSubmitting || isParsing}
           >
             Cancel
           </Button>
@@ -199,6 +201,7 @@ export const NewInterview: React.FC = () => {
             type="submit"
             variant="primary"
             isLoading={isSubmitting}
+            disabled={isParsing}
           >
             <Sparkles className="h-4 w-4 mr-2" />
             Initialize Interview
