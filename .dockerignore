@@ -12,3 +12,5 @@ interviews/
 .git/
 .gemini/
 scratch/
+frontend-new/node_modules/
+frontend-new/dist/

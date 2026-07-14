@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import {
   Search,
-  PlusCircle,
   FileAudio,
   FileText,
   Calendar,
@@ -81,10 +80,6 @@ export const InterviewsList: React.FC = () => {
             Access previous mock session logs, audio recordings, and transcripts.
           </p>
         </div>
-        <Button variant="primary" onClick={() => navigate('/interviews/new')}>
-          <PlusCircle className="h-4 w-4 mr-2" />
-          New Mock Session
-        </Button>
       </div>
 
       {/* Filter and search bar */}
@@ -162,23 +157,14 @@ export const InterviewsList: React.FC = () => {
                       )}
                     </td>
                     <td className="px-6 py-4 text-right">
-                      <div className="inline-flex gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setSelectedSession(session)}
-                        >
-                          <Eye className="h-3.5 w-3.5 mr-1" />
-                          View
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => navigate(`/interviews/${session.session_id}`)}
-                        >
-                          Join/Retry
-                        </Button>
-                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSelectedSession(session)}
+                      >
+                        <Eye className="h-3.5 w-3.5 mr-1" />
+                        View
+                      </Button>
                     </td>
                   </tr>
                 );
@@ -231,6 +217,42 @@ export const InterviewsList: React.FC = () => {
               <div>
                 <span className="block font-semibold text-primary">Conducted on</span>
                 <span className="text-muted-gray">{formatDate(selectedSession.timestamp)}</span>
+              </div>
+            </div>
+
+            {/* Audio Playback & Resume View */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 border-b border-border-gray pb-4">
+              {/* Audio Player */}
+              <div>
+                <span className="block font-semibold text-primary text-sm mb-2">
+                  <FileAudio className="inline h-3.5 w-3.5 mr-1.5 -mt-0.5" />
+                  Interview Recording
+                </span>
+                <audio
+                  controls
+                  preload="none"
+                  src={getRecordingUrl(selectedSession.session_id)}
+                  className="w-full h-10 rounded-lg"
+                >
+                  Your browser does not support the audio element.
+                </audio>
+              </div>
+
+              {/* View Resume */}
+              <div>
+                <span className="block font-semibold text-primary text-sm mb-2">
+                  <FileText className="inline h-3.5 w-3.5 mr-1.5 -mt-0.5" />
+                  Candidate Resume
+                </span>
+                <a
+                  href={getResumeUrl(selectedSession.session_id)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center justify-center font-medium rounded-lg transition-colors border border-border-gray bg-white text-primary hover:bg-secondary px-4 py-2 text-sm w-full"
+                >
+                  <Eye className="h-3.5 w-3.5 mr-1.5" />
+                  View Resume
+                </a>
               </div>
             </div>
 

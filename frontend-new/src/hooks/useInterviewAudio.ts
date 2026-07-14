@@ -5,7 +5,9 @@ export type AudioConnectionStatus = 'disconnected' | 'connecting' | 'connected' 
 export const useInterviewAudio = (sessionId: string | null) => {
   const [status, setStatus] = useState<AudioConnectionStatus>('disconnected');
   const [error, setError] = useState<string | null>(null);
-  const [micVolume, setMicVolume] = useState<number>(0);
+
+  // Use a ref instead of state for mic volume to avoid triggering ~24 re-renders/sec
+  const micVolumeRef = useRef<number>(0);
 
   const socketRef = useRef<WebSocket | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -20,21 +22,27 @@ export const useInterviewAudio = (sessionId: string | null) => {
   const getWebSocketUrl = (sid: string): string => {
     const host = window.location.host;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    
-    // Check if VITE_API_URL is configured
-    const apiEnvUrl = import.meta.env.VITE_API_URL;
-    if (apiEnvUrl) {
-      const parsedUrl = new URL(apiEnvUrl);
-      const wsProtocol = parsedUrl.protocol === 'https:' ? 'wss:' : 'ws:';
-      return `${wsProtocol}//${parsedUrl.host}/api/ws/interview/${sid}`;
+
+    // Check all possible environment config keys
+    const rawEnvUrl = import.meta.env.VITE_API_URL || 
+                      import.meta.env.VITE_BACKEND_URL || 
+                      (process.env as any).BACKEND_URL;
+
+    if (rawEnvUrl) {
+      try {
+        const parsedUrl = new URL(rawEnvUrl);
+        const wsProtocol = parsedUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+        return `${wsProtocol}//${parsedUrl.host}/api/ws/interview/${sid}`;
+      } catch (e) {
+        console.warn('[AudioWS] Failed to parse env backend URL, using relative path fallback', e);
+      }
     }
-    
-    // In local development, the vite server proxies /api, but WebSockets need direct mapping
-    // or standard proxy support. We can target port 8008 directly or use standard protocol conversion.
+
+    // In local development fallback if env keys aren't set
     if (host.includes('localhost') || host.includes('127.0.0.1')) {
       return `ws://localhost:8000/api/ws/interview/${sid}`;
     }
-    
+
     return `${protocol}//${host}/api/ws/interview/${sid}`;
   };
 
@@ -89,7 +97,7 @@ export const useInterviewAudio = (sessionId: string | null) => {
               sum += inputData[i] * inputData[i];
             }
             const rms = Math.sqrt(sum / inputData.length);
-            setMicVolume(rms);
+            micVolumeRef.current = rms;
 
             // Downsample buffer to 16,000Hz PCM and convert to 16-bit Int16
             const pcmBuffer = downsampleBuffer(inputData, audioCtx.sampleRate, 16000);
@@ -166,7 +174,7 @@ export const useInterviewAudio = (sessionId: string | null) => {
     }
     cleanupAudio();
     setStatus('disconnected');
-    setMicVolume(0);
+    micVolumeRef.current = 0;
   };
 
   const cleanupAudio = () => {
@@ -230,7 +238,7 @@ export const useInterviewAudio = (sessionId: string | null) => {
   return {
     status,
     error,
-    micVolume,
+    micVolumeRef,
     startConnection,
     stopConnection,
   };

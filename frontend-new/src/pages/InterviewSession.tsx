@@ -13,6 +13,11 @@ export const InterviewSession: React.FC = () => {
   const navigate = useNavigate();
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
 
+  // Refs for direct DOM manipulation of audio visualizer (bypasses React re-renders)
+  const pulseRingRef = useRef<HTMLDivElement | null>(null);
+  const barRefs = useRef<(HTMLDivElement | null)[]>([]);
+  const animFrameRef = useRef<number>(0);
+
   const [isGracefullyStopped, setIsGracefullyStopped] = useState(false);
 
   // Poll status from REST endpoint to retrieve live transcripts
@@ -31,7 +36,7 @@ export const InterviewSession: React.FC = () => {
   const {
     status: audioStatus,
     error: audioError,
-    micVolume,
+    micVolumeRef,
     startConnection,
     stopConnection,
   } = useInterviewAudio(id || null);
@@ -45,8 +50,47 @@ export const InterviewSession: React.FC = () => {
   useEffect(() => {
     return () => {
       stopConnection();
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     };
   }, []);
+
+  // requestAnimationFrame loop to update visualizer DOM directly from micVolumeRef
+  useEffect(() => {
+    if (audioStatus !== 'connected') {
+      // Reset visuals when disconnected
+      if (pulseRingRef.current) pulseRingRef.current.style.transform = 'scale(1)';
+      barRefs.current.forEach((bar) => {
+        if (bar) bar.style.height = '10%';
+      });
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+      return;
+    }
+
+    const animate = () => {
+      const vol = micVolumeRef.current;
+
+      // Update pulse ring scale
+      if (pulseRingRef.current) {
+        pulseRingRef.current.style.transform = `scale(${1 + vol * 4})`;
+      }
+
+      // Update visualizer bars
+      barRefs.current.forEach((bar, i) => {
+        if (bar) {
+          const scale = Math.max(0.1, vol * (1 + (i % 3) * 2));
+          bar.style.height = `${Math.min(100, scale * 100)}%`;
+        }
+      });
+
+      animFrameRef.current = requestAnimationFrame(animate);
+    };
+
+    animFrameRef.current = requestAnimationFrame(animate);
+
+    return () => {
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    };
+  }, [audioStatus]);
 
   const handleStartStream = () => {
     startConnection();
@@ -109,11 +153,12 @@ export const InterviewSession: React.FC = () => {
             {/* Visual audio indicator */}
             <div className="relative flex items-center justify-center">
               <div
+                ref={pulseRingRef}
                 className="absolute rounded-full bg-primary/5 transition-transform duration-75"
                 style={{
                   width: '120px',
                   height: '120px',
-                  transform: `scale(${1 + micVolume * 4})`,
+                  transform: 'scale(1)',
                 }}
               />
               <div
@@ -134,16 +179,14 @@ export const InterviewSession: React.FC = () => {
             {/* Dynamic visual indicator bars */}
             {isConnected && (
               <div className="flex gap-1.5 justify-center h-6 items-end">
-                {[...Array(6)].map((_, i) => {
-                  const scale = Math.max(0.1, micVolume * (1 + (i % 3) * 2));
-                  return (
-                    <div
-                      key={i}
-                      className="w-1 bg-primary rounded-full transition-all duration-75"
-                      style={{ height: `${Math.min(100, scale * 100)}%` }}
-                    />
-                  );
-                })}
+                {[...Array(6)].map((_, i) => (
+                  <div
+                    key={i}
+                    ref={(el) => { barRefs.current[i] = el; }}
+                    className="w-1 bg-primary rounded-full transition-all duration-75"
+                    style={{ height: '10%' }}
+                  />
+                ))}
               </div>
             )}
 

@@ -27,8 +27,7 @@ class Settings:
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite://db.sqlite3")
     
     # Dynamic URLs based on local IP configuration
-    LOCAL_IP: str = get_local_ip()
-    FRONTEND_URL: str = os.getenv("FRONTEND_URL", f"http://{LOCAL_IP}:8502")
+    CORS_ALLOWED_ORIGINS: str = os.getenv("CORS_ALLOWED_ORIGINS", os.getenv("FRONTEND_URL", "*"))
 
     @classmethod
     def validate(cls) -> None:
