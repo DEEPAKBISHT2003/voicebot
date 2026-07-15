@@ -19,8 +19,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy backend application package
+# Copy backend application packages
+COPY backend/__init__.py /app/backend/__init__.py
 COPY backend/app /app/backend/app
+COPY backend/copilot /app/backend/copilot
 
 # Expose FastAPI server port
 EXPOSE 8000

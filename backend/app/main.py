@@ -5,6 +5,7 @@ from tortoise.contrib.fastapi import register_tortoise
 
 from backend.app.core.config import Settings
 from backend.app.repositories.postgres_repository import PostgresInterviewRepository
+from backend.copilot.services.repository import CopilotRepository
 from backend.app.api.interviews import router as interviews_router
 from backend.copilot.api.router import router as copilot_api_router
 from backend.copilot.websocket.handler import router as copilot_ws_router
@@ -29,6 +30,8 @@ app.add_middleware(
 # Initialize and attach state to app.state
 app.state.repo = PostgresInterviewRepository()
 app.state.active_sessions = {}
+app.state.copilot_repo = CopilotRepository()
+app.state.copilot_sessions = {}
 
 # Include modular API routers
 app.include_router(interviews_router)
@@ -39,7 +42,7 @@ app.include_router(copilot_ws_router)
 register_tortoise(
     app,
     db_url=Settings.DATABASE_URL,
-    modules={"models": ["backend.app.models.interview"]},
+    modules={"models": ["backend.app.models.interview", "backend.copilot.models.copilot"]},
     generate_schemas=True,
     add_exception_handlers=True,
 )
