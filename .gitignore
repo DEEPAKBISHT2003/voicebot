@@ -71,19 +71,24 @@ tmp/
 scratch/
 .antigravityignore
 .gemini/
+.eslintcache
+yarn-error.log
+pnpm-debug.log
 
-# Node modules & frontend builds
+
+# Node modules
 node_modules/
 frontend-new/node_modules/
 frontend-new/dist/
+frontend-new/.env
 frontend-new/.env.local
 frontend-new/.env.development.local
 frontend-new/.env.test.local
 frontend-new/.env.production.local
-frontend-new/.env
 frontend-new/.env.*
 !frontend-new/.env.example
 
 VAD.md
 backend_api_docs.md
+
 

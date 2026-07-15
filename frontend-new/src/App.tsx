@@ -4,6 +4,8 @@ import { Layout } from './layouts/Layout';
 import { InterviewsList } from './pages/InterviewsList';
 import { NewInterview } from './pages/NewInterview';
 import { InterviewSession } from './pages/InterviewSession';
+import { NewCopilot } from './copilot/pages/NewCopilot';
+import { CopilotSession } from './copilot/pages/CopilotSession';
 
 // Instantiate Query Client for server state caching
 const queryClient = new QueryClient({
@@ -24,6 +26,8 @@ function App() {
             <Route path="/" element={<InterviewsList />} />
             <Route path="/interviews/new" element={<NewInterview />} />
             <Route path="/interviews/:id" element={<InterviewSession />} />
+            <Route path="/copilots/new" element={<NewCopilot />} />
+            <Route path="/copilots/:id" element={<CopilotSession />} />
           </Routes>
         </Layout>
       </BrowserRouter>

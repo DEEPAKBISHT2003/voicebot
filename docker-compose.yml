@@ -21,7 +21,7 @@ services:
     depends_on:
       - db
     ports:
-      - "${BACKEND_PORT:-8000}:${BACKEND_PORT:-8000}"
+      - "8000:8000"
     volumes:
       - ./interviews:/app/interviews
     environment:
@@ -30,14 +30,11 @@ services:
       - GROQ_API_KEY=${GROQ_API_KEY}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*}
       - BACKEND_URL=${BACKEND_URL:-http://localhost:8000}
-      - PORT=${BACKEND_PORT:-8000}
 
   frontend:
     build:
       context: ./frontend-new
       dockerfile: Dockerfile
-      args:
-        - VITE_BACKEND_URL=${BACKEND_URL}
     container_name: voicebot-frontend
     restart: always
     depends_on:

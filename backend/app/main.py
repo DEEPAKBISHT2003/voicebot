@@ -6,6 +6,8 @@ from tortoise.contrib.fastapi import register_tortoise
 from backend.app.core.config import Settings
 from backend.app.repositories.postgres_repository import PostgresInterviewRepository
 from backend.app.api.interviews import router as interviews_router
+from backend.copilot.api.router import router as copilot_api_router
+from backend.copilot.websocket.handler import router as copilot_ws_router
 
 # Load dotenv
 load_dotenv(override=True)
@@ -30,6 +32,8 @@ app.state.active_sessions = {}
 
 # Include modular API routers
 app.include_router(interviews_router)
+app.include_router(copilot_api_router)
+app.include_router(copilot_ws_router)
 
 # Register Tortoise-ORM
 register_tortoise(

@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, PlusCircle, Mic } from 'lucide-react';
+import { LayoutDashboard, PlusCircle, Mic, Sparkles } from 'lucide-react';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -12,6 +12,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const navigation = [
     { name: 'Dashboard', href: '/', icon: LayoutDashboard },
     { name: 'New Interview', href: '/interviews/new', icon: PlusCircle },
+    { name: 'New Copilot', href: '/copilots/new', icon: Sparkles },
   ];
 
   return (
@@ -34,11 +35,10 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
               <Link
                 key={item.name}
                 to={item.href}
-                className={`flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors ${
-                  isActive
+                className={`flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-colors ${isActive
                     ? 'bg-primary text-white'
                     : 'text-muted-gray hover:bg-border-gray/30 hover:text-primary'
-                }`}
+                  }`}
               >
                 <item.icon className="h-4 w-4 shrink-0" />
                 {item.name}
@@ -53,7 +53,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
         {/* Header */}
         <header className="h-16 border-b border-border-gray px-8 flex items-center justify-between">
           <div className="text-xs font-semibold text-muted-gray uppercase tracking-wider">
-            {location.pathname === '/' ? 'Overview' : location.pathname.includes('/new') ? 'Session Setup' : 'Interview Room'}
+            {location.pathname === '/' ? 'Overview' : location.pathname.includes('/new') ? 'Session Setup' : location.pathname.includes('/copilots/') ? 'Copilot Room' : 'Interview Room'}
           </div>
         </header>
 
