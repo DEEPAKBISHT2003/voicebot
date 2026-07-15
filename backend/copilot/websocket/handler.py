@@ -79,9 +79,16 @@ async def websocket_endpoint(
                     text = payload.get("text")
                     if speaker and text:
                         engine = sess["engine"]
-                        await engine.add_message(speaker, text)
+                        last_msg = await engine.add_message(speaker, text)
                         sess["transcript"] = engine.get_transcript()
-                        await websocket.send_json({"status": "received", "speaker": speaker, "text": text})
+                        await websocket.send_json({
+                            "type": "copilot_update",
+                            "session_id": session_id,
+                            "last_message": last_msg,
+                            "transcript": engine.get_transcript(),
+                            "intelligence": engine.get_intelligence(),
+                            "assistance": engine.get_assistance()
+                        })
                 except Exception as e:
                     logger.error(f"Error parsing websocket text payload: {e}")
             elif "bytes" in msg:

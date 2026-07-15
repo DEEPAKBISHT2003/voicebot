@@ -4,6 +4,7 @@ from loguru import logger
 from backend.copilot.services.repository import CopilotRepository
 from backend.app.services.evaluation import CandidateEvaluationService
 from backend.copilot.engine.intelligence import ConversationIntelligenceEngine
+from backend.copilot.engine.copilot import AICopilotEngine
 
 class CopilotSessionEngine:
     """Manages the transcript state and incremental memory storage for an active Copilot Session."""
@@ -23,6 +24,8 @@ class CopilotSessionEngine:
         self.evaluation_service = CandidateEvaluationService()
         self.intelligence_engine = ConversationIntelligenceEngine()
         self.intelligence: Dict[str, Any] = self.intelligence_engine._get_empty_state()
+        self.copilot_assistant = AICopilotEngine()
+        self.assistance: Dict[str, Any] = self.copilot_assistant._get_empty_state()
 
     async def add_message(self, speaker: str, text: str) -> Dict[str, Any]:
         """
@@ -65,6 +68,17 @@ class CopilotSessionEngine:
         except Exception as e:
             logger.error(f"Failed to update intelligence state for session {self.session_id}: {e}")
 
+        # Generate copilot assistant recommendations after every message
+        try:
+            self.assistance = await self.copilot_assistant.generate_assistance(
+                transcript=self.transcript,
+                jd=self.jd,
+                resume=self.resume
+            )
+            logger.info(f"Copilot suggestions updated for session {self.session_id}")
+        except Exception as e:
+            logger.error(f"Failed to update copilot suggestions for session {self.session_id}: {e}")
+
         # Persist incrementally to database and local storage files
         try:
             await self.repo.save_session(self.session_id, {"transcript": self.transcript})
@@ -81,4 +95,8 @@ class CopilotSessionEngine:
     def get_intelligence(self) -> Dict[str, Any]:
         """Returns the current conversation intelligence state."""
         return self.intelligence
+
+    def get_assistance(self) -> Dict[str, Any]:
+        """Returns the current conversation copilot suggestions state."""
+        return self.assistance
 
