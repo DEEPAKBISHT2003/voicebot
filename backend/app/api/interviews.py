@@ -1,7 +1,7 @@
 import os
 import datetime
 from typing import Dict, Any
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends, UploadFile, File
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends, UploadFile, File, Request
 from fastapi.responses import FileResponse
 from backend.app.parsers.factory import DocumentParserFactory
 from pydantic import BaseModel
@@ -46,6 +46,7 @@ class StartSessionRequest(BaseModel):
 @router.post("/interviews/start")
 async def start_interview(
     req: StartSessionRequest,
+    request: Request,
     repo=Depends(get_repo),
     active_sessions=Depends(get_active_sessions)
 ):
@@ -71,6 +72,39 @@ async def start_interview(
         "is_active": True,
         "worker": None
     }
+
+    # Initialize the corresponding Copilot Session in background
+    try:
+        from backend.copilot.models.copilot import CopilotSessionModel
+        from backend.copilot.engine.session import CopilotSessionEngine
+        
+        copilot_repo = request.app.state.copilot_repo
+        copilot_sessions = request.app.state.copilot_sessions
+        
+        # Pre-initialize copilot session model in database
+        await CopilotSessionModel.create(
+            session_id=session_id,
+            jd=req.jd,
+            resume=req.resume,
+            custom_prompt=req.custom_prompt or "",
+            transcript=[]
+        )
+        
+        engine = CopilotSessionEngine(session_id, copilot_repo, [], jd=req.jd, resume=req.resume)
+        copilot_sessions[session_id] = {
+            "engine": engine,
+            "status": "Listening for audio stream...",
+            "transcript": engine.get_transcript(),
+            "timestamp": datetime.datetime.now().isoformat(),
+            "jd": req.jd,
+            "resume": req.resume,
+            "custom_prompt": req.custom_prompt,
+            "is_active": True,
+            "websocket": None
+        }
+        logger.info(f"[CopilotObserver] Pre-initialized Copilot engine for interview: {session_id}")
+    except Exception as e:
+        logger.warning(f"[CopilotObserver] Could not pre-initialize copilot background engine: {e}")
     
     return {"session_id": session_id, "status": "Connecting to audio stream..."}
 
@@ -122,6 +156,33 @@ async def websocket_endpoint(
                         "transcript": active_sessions[sid]["transcript"]
                     }
                 )
+                
+                # Dynamic AI Copilot Observer Pipeline Integration
+                try:
+                    copilot_sessions = getattr(websocket.app.state, "copilot_sessions", None)
+                    if copilot_sessions and sid in copilot_sessions:
+                        copilot_sess = copilot_sessions[sid]
+                        engine = copilot_sess.get("engine")
+                        if engine:
+                            speaker = "Candidate" if entry.get("role") == "user" else "Interviewer"
+                            logger.info(f"[CopilotObserver] Forwarding segment to Copilot: {entry.get('text')}")
+                            
+                            # Add statement to active Copilot engine memory and run evaluations
+                            last_msg = await engine.add_message(speaker, entry.get("text", ""))
+                            
+                            # Broadcast real-time suggestions updates to dashboard WS client
+                            copilot_ws = copilot_sess.get("websocket")
+                            if copilot_ws:
+                                await copilot_ws.send_json({
+                                    "type": "copilot_update",
+                                    "session_id": sid,
+                                    "last_message": last_msg,
+                                    "transcript": engine.get_transcript(),
+                                    "intelligence": engine.get_intelligence(),
+                                    "assistance": engine.get_assistance()
+                                })
+                except Exception as e:
+                    logger.error(f"[CopilotObserver] Failed to forward segment to Copilot engine: {e}")
         return callback
         
     pipeline_builder = LocalPipecatPipelineBuilder(Settings.DEEPGRAM_API_KEY, Settings.GROQ_API_KEY)

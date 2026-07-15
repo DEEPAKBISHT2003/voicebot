@@ -72,6 +72,9 @@ async def websocket_endpoint(
     try:
         while True:
             msg = await websocket.receive()
+            if msg.get("type") == "websocket.disconnect":
+                raise WebSocketDisconnect(code=msg.get("code", 1000))
+                
             if "text" in msg:
                 try:
                     payload = json.loads(msg["text"])

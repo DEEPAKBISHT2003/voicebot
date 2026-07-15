@@ -5,7 +5,6 @@ import {
   MessageSquare, 
   Power, 
   ArrowLeft, 
-  Send, 
   User, 
   Activity, 
   BookOpen, 
@@ -29,12 +28,9 @@ export const CopilotSession: React.FC = () => {
     intelligence, 
     assistance, 
     startConnection, 
-    stopConnection, 
-    sendMessage 
+    stopConnection
   } = useCopilotAudio(id || null);
 
-  const [inputVal, setInputVal] = useState('');
-  const [activeSpeaker, setActiveSpeaker] = useState<'Candidate' | 'Interviewer'>('Candidate');
   const [expandedMessageIndex, setExpandedMessageIndex] = useState<number | null>(null);
 
   const handleEndSession = async () => {
@@ -47,13 +43,6 @@ export const CopilotSession: React.FC = () => {
       }
     }
     navigate('/');
-  };
-
-  const handleSend = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!inputVal.trim()) return;
-    sendMessage(activeSpeaker, inputVal);
-    setInputVal('');
   };
 
   const toggleMessageExpand = (index: number) => {
@@ -272,49 +261,6 @@ export const CopilotSession: React.FC = () => {
             )}
           </div>
 
-          {/* Form input fields */}
-          <form onSubmit={handleSend} className="p-4 border-t border-border-gray bg-white rounded-b-xl space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold text-muted-gray uppercase">Feed Speaker Statement:</span>
-              <div className="flex bg-secondary p-0.5 rounded-lg border border-border-gray">
-                <button
-                  type="button"
-                  onClick={() => setActiveSpeaker('Candidate')}
-                  className={`px-2.5 py-1 text-[10px] font-bold rounded-md transition-all ${
-                    activeSpeaker === 'Candidate' ? 'bg-primary text-white shadow-sm' : 'text-muted-gray hover:text-primary'
-                  }`}
-                >
-                  Candidate
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setActiveSpeaker('Interviewer')}
-                  className={`px-2.5 py-1 text-[10px] font-bold rounded-md transition-all ${
-                    activeSpeaker === 'Interviewer' ? 'bg-primary text-white shadow-sm' : 'text-muted-gray hover:text-primary'
-                  }`}
-                >
-                  Interviewer
-                </button>
-              </div>
-            </div>
-
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={inputVal}
-                onChange={(e) => setInputVal(e.target.value)}
-                placeholder={`Type ${activeSpeaker.toLowerCase()} statement...`}
-                className="flex-1 px-3 py-2 bg-secondary border border-border-gray rounded-lg text-xs font-semibold focus:outline-none focus:border-primary text-primary placeholder:text-muted-gray"
-              />
-              <button
-                type="submit"
-                disabled={status !== 'connected' || !inputVal.trim()}
-                className="p-2 bg-primary hover:bg-primary/95 text-white rounded-lg disabled:opacity-50 transition-colors shadow-sm shrink-0"
-              >
-                <Send className="h-4 w-4" />
-              </button>
-            </div>
-          </form>
         </div>
 
         {/* Middle Column: Live Suggestions, Scenario Questions & Notes */}

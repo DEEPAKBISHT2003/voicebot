@@ -52,7 +52,20 @@ class CopilotRepository:
         sid_uuid = uuid.UUID(session_id)
         session = await CopilotSessionModel.get_or_none(session_id=sid_uuid)
         if not session:
-            raise FileNotFoundError(f"Copilot record not found for session: {session_id}")
+            # Fallback check on interview_sessions database
+            from backend.app.models.interview import InterviewSessionModel
+            interview = await InterviewSessionModel.get_or_none(session_id=sid_uuid)
+            if not interview:
+                raise FileNotFoundError(f"Copilot record not found for session: {session_id}")
+            # Automatically initialize matching CopilotSessionModel record
+            session = await CopilotSessionModel.create(
+                session_id=interview.session_id,
+                timestamp=interview.timestamp,
+                jd=interview.jd,
+                resume=interview.resume,
+                custom_prompt=interview.custom_prompt or "",
+                transcript=interview.transcript
+            )
         return {
             "session_id": str(session.session_id),
             "timestamp": session.timestamp.isoformat() if session.timestamp else None,
