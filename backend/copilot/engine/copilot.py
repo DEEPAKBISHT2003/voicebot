@@ -38,6 +38,39 @@ class AICopilotEngine:
 
         conversation_text = "\n".join(conversation_log)
 
+        # Decision engine layer: Determine classification of the latest candidate evaluation
+        candidate_evals = [msg for msg in transcript if msg.get("speaker") == "Candidate" and "evaluation" in msg]
+        decision = None
+        rating = None
+        if candidate_evals:
+            latest_cand = candidate_evals[-1]
+            rating = latest_cand.get("evaluation", {}).get("technical_accuracy", {}).get("rating")
+            if rating is not None:
+                if rating >= 80:
+                    decision = "STRONG"
+                elif rating >= 50:
+                    decision = "PARTIAL"
+                else:
+                    decision = "WEAK"
+
+        decision_prompt = ""
+        if decision == "STRONG":
+            decision_prompt = f"""
+CRITICAL DECISION RULE (Strong Answer detected, rating: {rating}%):
+The candidate provided a Strong Answer. Do NOT generate any follow-up questions in "suggested_follow_up_questions".
+Instead, you must set "suggested_follow_up_questions" to exactly: ["Move to the next topic."].
+"""
+        elif decision == "PARTIAL":
+            decision_prompt = f"""
+CRITICAL DECISION RULE (Partial Answer detected, rating: {rating}%):
+The candidate provided a Partial Answer. You must generate exactly 2-3 follow-up questions in "suggested_follow_up_questions" that drill down on their claims or missing aspects.
+"""
+        elif decision == "WEAK":
+            decision_prompt = f"""
+CRITICAL DECISION RULE (Weak Answer detected, rating: {rating}%):
+The candidate provided a Weak Answer. You must generate probing questions in "suggested_follow_up_questions" to verify their basic understanding or uncover critical gaps.
+"""
+
         prompt = f"""
 You are an expert technical co-pilot. Your job is to assist the INTERVIEWER in real-time. You must NEVER speak to the candidate directly.
 
@@ -51,9 +84,11 @@ Input:
 - Conversation Log and Evaluations So Far:
 {conversation_text}
 
+{decision_prompt}
+
 Provide suggestions and structured guidance for the interviewer. Output a structured JSON object with EXACTLY the following fields:
 
-1. "suggested_follow_up_questions": array of strings - 2-3 deep follow-up questions that drill down on the candidate's last response or technical claims.
+1. "suggested_follow_up_questions": array of strings - follow-up questions matching the critical decision rule.
 
 2. "suggested_practical_questions": array of strings - Scenario-based, coding, or architecture design questions related to the current discussion.
 
@@ -79,6 +114,17 @@ You must output ONLY valid JSON matching this schema. Do not output markdown cod
             )
             response_text = chat_completion.choices[0].message.content
             result = json.loads(response_text)
+            
+            # Python post-processing enforcement of decision engine rules
+            if decision == "STRONG":
+                result["suggested_follow_up_questions"] = ["Move to the next topic."]
+            elif decision == "PARTIAL":
+                questions = result.get("suggested_follow_up_questions", [])
+                if not isinstance(questions, list):
+                    questions = []
+                if len(questions) > 3:
+                    result["suggested_follow_up_questions"] = questions[:3]
+            
             logger.info("Copilot assistant recommendations generated successfully.")
             return result
         except Exception as e:

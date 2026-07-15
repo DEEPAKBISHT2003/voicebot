@@ -20,7 +20,29 @@ class CopilotSessionEngine:
         self.repo = repo
         self.jd = jd
         self.resume = resume
-        self.transcript: List[Dict[str, Any]] = initial_transcript or []
+        
+        # Normalize and map transcript entries for backward-compatibility with interview role keys
+        self.transcript: List[Dict[str, Any]] = []
+        raw_list = initial_transcript or []
+        for msg in raw_list:
+            speaker = msg.get("speaker")
+            if not speaker:
+                role = msg.get("role")
+                if role == "user":
+                    speaker = "Candidate"
+                elif role == "assistant":
+                    speaker = "Interviewer"
+                elif role == "system":
+                    speaker = "System"
+                else:
+                    speaker = "System"
+            self.transcript.append({
+                "speaker": speaker,
+                "text": msg.get("text", ""),
+                "timestamp": msg.get("timestamp") or datetime.datetime.now().isoformat(),
+                "evaluation": msg.get("evaluation")
+            })
+
         self.evaluation_service = CandidateEvaluationService()
         self.intelligence_engine = ConversationIntelligenceEngine()
         self.intelligence: Dict[str, Any] = self.intelligence_engine._get_empty_state()
@@ -42,14 +64,22 @@ class CopilotSessionEngine:
             "timestamp": datetime.datetime.now().isoformat()
         }
 
-        # Evaluate candidate responses in real-time
+        # Evaluate candidate responses in real-time against the specific question
         if speaker == "Candidate":
+            # Retrieve the last interviewer question from transcript history
+            last_question = ""
+            for msg in reversed(self.transcript):
+                if msg.get("speaker") == "Interviewer":
+                    last_question = msg.get("text", "")
+                    break
+
             try:
                 logger.info(f"Evaluating candidate response for session {self.session_id}...")
                 evaluation = await self.evaluation_service.evaluate_response(
                     candidate_response=text,
                     jd=self.jd,
-                    resume=self.resume
+                    resume=self.resume,
+                    question=last_question
                 )
                 message["evaluation"] = evaluation
             except Exception as e:

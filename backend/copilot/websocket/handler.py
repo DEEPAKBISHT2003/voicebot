@@ -69,6 +69,21 @@ async def websocket_endpoint(
     sess["websocket"] = websocket
     sess["status"] = "Listening for audio stream..."
 
+    # Immediately push the current state to the client upon handshake connection
+    try:
+        engine = sess["engine"]
+        await websocket.send_json({
+            "type": "copilot_update",
+            "session_id": session_id,
+            "last_message": engine.get_transcript()[-1] if engine.get_transcript() else None,
+            "transcript": engine.get_transcript(),
+            "intelligence": engine.get_intelligence(),
+            "assistance": engine.get_assistance()
+        })
+        logger.info(f"Pushed initial state for session {session_id} to connected client")
+    except Exception as e:
+        logger.error(f"Failed to send initial copilot state update: {e}")
+
     try:
         while True:
             msg = await websocket.receive()
@@ -80,6 +95,17 @@ async def websocket_endpoint(
                     payload = json.loads(msg["text"])
                     speaker = payload.get("speaker")
                     text = payload.get("text")
+                    
+                    # Backward compatibility mapping for speaker role keys
+                    if not speaker:
+                        role = payload.get("role")
+                        if role == "user":
+                            speaker = "Candidate"
+                        elif role == "assistant":
+                            speaker = "Interviewer"
+                        elif role == "system":
+                            speaker = "System"
+
                     if speaker and text:
                         engine = sess["engine"]
                         last_msg = await engine.add_message(speaker, text)

@@ -156,7 +156,7 @@ export const InterviewsList: React.FC = () => {
                         <Badge variant="warning">No Transcript</Badge>
                       )}
                     </td>
-                    <td className="px-6 py-4 text-right">
+                    <td className="px-6 py-4 text-right flex justify-end gap-2">
                       <Button
                         variant="outline"
                         size="sm"
@@ -164,6 +164,14 @@ export const InterviewsList: React.FC = () => {
                       >
                         <Eye className="h-3.5 w-3.5 mr-1" />
                         View
+                      </Button>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={() => navigate(`/copilots/${session.session_id}`)}
+                      >
+                        <FileText className="h-3.5 w-3.5 mr-1" />
+                        Results
                       </Button>
                     </td>
                   </tr>

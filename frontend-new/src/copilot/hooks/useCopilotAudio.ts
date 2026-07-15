@@ -17,6 +17,11 @@ export interface CopilotEvaluation {
   production_experience?: CopilotEvaluationDetail;
   missing_concepts?: string[];
   knowledge_gaps?: string[];
+  question_asker?: string;
+  answerer?: string;
+  is_complete?: boolean;
+  follow_up_required?: boolean;
+  follow_up_reason?: string;
 }
 
 export interface CopilotTranscriptEntry {

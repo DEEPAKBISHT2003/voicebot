@@ -35,14 +35,19 @@ Candidate Response:
 "{candidate_response}"
 
 Evaluate the candidate's response and output a structured JSON object with the following fields:
-1. "technical_accuracy": {{ "rating": integer 1-100, "comment": "string explanation" }}
-2. "confidence": {{ "rating": integer 1-100, "comment": "string explanation" }}
-3. "completeness": {{ "rating": integer 1-100, "comment": "string explanation" }}
-4. "practical_knowledge": {{ "rating": integer 1-100, "comment": "string explanation" }}
-5. "communication": {{ "rating": integer 1-100, "comment": "string explanation" }}
-6. "production_experience": {{ "rating": integer 1-100, "comment": "string explanation" }}
-7. "missing_concepts": [ "list", "of", "missing", "technical", "concepts" ]
-8. "knowledge_gaps": [ "list", "of", "apparent", "knowledge", "gaps" ]
+1. "question_asker": "string (name of the role that asked the question, default is 'Interviewer')"
+2. "answerer": "string (name of the role that answered, default is 'Candidate')"
+3. "is_complete": boolean (true if the candidate's response fully answers the question, false otherwise)
+4. "follow_up_required": boolean (true if the candidate missed crucial parts, exhibited gaps, or gave an incomplete answer requiring follow-up)
+5. "follow_up_reason": "string (explanation of why follow-up is required and what to ask next, or empty if not required)"
+6. "technical_accuracy": {{ "rating": integer 1-100, "comment": "string explanation" }}
+7. "confidence": {{ "rating": integer 1-100, "comment": "string explanation" }}
+8. "completeness": {{ "rating": integer 1-100, "comment": "string explanation" }}
+9. "practical_knowledge": {{ "rating": integer 1-100, "comment": "string explanation" }}
+10. "communication": {{ "rating": integer 1-100, "comment": "string explanation" }}
+11. "production_experience": {{ "rating": integer 1-100, "comment": "string explanation" }}
+12. "missing_concepts": [ "list", "of", "missing", "technical", "concepts" ]
+13. "knowledge_gaps": [ "list", "of", "apparent", "knowledge", "gaps" ]
 
 You must output ONLY valid JSON matching this schema. Do not output markdown code blocks or additional text.
 """
@@ -62,6 +67,11 @@ You must output ONLY valid JSON matching this schema. Do not output markdown cod
 
     def _get_empty_evaluation(self, comment: str) -> dict:
         return {
+            "question_asker": "Interviewer",
+            "answerer": "Candidate",
+            "is_complete": False,
+            "follow_up_required": False,
+            "follow_up_reason": "",
             "technical_accuracy": {"rating": 0, "comment": comment},
             "confidence": {"rating": 0, "comment": ""},
             "completeness": {"rating": 0, "comment": ""},
