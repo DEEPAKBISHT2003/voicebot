@@ -38,7 +38,7 @@ export const getCopilotWebSocketUrl = (sessionId: string): string => {
     try {
       const parsedUrl = new URL(base);
       const wsProtocol = parsedUrl.protocol === 'https:' ? 'wss:' : 'ws:';
-      return `${wsProtocol}//${parsedUrl.host}/api/copilot/ws/session/${sessionId}`;
+      return `${wsProtocol}//${parsedUrl.host}/api/ws/copilot/${sessionId}`;
     } catch (e) {
       console.warn('[CopilotWS] Failed to parse env backend URL, using relative path fallback', e);
     }
@@ -49,8 +49,8 @@ export const getCopilotWebSocketUrl = (sessionId: string): string => {
 
   if (host.includes('localhost') || host.includes('127.0.0.1')) {
     const backendPort = import.meta.env.VITE_BACKEND_PORT || '8000';
-    return `ws://localhost:${backendPort}/api/copilot/ws/session/${sessionId}`;
+    return `ws://localhost:${backendPort}/api/ws/copilot/${sessionId}`;
   }
 
-  return `${protocol}//${host}/api/copilot/ws/session/${sessionId}`;
+  return `${protocol}//${host}/api/ws/copilot/${sessionId}`;
 };
