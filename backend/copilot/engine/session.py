@@ -3,6 +3,7 @@ from typing import List, Dict, Any
 from loguru import logger
 from backend.copilot.services.repository import CopilotRepository
 from backend.app.services.evaluation import CandidateEvaluationService
+from backend.copilot.engine.intelligence import ConversationIntelligenceEngine
 
 class CopilotSessionEngine:
     """Manages the transcript state and incremental memory storage for an active Copilot Session."""
@@ -20,6 +21,8 @@ class CopilotSessionEngine:
         self.resume = resume
         self.transcript: List[Dict[str, Any]] = initial_transcript or []
         self.evaluation_service = CandidateEvaluationService()
+        self.intelligence_engine = ConversationIntelligenceEngine()
+        self.intelligence: Dict[str, Any] = self.intelligence_engine._get_empty_state()
 
     async def add_message(self, speaker: str, text: str) -> Dict[str, Any]:
         """
@@ -51,6 +54,17 @@ class CopilotSessionEngine:
 
         self.transcript.append(message)
 
+        # Run conversation intelligence analysis after every message
+        try:
+            self.intelligence = await self.intelligence_engine.analyze(
+                transcript=self.transcript,
+                jd=self.jd,
+                resume=self.resume
+            )
+            logger.info(f"Intelligence state updated for session {self.session_id}")
+        except Exception as e:
+            logger.error(f"Failed to update intelligence state for session {self.session_id}: {e}")
+
         # Persist incrementally to database and local storage files
         try:
             await self.repo.save_session(self.session_id, {"transcript": self.transcript})
@@ -63,3 +77,8 @@ class CopilotSessionEngine:
     def get_transcript(self) -> List[Dict[str, Any]]:
         """Returns the current transcript history list."""
         return self.transcript
+
+    def get_intelligence(self) -> Dict[str, Any]:
+        """Returns the current conversation intelligence state."""
+        return self.intelligence
+

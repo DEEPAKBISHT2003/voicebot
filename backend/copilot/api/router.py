@@ -136,7 +136,8 @@ async def get_copilot_status(
             "session_id": session_id,
             "is_active": sess.get("is_active", True),
             "status": sess.get("status", "ready"),
-            "transcript": engine.get_transcript()
+            "transcript": engine.get_transcript(),
+            "intelligence": engine.get_intelligence()
         }
     else:
         # Fallback to database load
@@ -146,7 +147,9 @@ async def get_copilot_status(
                 "session_id": session_id,
                 "is_active": False,
                 "status": "Session completed.",
-                "transcript": db_session.get("transcript", [])
+                "transcript": db_session.get("transcript", []),
+                "intelligence": {}
             }
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="Session not found")
+
