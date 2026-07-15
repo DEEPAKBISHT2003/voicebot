@@ -3,7 +3,7 @@ from loguru import logger
 from typing import Dict, Any
 import json
 
-from backend.copilot.api.deps import get_copilot_sessions, get_copilot_repo
+from backend.copilot.api.deps import get_copilot_sessions_ws, get_copilot_repo_ws
 from backend.copilot.services.repository import CopilotRepository
 from backend.copilot.engine.session import CopilotSessionEngine
 
@@ -13,8 +13,8 @@ router = APIRouter()
 async def websocket_endpoint(
     websocket: WebSocket,
     session_id: str,
-    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
-    repo: CopilotRepository = Depends(get_copilot_repo)
+    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions_ws),
+    repo: CopilotRepository = Depends(get_copilot_repo_ws)
 ):
     await websocket.accept()
     logger.info(f"Copilot WebSocket client connected: {session_id}")

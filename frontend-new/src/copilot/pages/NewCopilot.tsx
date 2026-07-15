@@ -1,20 +1,54 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Sparkles, HelpCircle, ArrowRight } from 'lucide-react';
+import { Sparkles, HelpCircle, ArrowRight, Upload, FileText } from 'lucide-react';
 import { startCopilot } from '../../api/copilot';
+import { parseResumeFile } from '../../api/interview';
 
 export const NewCopilot: React.FC = () => {
   const navigate = useNavigate();
   const [jd, setJd] = useState('');
   const [resume, setResume] = useState('');
   const [customPrompt, setCustomPrompt] = useState('');
+  
+  // File upload state
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [isParsing, setIsParsing] = useState(false);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploadedFile(file);
+    setError(null);
+    setIsParsing(true);
+
+    try {
+      // Call backend parser endpoint directly
+      const extractedText = await parseResumeFile(file);
+      if (!extractedText || extractedText.trim().length === 0) {
+        setError('We detected zero text in this file. Please manually paste or type your resume details in the text box below.');
+      } else {
+        setResume(extractedText);
+      }
+    } catch (err: any) {
+      console.error('Failed to parse resume file:', err);
+      setError(
+        err.response?.data?.detail || 
+        err.message || 
+        'Failed to automatically parse the file. Please manually paste or type your resume details in the text box below.'
+      );
+    } finally {
+      setIsParsing(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!jd.trim() || !resume.trim()) {
-      setError('Please provide both the Job Description and your Resume.');
+      setError('Please provide both the Job Description and your Resume (by upload or text).');
       return;
     }
 
@@ -63,7 +97,7 @@ export const NewCopilot: React.FC = () => {
             </label>
             <textarea
               id="jd"
-              rows={8}
+              rows={15}
               className="w-full rounded-lg border border-border-gray bg-white p-3 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
               placeholder="Paste the target job description here..."
               value={jd}
@@ -71,19 +105,57 @@ export const NewCopilot: React.FC = () => {
             />
           </div>
 
-          {/* Resume */}
-          <div className="flex flex-col gap-2">
-            <label htmlFor="resume" className="text-sm font-semibold text-primary">
-              Your Resume (Text)
-            </label>
-            <textarea
-              id="resume"
-              rows={8}
-              className="w-full rounded-lg border border-border-gray bg-white p-3 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-              placeholder="Paste your resume text here..."
-              value={resume}
-              onChange={(e) => setResume(e.target.value)}
-            />
+          {/* Resume Upload & Text */}
+          <div className="flex flex-col gap-4">
+            {/* Resume Upload Box */}
+            <div className="flex flex-col gap-2">
+              <span className="text-sm font-semibold text-primary">Resume File</span>
+              <div className="border border-dashed border-border-gray hover:border-primary/50 transition-colors rounded-lg p-5 bg-white flex flex-col items-center justify-center cursor-pointer relative group">
+                <input
+                  type="file"
+                  accept=".txt,.pdf"
+                  className="absolute inset-0 opacity-0 cursor-pointer"
+                  onChange={handleFileUpload}
+                  disabled={isParsing || loading}
+                />
+                {isParsing ? (
+                  <div className="text-center py-2">
+                    <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-2" />
+                    <p className="text-xs text-primary font-medium">Parsing resume file...</p>
+                  </div>
+                ) : (
+                  <>
+                    <Upload className="h-6 w-6 text-muted-gray group-hover:text-primary mb-2 transition-colors" />
+                    {uploadedFile ? (
+                      <div className="flex items-center gap-2 text-xs text-primary font-bold">
+                        <FileText className="h-4 w-4 text-primary animate-pulse" />
+                        {uploadedFile.name} ({(uploadedFile.size / 1024).toFixed(1)} KB)
+                      </div>
+                    ) : (
+                      <div className="text-center">
+                        <p className="text-xs text-primary font-bold">Click or drag PDF or TXT to upload</p>
+                        <p className="text-[10px] text-muted-gray mt-1">Supports PDF, TXT up to 10MB</p>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Resume Text */}
+            <div className="flex flex-col gap-2">
+              <label htmlFor="resume" className="text-sm font-semibold text-primary">
+                Your Resume (Text - Optional if uploaded)
+              </label>
+              <textarea
+                id="resume"
+                rows={6}
+                className="w-full rounded-lg border border-border-gray bg-white p-3 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                placeholder="Parsed resume text will appear here automatically, or you can paste it manually..."
+                value={resume}
+                onChange={(e) => setResume(e.target.value)}
+              />
+            </div>
           </div>
         </div>
 
@@ -107,7 +179,7 @@ export const NewCopilot: React.FC = () => {
         <div className="flex justify-end pt-2">
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || isParsing}
             className="flex items-center gap-2 px-5 py-2.5 bg-primary text-white text-sm font-medium rounded-lg hover:bg-primary/95 disabled:bg-primary/50 transition-colors"
           >
             {loading ? 'Initializing...' : 'Launch Copilot'}
