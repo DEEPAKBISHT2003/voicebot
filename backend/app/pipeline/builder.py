@@ -82,9 +82,9 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
                 vad_analyzer=SileroVADAnalyzer(
                     params=VADParams(
                         confidence=0.8,      # Standard confidence requirement (default 0.7)
-                        min_volume=0.25,     # Increased volume threshold to filter noise
-                        start_secs=0.5,      # Ignore brief clicks/pops
-                        stop_secs=0.8        # Allow natural breathing pauses
+                        min_volume=0.20,     # Increased volume threshold to filter noise
+                        start_secs=0.3,      # Ignore brief clicks/pops
+                        stop_secs=1.0        # Allow natural breathing pauses
                     )
                 )
             ),
