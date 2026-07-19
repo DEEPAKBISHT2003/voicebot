@@ -9,3 +9,4 @@ tortoise-orm
 asyncpg
 uvicorn
 groq
+playwright

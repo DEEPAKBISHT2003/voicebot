@@ -34,6 +34,40 @@ export const CopilotSession: React.FC = () => {
 
   const [uiMode, setUiMode] = useState<'live' | 'report'>('live');
 
+  // Secondary connection to trigger audio simulation if query parameter simulate=true
+  useEffect(() => {
+    if (!id) return;
+    const searchParams = new URLSearchParams(window.location.search);
+    const simulate = searchParams.get('simulate');
+    if (simulate !== 'true') return;
+
+    console.log('[Simulation] Initiating background simulation trigger connection...');
+    
+    let wsUrl = `ws://localhost:8000/api/ws/interview/${id}?mode=observer&simulate=true`;
+    const rawEnvUrl = import.meta.env.VITE_API_URL || 
+                      import.meta.env.VITE_BACKEND_URL;
+    if (rawEnvUrl) {
+      try {
+        const parsedUrl = new URL(rawEnvUrl);
+        const wsProtocol = parsedUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+        wsUrl = `${wsProtocol}//${parsedUrl.host}/api/ws/interview/${id}?mode=observer&simulate=true`;
+      } catch (e) {
+        console.warn('[SimulationWS] Failed to parse env backend URL', e);
+      }
+    }
+
+    const ws = new WebSocket(wsUrl);
+    ws.onopen = () => {
+      console.log('[SimulationWS] Simulation trigger WebSocket opened.');
+    };
+    ws.onclose = () => {
+      console.log('[SimulationWS] Simulation trigger WebSocket closed.');
+    };
+    return () => {
+      ws.close();
+    };
+  }, [id]);
+
   // Accordion open/close toggles for Live Interview view
   const [isTranscriptExpanded, setIsTranscriptExpanded] = useState<boolean>(false);
   const [isJdCoverageExpanded, setIsJdCoverageExpanded] = useState<boolean>(false);

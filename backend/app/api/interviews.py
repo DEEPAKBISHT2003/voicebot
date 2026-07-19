@@ -1,5 +1,8 @@
 import os
 import datetime
+import asyncio
+import wave
+import sys
 from typing import Dict, Any
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends, UploadFile, File, Request
 from fastapi.responses import FileResponse
@@ -42,6 +45,40 @@ class StartSessionRequest(BaseModel):
     custom_prompt: str = ""
     resume_filename: str = "resume.txt"
     resume_base64: str = ""
+    meeting_url: str = ""
+
+async def spawn_teams_bot(session_id: str, meeting_url: str):
+    logger.info(f"[TeamsBot] Spawning Teams Playwright Observer Bot for session {session_id} to meeting: {meeting_url}")
+    python_exe = sys.executable
+    script_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "pipeline", "teams_bot.py")
+    
+    try:
+        # Launch the teams_bot.py script as an independent background process
+        process = await asyncio.create_subprocess_exec(
+            python_exe, script_path, meeting_url, session_id,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        logger.info(f"[TeamsBot] Subprocess spawned successfully with PID: {process.pid}")
+        
+        # Helper task to print bot output inside server log console
+        async def log_stream(stream, prefix):
+            while True:
+                try:
+                    line = await stream.readline()
+                    if not line:
+                        break
+                    decoded_line = line.decode("utf-8", errors="replace").strip()
+                    logger.info(f"[{prefix}] {decoded_line}")
+                except Exception as le:
+                    logger.warning(f"[{prefix}] Failed to read/decode subprocess line: {le}")
+                    break
+                
+        asyncio.create_task(log_stream(process.stdout, "TeamsBot-STDOUT"))
+        asyncio.create_task(log_stream(process.stderr, "TeamsBot-STDERR"))
+        
+    except Exception as e:
+        logger.error(f"[TeamsBot] Failed to spawn Teams observer bot process: {e}")
 
 @router.post("/interviews/start")
 async def start_interview(
@@ -70,7 +107,8 @@ async def start_interview(
         "resume": req.resume,
         "custom_prompt": req.custom_prompt,
         "is_active": True,
-        "worker": None
+        "worker": None,
+        "meeting_url": req.meeting_url
     }
 
     # Initialize the corresponding Copilot Session in background
@@ -106,7 +144,12 @@ async def start_interview(
     except Exception as e:
         logger.warning(f"[CopilotObserver] Could not pre-initialize copilot background engine: {e}")
     
-    return {"session_id": session_id, "status": "Connecting to audio stream..."}
+    # If meeting URL is provided, spawn Teams bot background task
+    if req.meeting_url and req.meeting_url.strip():
+        asyncio.create_task(spawn_teams_bot(session_id, req.meeting_url))
+        active_sessions[session_id]["status"] = "Teams Bot joining meeting... Check dashboard suggestions."
+
+    return {"session_id": session_id, "status": active_sessions[session_id]["status"]}
 
 @router.websocket("/ws/interview/{session_id}")
 async def websocket_endpoint(
@@ -185,22 +228,35 @@ async def websocket_endpoint(
                     logger.error(f"[CopilotObserver] Failed to forward segment to Copilot engine: {e}")
         return callback
         
+    mode = websocket.query_params.get("mode")
+    is_observer = (mode == "observer")
+    
     pipeline_builder = LocalPipecatPipelineBuilder(Settings.DEEPGRAM_API_KEY, Settings.GROQ_API_KEY)
     _, _, worker = pipeline_builder.build_pipeline(
         system_instruction=system_instruction,
         session_id=session_id,
         transcript_callback=make_transcript_callback(session_id),
-        websocket=websocket
+        websocket=websocket,
+        is_observer=is_observer
     )
     
     sess["worker"] = worker
     
     runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
     await runner.add_workers(worker)
-    await worker.queue_frames([LLMRunFrame()])
+    if not is_observer:
+        await worker.queue_frames([LLMRunFrame()])
+    
+    simulate = websocket.query_params.get("simulate")
+    simulation_task = None
+    if simulate == "true":
+        simulation_task = asyncio.create_task(simulate_audio_playback(session_id, worker))
     
     try:
-        sess["status"] = "Interview started! Say hello to the interviewer."
+        if is_observer:
+            sess["status"] = "Teams Observer Copilot connected and listening..."
+        else:
+            sess["status"] = "Interview started! Say hello to the interviewer."
         await runner.run()
     except WebSocketDisconnect:
         logger.info(f"WebSocket client disconnected from session {session_id}.")
@@ -208,6 +264,8 @@ async def websocket_endpoint(
         logger.error(f"Error in WebSocket voice session: {e}", exc_info=True)
         sess["status"] = f"Error: {e}"
     finally:
+        if simulation_task:
+            simulation_task.cancel()
         sess["is_active"] = False
         sess["status"] = "Mock Interview Stopped."
         await repo.save_session(
@@ -352,4 +410,60 @@ def get_resume(session_id: str):
         return FileResponse(txt_path, media_type="text/plain", filename="resume.txt")
     else:
         raise HTTPException(status_code=404, detail="Resume file not found.")
+
+async def simulate_audio_playback(session_id: str, worker):
+    # Find the wav file in the session directory
+    directory = os.path.join(Settings.DEFAULT_STORAGE_DIR, session_id)
+    file_path = os.path.join(directory, "uploaded_audio.wav")
+    if not os.path.exists(file_path):
+        logger.error(f"Simulation failed: file not found at {file_path}")
+        return
+    
+    logger.info(f"Starting audio simulation from {file_path}...")
+    try:
+        # Give some initial delay for websocket stabilization
+        await asyncio.sleep(1.0)
+        
+        with wave.open(file_path, "rb") as wf:
+            # Read 100ms chunks: 16000 * 0.1 = 1600 samples
+            # 1600 samples * 2 bytes = 3200 bytes per chunk
+            chunk_size = 1600
+            
+            while True:
+                data = wf.readframes(chunk_size)
+                if not data:
+                    break
+                
+                from pipecat.frames.frames import InputAudioRawFrame
+                frame = InputAudioRawFrame(
+                    audio=data,
+                    sample_rate=16000,
+                    num_channels=1
+                )
+                await worker.queue_frames([frame])
+                await asyncio.sleep(0.1) # 100ms interval
+                
+        logger.info("Audio simulation complete.")
+    except asyncio.CancelledError:
+        logger.info("Audio simulation task cancelled.")
+    except Exception as e:
+        logger.error(f"Error during audio simulation: {e}")
+
+@router.post("/interviews/{session_id}/upload-audio")
+async def upload_audio_file(session_id: str, file: UploadFile = File(...)):
+    directory = os.path.join(Settings.DEFAULT_STORAGE_DIR, session_id)
+    os.makedirs(directory, exist_ok=True)
+    
+    # Save the file as uploaded_audio.wav
+    file_path = os.path.join(directory, "uploaded_audio.wav")
+    
+    try:
+        with open(file_path, "wb") as buffer:
+            content = await file.read()
+            buffer.write(content)
+        logger.info(f"Successfully uploaded test audio file to {file_path}")
+        return {"status": "success", "file_path": file_path}
+    except Exception as e:
+        logger.error(f"Failed to save uploaded audio file: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save uploaded audio: {e}")
 

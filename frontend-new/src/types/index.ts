@@ -18,6 +18,7 @@ export interface StartSessionRequest {
   custom_prompt?: string;
   resume_filename?: string;
   resume_base64?: string;
+  meeting_url?: string;
 }
 
 export interface StartSessionResponse {

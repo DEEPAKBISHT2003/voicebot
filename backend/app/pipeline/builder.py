@@ -33,7 +33,8 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
         system_instruction: str, 
         session_id: Optional[str] = None,
         transcript_callback: Optional[Callable[[dict], None]] = None,
-        websocket: Optional[Any] = None
+        websocket: Optional[Any] = None,
+        is_observer: bool = False
     ) -> Tuple[Pipeline, LLMContext, PipelineWorker]:
         if websocket is not None:
             from pipecat.transports.websocket.fastapi import FastAPIWebsocketTransport, FastAPIWebsocketParams
@@ -128,21 +129,28 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
         mic_unmuter = MicUnmuterProcessor(shared_state)
 
         # Sequentially connect audio frames flow
-        pipeline = Pipeline([
-            transport.input(),      # Capture audio raw data from system microphone
-            mic_gate,               # Block mic inputs until the AI greeting ends
-            stt,                    # Convert user audio -> text
-            user_accumulator,       # Catch candidate speech text before aggregator consumption
-            user_aggregator,        # Aggregate user words
-            llm,                    # Feed text history to Groq LLaMA model
-            assistant_accumulator,  # Catch interviewer response text after LLM generation
-            tts,                    # Convert response text -> assistant speech
-            playback_buffer,        # Buffer output audio chunks to prevent jitter cracks
-            transport.output(),     # Play synthesized speech on system speakers
-            audio_buffer,           # Record audio of user and bot
-            mic_unmuter,            # Detects end of first greeting to toggle mic_gate
-            assistant_aggregator,   # Aggregate assistant words
-        ])
+        if is_observer:
+            pipeline = Pipeline([
+                transport.input(),      # Capture raw bytes sent by Teams bot / audio upload
+                stt,                    # Convert audio -> text via Deepgram
+                user_accumulator        # Intercept transcripts and call Copilot callback
+            ])
+        else:
+            pipeline = Pipeline([
+                transport.input(),      # Capture audio raw data from system microphone
+                mic_gate,               # Block mic inputs until the AI greeting ends
+                stt,                    # Convert user audio -> text
+                user_accumulator,       # Catch candidate speech text before aggregator consumption
+                user_aggregator,        # Aggregate user words
+                llm,                    # Feed text history to Groq LLaMA model
+                assistant_accumulator,  # Catch interviewer response text after LLM generation
+                tts,                    # Convert response text -> assistant speech
+                playback_buffer,        # Buffer output audio chunks to prevent jitter cracks
+                transport.output(),     # Play synthesized speech on system speakers
+                audio_buffer,           # Record audio of user and bot
+                mic_unmuter,            # Detects end of first greeting to toggle mic_gate
+                assistant_aggregator,   # Aggregate assistant words
+            ])
 
         worker = PipelineWorker(
             pipeline,
@@ -152,11 +160,12 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
             )
         )
 
-        # Trigger initial spoken greetings frame
-        context.add_message({
-            "role": "system", 
-            "content": "Initiate the mock interview by introducing yourself as Miaaa, welcoming the candidate by extracting their name from the resume, and asking: 'Please introduce yourself, [Name]'."
-        })
+        if not is_observer:
+            # Trigger initial spoken greetings frame
+            context.add_message({
+                "role": "system", 
+                "content": "Initiate the mock interview by introducing yourself as Miaaa, welcoming the candidate by extracting their name from the resume, and asking: 'Please introduce yourself, [Name]'."
+            })
 
         return pipeline, context, worker
 

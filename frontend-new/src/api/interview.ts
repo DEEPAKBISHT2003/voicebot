@@ -52,3 +52,15 @@ export const parseResumeFile = async (file: File): Promise<string> => {
   });
   return res.data.text;
 };
+
+export const uploadInterviewAudio = async (sessionId: string, file: File): Promise<{ status: string }> => {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const res = await api.post<{ status: string }>(`/interviews/${sessionId}/upload-audio`, formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
+  });
+  return res.data;
+};
