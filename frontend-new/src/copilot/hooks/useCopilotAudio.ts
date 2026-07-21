@@ -101,6 +101,7 @@ export const useCopilotAudio = (sessionId: string | null) => {
       ws.onopen = () => {
         console.log('[CopilotWS] Connected to copilot session stream');
         setStatus('connected');
+        setError(null);
       };
 
       ws.onmessage = (event) => {

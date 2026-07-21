@@ -1,12 +1,17 @@
 import json
-from groq import AsyncGroq
+from openai import AsyncOpenAI
 from loguru import logger
 from backend.app.core.config import Settings
 
 class CandidateEvaluationService:
-    """Evaluates candidate technical answers against target JDs and resumes using Groq LLM."""
-    def __init__(self, api_key: str = Settings.GROQ_API_KEY, model: str = Settings.GROQ_MODEL):
-        self.client = AsyncGroq(api_key=api_key)
+    """Evaluates candidate technical answers against target JDs and resumes using DeepSeek LLM."""
+    def __init__(
+        self, 
+        api_key: str = Settings.DEEPSEEK_API_KEY, 
+        model: str = Settings.DEEPSEEK_MODEL,
+        base_url: str = Settings.DEEPSEEK_BASE_URL
+    ):
+        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self.model = model
 
     async def evaluate_response(

@@ -17,6 +17,7 @@ demo/
 ├── .env.example                          # Credentials outline template
 ├── requirements.txt                      # Project dependency configurations
 ├── README.md                             # Project setup and usage instructions
+├── backend_api_docs.md                   # Full REST & WebSocket API documentation reference
 ├── backend/                              # Backend FastAPI service
 │   ├── Dockerfile                        # Backend container recipe
 │   └── app/

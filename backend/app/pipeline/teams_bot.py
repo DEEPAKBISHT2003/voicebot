@@ -9,29 +9,43 @@ BACKEND_WS_BASE = os.getenv("BACKEND_WS_BASE", "ws://localhost:8000")
 
 INTERCEPT_JS = """
 (async () => {
+    // Re-evaluation guard to prevent multiple injections in the same frame context
+    if (window.__teams_audio_intercept_injected__) return;
+    window.__teams_audio_intercept_injected__ = true;
+
     console.log("[TeamsBot] Injecting WebRTC audio interceptor...");
     const wsUrl = "%WS_URL%";
-    
-    // Connect websocket
-    const socket = new WebSocket(wsUrl);
-    socket.onopen = () => console.log("[TeamsBot] Interceptor WebSocket connected to backend.");
-    socket.onclose = () => console.log("[TeamsBot] Interceptor WebSocket closed.");
-    socket.onerror = (e) => console.error("[TeamsBot] Interceptor WebSocket error:", e);
+    let socket = null;
     
     // Initialize AudioContext at 16kHz
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+    const capturedTrackIds = new Set();
     const capturedStreams = new Set();
     
     function captureAudioStream(stream) {
+        if (!stream || stream.getAudioTracks().length === 0) return;
         if (capturedStreams.has(stream.id)) return;
         capturedStreams.add(stream.id);
         
         console.log("[TeamsBot] Capturing WebRTC audio track from stream:", stream.id);
+        
+        // Open WebSocket connection lazily on the first captured stream in this frame
+        if (!socket) {
+            console.log("[TeamsBot] Opening audio streaming WebSocket to:", wsUrl);
+            socket = new WebSocket(wsUrl);
+            socket.onopen = () => console.log("[TeamsBot] Interceptor WebSocket connected.");
+            socket.onclose = () => {
+                console.log("[TeamsBot] Interceptor WebSocket closed.");
+                socket = null;
+            };
+            socket.onerror = (e) => console.error("[TeamsBot] Interceptor WebSocket error:", e);
+        }
+        
         try {
             const source = audioCtx.createMediaStreamSource(stream);
             const processor = audioCtx.createScriptProcessor(4096, 1, 1);
             source.connect(processor);
-            processor.connect(audioCtx.destination);
+            // DO NOT connect to audioCtx.destination to prevent echo loops on host speakers!
             
             processor.onaudioprocess = (e) => {
                 const inputData = e.inputBuffer.getChannelData(0);
@@ -43,7 +57,7 @@ INTERCEPT_JS = """
                     outputData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
                 }
                 
-                if (socket.readyState === WebSocket.OPEN) {
+                if (socket && socket.readyState === WebSocket.OPEN) {
                     socket.send(outputData.buffer);
                 }
             };
@@ -57,6 +71,10 @@ INTERCEPT_JS = """
     RTCPeerConnection.prototype.setRemoteDescription = function(desc) {
         this.addEventListener('track', (e) => {
             if (e.track && e.track.kind === 'audio') {
+                // Deduplicate based on persistent WebRTC track-level ID
+                if (capturedTrackIds.has(e.track.id)) return;
+                capturedTrackIds.add(e.track.id);
+                
                 const stream = e.streams[0] || new MediaStream([e.track]);
                 captureAudioStream(stream);
             }
@@ -67,8 +85,13 @@ INTERCEPT_JS = """
     // Periodically search for existing DOM audio elements as a fallback
     setInterval(() => {
         document.querySelectorAll('audio, video').forEach(el => {
-            if (el.srcObject && !capturedStreams.has(el.srcObject.id)) {
-                captureAudioStream(el.srcObject);
+            if (el.srcObject) {
+                el.srcObject.getAudioTracks().forEach(track => {
+                    if (!capturedTrackIds.has(track.id)) {
+                        capturedTrackIds.add(track.id);
+                        captureAudioStream(el.srcObject);
+                    }
+                });
             }
         });
     }, 2000);
@@ -104,16 +127,18 @@ async def run_bot(meeting_url: str, session_id: str):
             headless=True,
             args=[
                 "--use-fake-ui-for-media-stream",
-                "--use-fake-device-for-media-stream",
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
-                "--autoplay-policy=no-user-gesture-required"
+                "--autoplay-policy=no-user-gesture-required",
+                "--disable-web-security",
+                "--disable-features=BlockInsecurePrivateNetworkRequests",
+                "--mute-audio"
             ]
         )
         
-        # Open context granting audio/microphone permissions
+        # Open context granting audio/microphone permission, but completely block camera visuals
         context = await browser.new_context(
-            permissions=["microphone", "camera"]
+            permissions=["microphone"]
         )
         
         page = await context.new_page()

@@ -1,4 +1,4 @@
-pipecat-ai[local,groq,deepgram]
+pipecat-ai[local,openai,groq,deepgram]
 pyaudio
 pypdf
 python-dotenv
@@ -8,5 +8,7 @@ httpx
 tortoise-orm
 asyncpg
 uvicorn
+openai
 groq
 playwright
+

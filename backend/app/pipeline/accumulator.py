@@ -25,9 +25,12 @@ class TranscriptAccumulator(FrameProcessor):
         if isinstance(frame, TranscriptionFrame):
             text = frame.text.strip()
             if text:
+                speaker_val = getattr(frame, "speaker", getattr(frame, "user_id", None))
                 entry = {"role": "user", "text": text}
+                if speaker_val is not None:
+                    entry["speaker"] = str(speaker_val)
                 self.history.append(entry)
-                logger.info(f"User transcript: {text}")
+                logger.info(f"User transcript ({entry.get('speaker', 'user')}): {text}")
                 if self.callback:
                     if asyncio.iscoroutinefunction(self.callback):
                         await self.callback(entry)

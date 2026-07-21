@@ -13,10 +13,12 @@ import {
   Compass,
   FileText,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Volume2,
+  VolumeX
 } from 'lucide-react';
 import { useCopilotAudio } from '../hooks/useCopilotAudio';
-import { stopCopilot, getCopilotStatus } from '../../api/copilot';
+import { stopCopilot, getCopilotStatus, finalizeCopilotReport } from '../../api/copilot';
 
 export const CopilotSession: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -34,10 +36,36 @@ export const CopilotSession: React.FC = () => {
 
   const [uiMode, setUiMode] = useState<'live' | 'report'>('live');
 
-  // Secondary connection to trigger audio simulation if query parameter simulate=true
+  // Simulation mode check & audio control states
+  const searchParams = new URLSearchParams(window.location.search);
+  const isSimulation = searchParams.get('simulate') === 'true';
+
+  const [isSimulationFinished, setIsSimulationFinished] = useState<boolean>(false);
+  const [isGeneratingReport, setIsGeneratingReport] = useState<boolean>(false);
+  const [isMuted, setIsMuted] = useState<boolean>(false);
+  const [volume, setVolume] = useState<number>(1.0);
+
+  const isMutedRef = React.useRef(isMuted);
+  const volumeRef = React.useRef(volume);
+
+  useEffect(() => {
+    isMutedRef.current = isMuted;
+    volumeRef.current = volume;
+  }, [isMuted, volume]);
+
+  // Establish Copilot WebSocket connection on mount or when id changes
+  useEffect(() => {
+    if (id) {
+      startConnection();
+    }
+    return () => {
+      stopConnection();
+    };
+  }, [id]);
+
+  // Secondary connection to trigger audio simulation and receive binary audio frames if simulate=true
   useEffect(() => {
     if (!id) return;
-    const searchParams = new URLSearchParams(window.location.search);
     const simulate = searchParams.get('simulate');
     if (simulate !== 'true') return;
 
@@ -57,14 +85,81 @@ export const CopilotSession: React.FC = () => {
     }
 
     const ws = new WebSocket(wsUrl);
+    ws.binaryType = 'arraybuffer';
+    let audioCtx: AudioContext | null = null;
+    let gainNode: GainNode | null = null;
+    let nextPlayTime = 0;
+
     ws.onopen = () => {
       console.log('[SimulationWS] Simulation trigger WebSocket opened.');
+      try {
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        audioCtx = new AudioContextClass();
+        gainNode = audioCtx.createGain();
+        gainNode.gain.value = isMutedRef.current ? 0 : volumeRef.current;
+        gainNode.connect(audioCtx.destination);
+        nextPlayTime = audioCtx.currentTime;
+      } catch (err) {
+        console.warn('[SimulationWS] Could not initialize Web Audio API Context:', err);
+      }
     };
+
+    ws.onmessage = (event) => {
+      if (typeof event.data === 'string') {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'simulation_complete') {
+            console.log('[SimulationWS] Audio simulation complete frame received.');
+            setIsSimulationFinished(true);
+          }
+        } catch (e) {
+          // ignore string parse errors
+        }
+        return;
+      }
+
+      if (event.data instanceof ArrayBuffer && audioCtx && gainNode) {
+        try {
+          if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+          }
+          const pcmData = new Int16Array(event.data);
+          const floatData = new Float32Array(pcmData.length);
+          for (let i = 0; i < pcmData.length; i++) {
+            floatData[i] = pcmData[i] / 32768.0;
+          }
+
+          const audioBuffer = audioCtx.createBuffer(1, floatData.length, 16000);
+          audioBuffer.copyToChannel(floatData, 0);
+
+          const sourceNode = audioCtx.createBufferSource();
+          sourceNode.buffer = audioBuffer;
+
+          gainNode.gain.value = isMutedRef.current ? 0 : volumeRef.current;
+          sourceNode.connect(gainNode);
+
+          const startTime = Math.max(nextPlayTime, audioCtx.currentTime);
+          sourceNode.start(startTime);
+
+          const chunkDuration = floatData.length / 16000;
+          nextPlayTime = startTime + chunkDuration;
+        } catch (err) {
+          console.error('[SimulationWS] Audio playback error:', err);
+        }
+      }
+    };
+
     ws.onclose = () => {
       console.log('[SimulationWS] Simulation trigger WebSocket closed.');
+      if (audioCtx) {
+        audioCtx.close().catch(() => {});
+      }
     };
     return () => {
       ws.close();
+      if (audioCtx) {
+        audioCtx.close().catch(() => {});
+      }
     };
   }, [id]);
 
@@ -103,7 +198,7 @@ export const CopilotSession: React.FC = () => {
         const res = await getCopilotStatus(id);
         const active = (res as any).is_active;
         if (active === false) {
-          setUiMode('report'); // Auto-transition on session finish
+          setIsSimulationFinished(true);
         }
       } catch (err) {
         console.error('Failed to query session status:', err);
@@ -252,6 +347,41 @@ export const CopilotSession: React.FC = () => {
 
         {uiMode === 'live' && (
           <div className="flex items-center gap-3 self-end sm:self-auto">
+            {/* View Final Results Button */}
+            <button
+              onClick={async () => {
+                if (!id) return;
+                setIsGeneratingReport(true);
+                try {
+                  await finalizeCopilotReport(id);
+                  setUiMode('report');
+                } catch (err) {
+                  console.error('Failed to compile final report:', err);
+                  setUiMode('report');
+                } finally {
+                  setIsGeneratingReport(false);
+                }
+              }}
+              disabled={isGeneratingReport}
+              className={`flex items-center gap-2 px-4 py-2 text-white text-xs font-bold rounded-lg shadow-md transition-all cursor-pointer border ${
+                isSimulationFinished
+                  ? 'bg-green-600 hover:bg-green-700 border-green-700 animate-bounce'
+                  : 'bg-primary hover:bg-primary/90 border-primary'
+              }`}
+            >
+              {isGeneratingReport ? (
+                <>
+                  <div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-white" />
+                  Compiling Report...
+                </>
+              ) : (
+                <>
+                  <FileText className="h-4 w-4" />
+                  View Final Results
+                </>
+              )}
+            </button>
+
             {/* Status Indicator */}
             <div className="flex items-center gap-2 px-3 py-1.5 bg-white rounded-lg border border-border-gray">
               <span className={`h-2.5 w-2.5 rounded-full ${
@@ -292,6 +422,50 @@ export const CopilotSession: React.FC = () => {
       {/* Main Grid Workspace */}
       {uiMode === 'live' ? (
         <div className="space-y-6 animate-fade-in">
+          {/* Simulation Audio Control Bar */}
+          {isSimulation && (
+            <div className="bg-primary/5 border border-primary/20 rounded-xl p-3 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-sm">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-primary text-white rounded-lg">
+                  <Volume2 className="h-4 w-4 animate-pulse" />
+                </div>
+                <div>
+                  <span className="text-xs font-bold text-primary block">Simulation Audio Live Stream</span>
+                  <span className="text-[10px] text-muted-gray">
+                    {isSimulationFinished ? 'Recording Finished. Click "View Final Results" to compile dossier.' : 'Playing test WAV audio through browser speakers in sync with suggestions.'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-4 self-end sm:self-auto">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-muted-gray font-bold uppercase">Volume:</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={volume}
+                    onChange={(e) => setVolume(parseFloat(e.target.value))}
+                    className="w-24 accent-primary cursor-pointer"
+                  />
+                </div>
+
+                <button
+                  onClick={() => setIsMuted(!isMuted)}
+                  className={`p-2 rounded-lg text-xs font-bold border transition-all flex items-center gap-1.5 ${
+                    isMuted
+                      ? 'bg-red-50 text-red-600 border-red-200'
+                      : 'bg-white text-primary border-border-gray hover:bg-secondary'
+                  }`}
+                >
+                  {isMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+                  {isMuted ? 'Muted' : 'Mute'}
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* HUD Cards Grid */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {/* Current Topic Card */}

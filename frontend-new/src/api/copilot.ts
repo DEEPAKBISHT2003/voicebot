@@ -32,6 +32,11 @@ export const getCopilotStatus = async (sessionId: string): Promise<CopilotStatus
   return res.data;
 };
 
+export const finalizeCopilotReport = async (sessionId: string): Promise<any> => {
+  const res = await api.post(`/copilot/${sessionId}/finalize`);
+  return res.data;
+};
+
 export const getCopilotWebSocketUrl = (sessionId: string): string => {
   const base = import.meta.env.VITE_API_URL || import.meta.env.VITE_BACKEND_URL || '';
   if (base) {

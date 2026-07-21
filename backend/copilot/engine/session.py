@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 from typing import List, Dict, Any
 from loguru import logger
@@ -49,9 +50,35 @@ class CopilotSessionEngine:
         self.copilot_assistant = AICopilotEngine()
         self.assistance: Dict[str, Any] = self.copilot_assistant._get_empty_state()
 
+    async def _update_intelligence_and_assistance(self):
+        """Runs intelligence analysis and copilot suggestions concurrently in the background."""
+        try:
+            intel_task = self.intelligence_engine.analyze(
+                transcript=self.transcript,
+                jd=self.jd,
+                resume=self.resume
+            )
+            assist_task = self.copilot_assistant.generate_assistance(
+                transcript=self.transcript,
+                jd=self.jd,
+                resume=self.resume
+            )
+            self.intelligence, self.assistance = await asyncio.gather(intel_task, assist_task)
+            logger.info(f"Intelligence and suggestions updated concurrently for session {self.session_id}")
+            
+            await self.repo.save_session(self.session_id, {
+                "transcript": self.transcript,
+                "intelligence": self.intelligence,
+                "assistance": self.assistance
+            })
+            logger.info(f"Persisted updated transcript and copilot state for session {self.session_id}")
+        except Exception as e:
+            logger.error(f"Error in background intelligence/assistance update for session {self.session_id}: {e}")
+
     async def add_message(self, speaker: str, text: str) -> Dict[str, Any]:
         """
-        Adds a new message to the session transcript and persists it to database.
+        Adds a new message to the session transcript and returns immediately.
+        Candidate evaluations run in critical path; intelligence and assistance updates run in background task.
         Valid speaker values: 'Interviewer', 'Candidate', 'System'
         """
         valid_speakers = {"Interviewer", "Candidate", "System"}
@@ -87,34 +114,8 @@ class CopilotSessionEngine:
 
         self.transcript.append(message)
 
-        # Run conversation intelligence analysis after every message
-        try:
-            self.intelligence = await self.intelligence_engine.analyze(
-                transcript=self.transcript,
-                jd=self.jd,
-                resume=self.resume
-            )
-            logger.info(f"Intelligence state updated for session {self.session_id}")
-        except Exception as e:
-            logger.error(f"Failed to update intelligence state for session {self.session_id}: {e}")
-
-        # Generate copilot assistant recommendations after every message
-        try:
-            self.assistance = await self.copilot_assistant.generate_assistance(
-                transcript=self.transcript,
-                jd=self.jd,
-                resume=self.resume
-            )
-            logger.info(f"Copilot suggestions updated for session {self.session_id}")
-        except Exception as e:
-            logger.error(f"Failed to update copilot suggestions for session {self.session_id}: {e}")
-
-        # Persist incrementally to database and local storage files
-        try:
-            await self.repo.save_session(self.session_id, {"transcript": self.transcript})
-            logger.info(f"Persisted new {speaker} transcript entry for session {self.session_id}")
-        except Exception as e:
-            logger.error(f"Failed to incrementally persist transcript entry for session {self.session_id}: {e}")
+        # Trigger background analysis and persistence task (non-blocking)
+        asyncio.create_task(self._update_intelligence_and_assistance())
 
         return message
 
@@ -129,4 +130,33 @@ class CopilotSessionEngine:
     def get_assistance(self) -> Dict[str, Any]:
         """Returns the current conversation copilot suggestions state."""
         return self.assistance
+
+    async def finalize_report(self) -> Dict[str, Any]:
+        """Compiles and finalizes post-session evaluation metrics and summary dossier."""
+        try:
+            self.intelligence = await self.intelligence_engine.analyze(
+                transcript=self.transcript,
+                jd=self.jd,
+                resume=self.resume
+            )
+            self.assistance = await self.copilot_assistant.generate_assistance(
+                transcript=self.transcript,
+                jd=self.jd,
+                resume=self.resume
+            )
+            await self.repo.save_session(self.session_id, {
+                "transcript": self.transcript,
+                "intelligence": self.intelligence,
+                "assistance": self.assistance,
+                "is_finalized": True
+            })
+            logger.info(f"Finalized post-interview evaluation report for session {self.session_id}")
+        except Exception as e:
+            logger.error(f"Failed to finalize report for session {self.session_id}: {e}")
+        return {
+            "transcript": self.transcript,
+            "intelligence": self.intelligence,
+            "assistance": self.assistance
+        }
+
 

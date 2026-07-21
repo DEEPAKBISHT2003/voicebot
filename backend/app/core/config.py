@@ -19,8 +19,16 @@ def get_local_ip() -> str:
 class Settings:
     """Core environment configurations."""
     DEEPGRAM_API_KEY: str = os.getenv("DEEPGRAM_API_KEY", "")
+    
+    # DeepSeek / OpenAI API Configurations
+    DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", os.getenv("GROQ_API_KEY", ""))
+    DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+    DEEPSEEK_BASE_URL: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    
+    # Legacy Groq fallback settings
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
-    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    GROQ_COPILOT_MODEL: str = os.getenv("GROQ_COPILOT_MODEL", "llama-3.1-8b-instant")
     DEFAULT_STORAGE_DIR: str = "interviews"
     
     # Database connection URL
@@ -34,6 +42,6 @@ class Settings:
         """Helper to check if all keys are loaded."""
         if not cls.DEEPGRAM_API_KEY:
             raise ValueError("DEEPGRAM_API_KEY is not defined in environment.")
-        if not cls.GROQ_API_KEY:
-            raise ValueError("GROQ_API_KEY is not defined in environment.")
+        if not cls.DEEPSEEK_API_KEY and not cls.GROQ_API_KEY:
+            raise ValueError("DEEPSEEK_API_KEY is not defined in environment.")
 

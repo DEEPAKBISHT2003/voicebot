@@ -1,5 +1,5 @@
 import json
-from groq import AsyncGroq
+from openai import AsyncOpenAI
 from loguru import logger
 from typing import List, Dict, Any
 from backend.app.core.config import Settings
@@ -14,8 +14,13 @@ class ConversationIntelligenceEngine:
     - Conversation timeline
     - Overall interview progress
     """
-    def __init__(self, api_key: str = Settings.GROQ_API_KEY, model: str = Settings.GROQ_MODEL):
-        self.client = AsyncGroq(api_key=api_key)
+    def __init__(
+        self, 
+        api_key: str = Settings.DEEPSEEK_API_KEY, 
+        model: str = Settings.DEEPSEEK_MODEL,
+        base_url: str = Settings.DEEPSEEK_BASE_URL
+    ):
+        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self.model = model
 
     async def analyze(
@@ -31,10 +36,11 @@ class ConversationIntelligenceEngine:
         if not transcript:
             return self._get_empty_state()
 
-        # Build a readable conversation log for the LLM
+        # Build a readable conversation log for the LLM (using last 20 messages max for prompt efficiency)
+        recent_transcript = transcript[-20:] if len(transcript) > 20 else transcript
         conversation_text = "\n".join(
             f"[{msg.get('speaker', 'Unknown')}]: {msg.get('text', '')}"
-            for msg in transcript
+            for msg in recent_transcript
         )
 
         prompt = f"""

@@ -1,5 +1,5 @@
 import json
-from groq import AsyncGroq
+from openai import AsyncOpenAI
 from loguru import logger
 from typing import List, Dict, Any
 from backend.app.core.config import Settings
@@ -9,8 +9,13 @@ class AICopilotEngine:
     Generates real-time assistance tips and follow-up questions for the interviewer
     based on conversation logs, job description, resume, and response evaluations.
     """
-    def __init__(self, api_key: str = Settings.GROQ_API_KEY, model: str = Settings.GROQ_MODEL):
-        self.client = AsyncGroq(api_key=api_key)
+    def __init__(
+        self, 
+        api_key: str = Settings.DEEPSEEK_API_KEY, 
+        model: str = Settings.DEEPSEEK_MODEL,
+        base_url: str = Settings.DEEPSEEK_BASE_URL
+    ):
+        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self.model = model
 
     async def generate_assistance(
@@ -25,9 +30,10 @@ class AICopilotEngine:
         if not transcript:
             return self._get_empty_state()
 
-        # Build conversation log showing speaker text and evaluations if available
+        # Build conversation log showing speaker text and evaluations if available (last 20 messages for speed)
+        recent_transcript = transcript[-20:] if len(transcript) > 20 else transcript
         conversation_log = []
-        for msg in transcript:
+        for msg in recent_transcript:
             speaker = msg.get("speaker", "Unknown")
             text = msg.get("text", "")
             eval_info = ""

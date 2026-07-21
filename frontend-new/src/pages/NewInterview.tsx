@@ -339,7 +339,9 @@ export const NewInterview: React.FC = () => {
             disabled={isParsing}
           >
             <Sparkles className="h-4 w-4 mr-2" />
-            Initialize Interview
+            {isSubmitting
+              ? (interviewType === 'simulation' ? 'Optimizing & Uploading Audio (16kHz Mono)...' : 'Initializing Interview...')
+              : 'Initialize Interview'}
           </Button>
         </div>
       </form>

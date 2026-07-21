@@ -1,12 +1,19 @@
-# Credentials & Environments
+# Credentials & Environment Files (Never commit secret keys)
 .env
 .env.*
 !.env.example
+frontend-new/.env
+frontend-new/.env.local
+frontend-new/.env.development.local
+frontend-new/.env.test.local
+frontend-new/.env.production.local
+frontend-new/.env.*
+!frontend-new/.env.example
 *.pem
 *.key
 *.cert
 
-# Python Virtual Environments
+# Python Virtual Environments & Dependencies
 .venv/
 venv/
 ENV/
@@ -22,8 +29,10 @@ __pycache__/
 .mypy_cache/
 .ipynb_checkpoints/
 
-# Local Interview Transcripts & Data
+# Local Storage, Recordings & Data Files
 interviews/
+storage/
+backend/storage/
 *.wav
 *.mp3
 *.pcm
@@ -36,13 +45,15 @@ interviews/
 *.sqlite3-wal
 *.sqlite-journal
 
-
-# Build & Packaging
-build/
+# Node Modules & Build Artifacts
+node_modules/
+frontend-new/node_modules/
 dist/
+frontend-new/dist/
+build/
 *.egg-info/
 
-# Streamlit Local Configurations & Cache
+# Streamlit Local Configurations & Secrets
 .streamlit/
 .streamlit/config.toml
 .streamlit/secrets.toml
@@ -56,14 +67,14 @@ dist/
 *.sln
 *.swp
 
-# OS-specific files
+# OS-Specific Files
 .DS_Store
 .DS_Store?
 ._*
 Thumbs.db
 ehthumbs.db
 
-# Logs & Temporary Files
+# Logs & Agent Temporary Files
 *.log
 logs/
 temp/
@@ -75,20 +86,7 @@ scratch/
 yarn-error.log
 pnpm-debug.log
 
-
-# Node modules
-node_modules/
-frontend-new/node_modules/
-frontend-new/dist/
-frontend-new/.env
-frontend-new/.env.local
-frontend-new/.env.development.local
-frontend-new/.env.test.local
-frontend-new/.env.production.local
-frontend-new/.env.*
-!frontend-new/.env.example
-
+# Project Documentation
 VAD.md
 backend_api_docs.md
-
 

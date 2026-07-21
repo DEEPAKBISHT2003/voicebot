@@ -149,9 +149,36 @@ async def get_copilot_status(
                 "is_active": False,
                 "status": "Session completed.",
                 "transcript": db_session.get("transcript", []),
-                "intelligence": {},
-                "assistance": {}
+                "intelligence": db_session.get("intelligence", {}),
+                "assistance": db_session.get("assistance", {})
             }
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="Session not found")
+
+@router.post("/{session_id}/finalize")
+async def finalize_copilot_report(
+    session_id: str,
+    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
+    repo: CopilotRepository = Depends(get_copilot_repo)
+):
+    if session_id in active_sessions:
+        engine = active_sessions[session_id]["engine"]
+        res = await engine.finalize_report()
+        active_sessions[session_id]["is_active"] = False
+        return res
+    else:
+        try:
+            db_session = await repo.load_session(session_id)
+            engine = CopilotSessionEngine(
+                session_id,
+                repo,
+                db_session.get("transcript", []),
+                jd=db_session.get("jd", ""),
+                resume=db_session.get("resume", "")
+            )
+            res = await engine.finalize_report()
+            return res
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="Session not found")
+
 

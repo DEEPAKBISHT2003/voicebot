@@ -12,7 +12,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
 )
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.services.deepgram.tts import DeepgramTTSService
-from pipecat.services.groq.llm import GroqLLMService
+from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
 from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 
@@ -23,10 +23,10 @@ from backend.app.pipeline.playback_buffer import PlaybackBufferProcessor
 from backend.app.pipeline.mic_gate import MicGateProcessor, MicUnmuterProcessor
 
 class LocalPipecatPipelineBuilder(IPipelineBuilder):
-    """Sets up local hardware audio transport and chains STT/Groq/TTS/Accumulator elements."""
-    def __init__(self, deepgram_api_key: str, groq_api_key: str):
+    """Sets up local hardware audio transport and chains STT/DeepSeek LLM/TTS/Accumulator elements."""
+    def __init__(self, deepgram_api_key: str, deepseek_api_key: str):
         self.deepgram_api_key = deepgram_api_key
-        self.groq_api_key = groq_api_key
+        self.deepseek_api_key = deepseek_api_key
 
     def build_pipeline(
         self, 
@@ -34,7 +34,8 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
         session_id: Optional[str] = None,
         transcript_callback: Optional[Callable[[dict], None]] = None,
         websocket: Optional[Any] = None,
-        is_observer: bool = False
+        is_observer: bool = False,
+        is_simulation: bool = False
     ) -> Tuple[Pipeline, LLMContext, PipelineWorker]:
         if websocket is not None:
             from pipecat.transports.websocket.fastapi import FastAPIWebsocketTransport, FastAPIWebsocketParams
@@ -60,82 +61,91 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
                 )
             )
 
-        stt = DeepgramSTTService(api_key=self.deepgram_api_key)
-        tts = DeepgramTTSService(
+        stt = DeepgramSTTService(
             api_key=self.deepgram_api_key,
-            settings=DeepgramTTSService.Settings(voice="aura-2-amalthea-en")
-        )
-        
-        # Groq LLM running llama-3.3-70b-versatile
-        llm = GroqLLMService(
-            api_key=self.groq_api_key,
-            model=Settings.GROQ_MODEL,
-            settings=GroqLLMService.Settings(
-                system_instruction=system_instruction
+            settings=DeepgramSTTService.Settings(
+                endpointing=250,
+                diarize=True,
+                smart_format=True
             )
         )
-
-        # Thread-safe aggregate pair for pipeline processing
-        context = LLMContext()
-        user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
-            context,
-            user_params=LLMUserAggregatorParams(
-                vad_analyzer=SileroVADAnalyzer(
-                    params=VADParams(
-                        confidence=0.8,      # Standard confidence requirement (default 0.7)
-                        min_volume=0.20,     # Increased volume threshold to filter noise
-                        start_secs=0.3,      # Ignore brief clicks/pops
-                        stop_secs=1.0        # Allow natural breathing pauses
-                    )
-                )
-            ),
-        )
-
-        # Double accumulators: user_accumulator is placed before user_aggregator,
-        # assistant_accumulator is placed after llm.
         user_accumulator = TranscriptAccumulator(transcript_callback)
-        assistant_accumulator = TranscriptAccumulator(transcript_callback)
-        
-        # Audio buffer processor for recording
-        audio_buffer = AudioBufferProcessor(
-            num_channels=1,
-            auto_start_recording=True
-        )
-
-        @audio_buffer.event_handler("on_audio_data")
-        async def on_audio_data(processor, audio, sample_rate, num_channels):
-            if not session_id:
-                return
-            directory = os.path.join(Settings.DEFAULT_STORAGE_DIR, session_id)
-            os.makedirs(directory, exist_ok=True)
-            recording_path = os.path.join(directory, "recording.wav")
-            try:
-                with wave.open(recording_path, "wb") as wf:
-                    wf.setnchannels(num_channels)
-                    wf.setsampwidth(2)  # 16-bit
-                    wf.setframerate(sample_rate)
-                    wf.writeframes(audio)
-                from loguru import logger
-                logger.info(f"Saved complete session recording to {recording_path}")
-            except Exception as e:
-                from loguru import logger
-                logger.error(f"Failed to save audio recording: {e}")
-
-        playback_buffer = PlaybackBufferProcessor(buffer_size=5)
-        
-        # Shared state for microphone gating (starts disabled)
-        shared_state = {"mic_enabled": False}
-        mic_gate = MicGateProcessor(shared_state)
-        mic_unmuter = MicUnmuterProcessor(shared_state)
+        context = LLMContext()
 
         # Sequentially connect audio frames flow
         if is_observer:
+            # Lightweight Observer/Copilot pipeline — no VAD, TTS, or LLM overhead required
             pipeline = Pipeline([
                 transport.input(),      # Capture raw bytes sent by Teams bot / audio upload
                 stt,                    # Convert audio -> text via Deepgram
                 user_accumulator        # Intercept transcripts and call Copilot callback
             ])
         else:
+            # Full interactive Voice Interview pipeline
+            tts = DeepgramTTSService(
+                api_key=self.deepgram_api_key,
+                settings=DeepgramTTSService.Settings(voice="aura-2-amalthea-en")
+            )
+            
+            # DeepSeek OpenAI-compatible LLM
+            llm = OpenAILLMService(
+                api_key=self.deepseek_api_key,
+                base_url=Settings.DEEPSEEK_BASE_URL,
+                settings=OpenAILLMService.Settings(
+                    model=Settings.DEEPSEEK_MODEL,
+                    system_instruction=system_instruction
+                )
+            )
+
+            # Thread-safe aggregate pair for pipeline processing
+            user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
+                context,
+                user_params=LLMUserAggregatorParams(
+                    vad_analyzer=SileroVADAnalyzer(
+                        params=VADParams(
+                            confidence=0.8,      # Standard confidence requirement (default 0.7)
+                            min_volume=0.20,     # Increased volume threshold to filter noise
+                            start_secs=0.3,      # Ignore brief clicks/pops
+                            stop_secs=0.4 if is_simulation else 1.0 # Faster turn detection for simulation
+                        )
+                    )
+                ),
+            )
+
+            assistant_accumulator = TranscriptAccumulator(transcript_callback)
+            
+            # Audio buffer processor for recording
+            audio_buffer = AudioBufferProcessor(
+                num_channels=1,
+                auto_start_recording=True
+            )
+
+            @audio_buffer.event_handler("on_audio_data")
+            async def on_audio_data(processor, audio, sample_rate, num_channels):
+                if not session_id:
+                    return
+                directory = os.path.join(Settings.DEFAULT_STORAGE_DIR, session_id)
+                os.makedirs(directory, exist_ok=True)
+                recording_path = os.path.join(directory, "recording.wav")
+                try:
+                    with wave.open(recording_path, "wb") as wf:
+                        wf.setnchannels(num_channels)
+                        wf.setsampwidth(2)  # 16-bit
+                        wf.setframerate(sample_rate)
+                        wf.writeframes(audio)
+                    from loguru import logger
+                    logger.info(f"Saved complete session recording to {recording_path}")
+                except Exception as e:
+                    from loguru import logger
+                    logger.error(f"Failed to save audio recording: {e}")
+
+            playback_buffer = PlaybackBufferProcessor(buffer_size=5)
+            
+            # Shared state for microphone gating (starts disabled)
+            shared_state = {"mic_enabled": False}
+            mic_gate = MicGateProcessor(shared_state)
+            mic_unmuter = MicUnmuterProcessor(shared_state)
+
             pipeline = Pipeline([
                 transport.input(),      # Capture audio raw data from system microphone
                 mic_gate,               # Block mic inputs until the AI greeting ends
@@ -152,6 +162,12 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
                 assistant_aggregator,   # Aggregate assistant words
             ])
 
+            # Trigger initial spoken greetings frame
+            context.add_message({
+                "role": "system", 
+                "content": "Initiate the mock interview by introducing yourself as Miaaa, welcoming the candidate by extracting their name from the resume, and asking: 'Please introduce yourself, [Name]'."
+            })
+
         worker = PipelineWorker(
             pipeline,
             params=PipelineParams(
@@ -159,13 +175,6 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
                 enable_usage_metrics=False,
             )
         )
-
-        if not is_observer:
-            # Trigger initial spoken greetings frame
-            context.add_message({
-                "role": "system", 
-                "content": "Initiate the mock interview by introducing yourself as Miaaa, welcoming the candidate by extracting their name from the resume, and asking: 'Please introduce yourself, [Name]'."
-            })
 
         return pipeline, context, worker
 
