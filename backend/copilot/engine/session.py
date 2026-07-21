@@ -1,6 +1,6 @@
 import asyncio
 import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Set
 from loguru import logger
 from backend.copilot.services.repository import CopilotRepository
 from backend.app.services.evaluation import CandidateEvaluationService
@@ -21,6 +21,7 @@ class CopilotSessionEngine:
         self.repo = repo
         self.jd = jd
         self.resume = resume
+        self.detected_speakers: Set[str] = set()
         
         # Normalize and map transcript entries for backward-compatibility with interview role keys
         self.transcript: List[Dict[str, Any]] = []
@@ -37,6 +38,8 @@ class CopilotSessionEngine:
                     speaker = "System"
                 else:
                     speaker = "System"
+            if speaker in ("Candidate", "Interviewer", "System"):
+                self.detected_speakers.add(speaker)
             self.transcript.append({
                 "speaker": speaker,
                 "text": msg.get("text", ""),
@@ -50,40 +53,93 @@ class CopilotSessionEngine:
         self.copilot_assistant = AICopilotEngine()
         self.assistance: Dict[str, Any] = self.copilot_assistant._get_empty_state()
 
-    async def _update_intelligence_and_assistance(self):
-        """Runs intelligence analysis and copilot suggestions concurrently in the background."""
+    async def _update_all_background_llm_tasks(self, message: Dict[str, Any], last_question: str, websocket: Any = None):
+        """Runs candidate evaluation, conversation intelligence, and copilot suggestions concurrently in the background."""
         try:
+            tasks = []
+            
+            # Task 1: Candidate Evaluation (if candidate speaker)
+            if message.get("speaker") == "Candidate":
+                eval_task = self.evaluation_service.evaluate_response(
+                    candidate_response=message.get("text", ""),
+                    jd=self.jd,
+                    resume=self.resume,
+                    question=last_question
+                )
+                tasks.append(eval_task)
+            else:
+                tasks.append(asyncio.sleep(0, result=None))
+
+            # Task 2: Intelligence Analysis
             intel_task = self.intelligence_engine.analyze(
                 transcript=self.transcript,
                 jd=self.jd,
                 resume=self.resume
             )
+            tasks.append(intel_task)
+
+            # Task 3: Copilot Assistance
             assist_task = self.copilot_assistant.generate_assistance(
                 transcript=self.transcript,
                 jd=self.jd,
                 resume=self.resume
             )
-            self.intelligence, self.assistance = await asyncio.gather(intel_task, assist_task)
-            logger.info(f"Intelligence and suggestions updated concurrently for session {self.session_id}")
+            tasks.append(assist_task)
+
+            # Execute all 3 tasks concurrently in parallel
+            evaluation, intelligence, assistance = await asyncio.gather(*tasks, return_exceptions=True)
+
+            if isinstance(evaluation, dict):
+                message["evaluation"] = evaluation
             
+            if isinstance(intelligence, dict):
+                self.intelligence = intelligence
+                # Attach live speaker metrics
+                self.intelligence["total_speakers_count"] = max(len(self.detected_speakers), 1)
+
+            if isinstance(assistance, dict):
+                self.assistance = assistance
+
+            logger.info(f"Background evaluation & copilot analysis complete for session {self.session_id}")
+
+            # Persist updated state to DB/storage
             await self.repo.save_session(self.session_id, {
                 "transcript": self.transcript,
                 "intelligence": self.intelligence,
                 "assistance": self.assistance
             })
-            logger.info(f"Persisted updated transcript and copilot state for session {self.session_id}")
-        except Exception as e:
-            logger.error(f"Error in background intelligence/assistance update for session {self.session_id}: {e}")
 
-    async def add_message(self, speaker: str, text: str) -> Dict[str, Any]:
+            # Broadcast updated state frame to frontend UI if websocket is provided
+            if websocket:
+                try:
+                    await websocket.send_json({
+                        "type": "copilot_update",
+                        "session_id": self.session_id,
+                        "last_message": message,
+                        "transcript": self.transcript,
+                        "intelligence": self.intelligence,
+                        "assistance": self.assistance
+                    })
+                except Exception as ws_err:
+                    logger.debug(f"Could not push background update frame over WebSocket: {ws_err}")
+
+        except Exception as e:
+            logger.error(f"Error in background LLM task execution for session {self.session_id}: {e}")
+
+    async def add_message(self, speaker: str, text: str, websocket: Any = None) -> Dict[str, Any]:
         """
-        Adds a new message to the session transcript and returns immediately.
-        Candidate evaluations run in critical path; intelligence and assistance updates run in background task.
-        Valid speaker values: 'Interviewer', 'Candidate', 'System'
+        Adds a new message to the session transcript and returns INSTANTLY (<5ms).
+        All LLM processing (Evaluation, Intelligence, Assistance) runs asynchronously in parallel background task.
         """
-        valid_speakers = {"Interviewer", "Candidate", "System"}
-        if speaker not in valid_speakers:
-            logger.warning(f"Unexpected speaker identity '{speaker}' for session {self.session_id}. Expected one of: {valid_speakers}")
+        self.detected_speakers.add(speaker)
+        
+        # Retrieve the last interviewer question from transcript history
+        last_question = ""
+        if speaker == "Candidate":
+            for msg in reversed(self.transcript):
+                if msg.get("speaker") == "Interviewer":
+                    last_question = msg.get("text", "")
+                    break
 
         message = {
             "speaker": speaker,
@@ -91,31 +147,10 @@ class CopilotSessionEngine:
             "timestamp": datetime.datetime.now().isoformat()
         }
 
-        # Evaluate candidate responses in real-time against the specific question
-        if speaker == "Candidate":
-            # Retrieve the last interviewer question from transcript history
-            last_question = ""
-            for msg in reversed(self.transcript):
-                if msg.get("speaker") == "Interviewer":
-                    last_question = msg.get("text", "")
-                    break
-
-            try:
-                logger.info(f"Evaluating candidate response for session {self.session_id}...")
-                evaluation = await self.evaluation_service.evaluate_response(
-                    candidate_response=text,
-                    jd=self.jd,
-                    resume=self.resume,
-                    question=last_question
-                )
-                message["evaluation"] = evaluation
-            except Exception as e:
-                logger.error(f"Failed to evaluate candidate response: {e}")
-
         self.transcript.append(message)
 
-        # Trigger background analysis and persistence task (non-blocking)
-        asyncio.create_task(self._update_intelligence_and_assistance())
+        # Trigger concurrent background processing (non-blocking, <5ms return)
+        asyncio.create_task(self._update_all_background_llm_tasks(message, last_question, websocket))
 
         return message
 

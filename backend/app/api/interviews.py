@@ -220,20 +220,24 @@ async def websocket_endpoint(
                                 
                             logger.info(f"[CopilotObserver] Forwarding segment ({speaker}): {entry.get('text')}")
                             
-                            # Add statement to active Copilot engine memory and run evaluations
-                            last_msg = await engine.add_message(speaker, entry.get("text", ""))
-                            
-                            # Broadcast real-time suggestions updates to dashboard WS client
                             copilot_ws = copilot_sess.get("websocket")
+                            
+                            # Add statement to active Copilot engine memory (returns INSTANTLY <5ms)
+                            last_msg = await engine.add_message(speaker, entry.get("text", ""), websocket=copilot_ws)
+                            
+                            # Broadcast instant transcript update frame to dashboard WS client (<5ms)
                             if copilot_ws:
-                                await copilot_ws.send_json({
-                                    "type": "copilot_update",
-                                    "session_id": sid,
-                                    "last_message": last_msg,
-                                    "transcript": engine.get_transcript(),
-                                    "intelligence": engine.get_intelligence(),
-                                    "assistance": engine.get_assistance()
-                                })
+                                try:
+                                    await copilot_ws.send_json({
+                                        "type": "copilot_update",
+                                        "session_id": sid,
+                                        "last_message": last_msg,
+                                        "transcript": engine.get_transcript(),
+                                        "intelligence": engine.get_intelligence(),
+                                        "assistance": engine.get_assistance()
+                                    })
+                                except Exception as ws_err:
+                                    logger.debug(f"Instant WS broadcast error: {ws_err}")
                 except Exception as e:
                     logger.error(f"[CopilotObserver] Failed to forward segment to Copilot engine: {e}")
         return callback

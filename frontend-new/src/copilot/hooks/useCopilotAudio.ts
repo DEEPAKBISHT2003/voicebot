@@ -113,10 +113,26 @@ export const useCopilotAudio = (sessionId: string | null) => {
               setTranscript(data.transcript);
             }
             if (data.intelligence) {
-              setIntelligence(data.intelligence);
+              try {
+                const parsedIntel = typeof data.intelligence === 'string'
+                  ? JSON.parse(data.intelligence.replace(/```json/g, '').replace(/```/g, '').trim())
+                  : data.intelligence;
+                setIntelligence(parsedIntel);
+              } catch (intelErr) {
+                console.warn('[CopilotWS] Error parsing intelligence JSON:', intelErr);
+                setIntelligence(data.intelligence);
+              }
             }
             if (data.assistance) {
-              setAssistance(data.assistance);
+              try {
+                const parsedAssist = typeof data.assistance === 'string'
+                  ? JSON.parse(data.assistance.replace(/```json/g, '').replace(/```/g, '').trim())
+                  : data.assistance;
+                setAssistance(parsedAssist);
+              } catch (assistErr) {
+                console.warn('[CopilotWS] Error parsing assistance JSON:', assistErr);
+                setAssistance(data.assistance);
+              }
             }
           }
         } catch (err) {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { 
   Mic, 
@@ -168,6 +168,18 @@ export const CopilotSession: React.FC = () => {
   const [isJdCoverageExpanded, setIsJdCoverageExpanded] = useState<boolean>(false);
   const [isResumeCoverageExpanded, setIsResumeCoverageExpanded] = useState<boolean>(false);
   const [isAllQuestionsExpanded, setIsAllQuestionsExpanded] = useState<boolean>(false);
+
+  // Auto-scroll ref for Live Transcript Log container
+  const transcriptContainerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (transcriptContainerRef.current && isTranscriptExpanded) {
+      transcriptContainerRef.current.scrollTo({
+        top: transcriptContainerRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
+    }
+  }, [transcript, isTranscriptExpanded]);
 
   // Helper to determine the status of the candidate's latest evaluated answer
   const getLatestAnswerStatus = () => {
@@ -620,7 +632,7 @@ export const CopilotSession: React.FC = () => {
               </button>
 
               {isTranscriptExpanded && (
-                <div className="border-t border-border-gray p-4 max-h-[400px] overflow-y-auto space-y-4 bg-white">
+                <div ref={transcriptContainerRef} className="border-t border-border-gray p-4 max-h-[400px] overflow-y-auto space-y-4 bg-white">
                   {transcript.length === 0 ? (
                     <p className="text-xs text-muted-gray text-center py-4">No transcript logged yet.</p>
                   ) : (
@@ -658,28 +670,6 @@ export const CopilotSession: React.FC = () => {
                               {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                             </span>
                           </div>
-                          {/* Interview Decision badge for candidate answers in live log */}
-                          {isCandidate && msg.evaluation && (
-                            <div className="mt-1">
-                              <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[9px] border font-bold ${
-                                (() => {
-                                  const rating = msg.evaluation?.technical_accuracy?.rating;
-                                  if (rating === undefined) return 'text-muted-gray bg-gray-50 border-gray-200';
-                                  if (rating >= 80) return 'text-green-700 bg-green-50 border-green-200';
-                                  if (rating >= 50) return 'text-amber-700 bg-amber-50 border-amber-200';
-                                  return 'text-red-700 bg-red-50 border-red-200';
-                                })()
-                              }`}>
-                                Interview Decision: {(() => {
-                                  const rating = msg.evaluation?.technical_accuracy?.rating;
-                                  if (rating === undefined) return 'Evaluating...';
-                                  if (rating >= 80) return 'Strong Answer';
-                                  if (rating >= 50) return 'Partial Answer';
-                                  return 'Weak Answer';
-                                })()}
-                              </span>
-                            </div>
-                          )}
                         </div>
                       );
                     })

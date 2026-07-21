@@ -4,6 +4,19 @@ from loguru import logger
 from typing import List, Dict, Any
 from backend.app.core.config import Settings
 
+def clean_json_loads(text: str) -> dict:
+    """Safely parse JSON responses that may be wrapped in markdown codeblocks."""
+    clean_text = text.strip()
+    if clean_text.startswith("```"):
+        lines = clean_text.splitlines()
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        clean_text = "\n".join(lines).strip()
+    return json.loads(clean_text)
+
+
 class AICopilotEngine:
     """
     Generates real-time assistance tips and follow-up questions for the interviewer
@@ -119,7 +132,7 @@ You must output ONLY valid JSON matching this schema. Do not output markdown cod
                 response_format={"type": "json_object"}
             )
             response_text = chat_completion.choices[0].message.content
-            result = json.loads(response_text)
+            result = clean_json_loads(response_text)
             
             # Python post-processing enforcement of decision engine rules
             if decision == "STRONG":
