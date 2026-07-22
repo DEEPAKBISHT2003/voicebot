@@ -288,31 +288,32 @@ async def run_bot(meeting_url: str, session_id: str):
             except Exception as ce:
                 logger.warning(f"[TeamsBot] Could not verify/toggle video camera button: {ce}")
 
-            # Ensure Microphone is toggled OFF (Muted) in UI for privacy
+            # Ensure Microphone is toggled OFF (Muted) in UI for privacy using exact Fluent UI signatures
             try:
                 mic_switch = page.locator(
-                    "[role='switch'][aria-label*='mic' i], "
-                    "[role='switch'][aria-label*='mute' i], "
-                    "[data-tid*='toggle-mute'], "
-                    "button[aria-label*='Mute microphone' i], "
-                    "button[aria-label='Mute']"
+                    "input[data-cid*='toggle-mute'], "
+                    "input[data-tid='toggle-mute'], "
+                    "input[title*='Mute mic' i], "
+                    "input[title*='Unmute mic' i], "
+                    "[role='switch'][data-tid*='toggle-mute']"
                 ).first
-                if await mic_switch.is_visible(timeout=4000):
-                    checked = (await mic_switch.get_attribute("aria-checked") or await mic_switch.get_attribute("aria-pressed") or "").lower()
-                    label = (await mic_switch.get_attribute("aria-label") or "").lower()
+                if await mic_switch.is_visible(timeout=5000):
+                    data_cid = (await mic_switch.get_attribute("data-cid") or "").lower()
+                    title = (await mic_switch.get_attribute("title") or "").lower()
+                    is_checked = await mic_switch.is_checked()
                     
-                    # Mic is ON if switch is checked/pressed=true OR label says "Mute" (not "Unmute")
-                    mic_is_on = checked == "true" or ("mute" in label and "unmute" not in label)
+                    # Mic is ON if data-cid is toggle-mute-true, title contains "mute mic" (not unmute), or is_checked is True
+                    mic_is_on = "toggle-mute-true" in data_cid or ("mute mic" in title and "unmute" not in title) or is_checked
                     if mic_is_on:
-                        await mic_switch.click()
-                        logger.info("[TeamsBot] Microphone toggle switch clicked OFF (Muted).")
+                        await mic_switch.click(force=True)
+                        logger.info("[TeamsBot] Clicked Fluent UI mic switch OFF (Muted).")
                     else:
-                        logger.info(f"[TeamsBot] Microphone toggle switch already OFF (checked={checked}, label='{label}').")
+                        logger.info(f"[TeamsBot] Fluent UI mic switch already OFF (data-cid='{data_cid}', title='{title}').")
                 else:
                     # Fallback locator if explicit switch element is not found
-                    fallback_mic = page.locator("[data-tid*='mute']").first
+                    fallback_mic = page.locator("[data-tid*='toggle-mute'], [data-tid*='mute']").first
                     if await fallback_mic.is_visible(timeout=2000):
-                        await fallback_mic.click()
+                        await fallback_mic.click(force=True)
                         logger.info("[TeamsBot] Microphone fallback button clicked.")
             except Exception as me:
                 logger.warning(f"[TeamsBot] Could not verify/toggle microphone button: {me}")
