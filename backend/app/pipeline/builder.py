@@ -165,7 +165,7 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
             # Trigger initial spoken greetings frame
             context.add_message({
                 "role": "system", 
-                "content": "Initiate the mock interview by introducing yourself as Miaaa, welcoming the candidate by extracting their name from the resume, and asking: 'Please introduce yourself, [Name]'."
+                "content": "Initiate the mock interview by introducing yourself using the name and persona specified in your system instructions, welcoming the candidate by extracting their name from the resume, and asking: 'Please introduce yourself, [Name]'."
             })
 
         worker = PipelineWorker(

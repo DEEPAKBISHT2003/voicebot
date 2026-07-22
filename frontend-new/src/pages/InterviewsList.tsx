@@ -285,7 +285,7 @@ export const InterviewsList: React.FC = () => {
                         }`}
                       >
                         <span className="block font-semibold text-xs text-primary mb-1">
-                          {isAI ? '🤖 Interviewer (Miaa)' : '🗣️ Candidate'}
+                          {isAI ? '🤖 AI Interviewer' : '🗣️ Candidate'}
                         </span>
                         <p className="text-primary leading-relaxed">{entry.text}</p>
                       </div>

@@ -199,7 +199,7 @@ export const InterviewSession: React.FC = () => {
                   : 'Start Interview Session'}
               </p>
               <p className="text-xs text-muted-gray max-w-[200px] mx-auto leading-relaxed">
-                {statusData?.status || 'Prepare to talk. Miaa will start the screening greeting.'}
+                {statusData?.status || 'Prepare to talk. The AI interviewer will start the screening greeting.'}
               </p>
             </div>
 
@@ -273,7 +273,7 @@ export const InterviewSession: React.FC = () => {
             <div className="flex-1 overflow-y-auto space-y-4 pr-2">
               {!statusData || statusData.transcript.length === 0 ? (
                 <div className="h-full flex items-center justify-center text-sm text-muted-gray italic">
-                  No conversation text received yet. Start audio to talk to Miaa.
+                  No conversation text received yet. Connect voice to start the interview.
                 </div>
               ) : (
                 statusData.transcript.map((entry, index) => {
@@ -288,7 +288,7 @@ export const InterviewSession: React.FC = () => {
                       <span className={`text-[10px] font-bold text-muted-gray mb-1 px-1 ${
                         isAI ? 'self-start' : 'self-end'
                       }`}>
-                        {isAI ? '🤖 MIAAA (AI INTERVIEWER)' : '🗣️ YOU (CANDIDATE)'}
+                        {isAI ? '🤖 AI INTERVIEWER' : '🗣️ YOU (CANDIDATE)'}
                       </span>
                       <div
                         className={`p-3.5 rounded-lg text-sm leading-relaxed border ${

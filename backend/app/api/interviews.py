@@ -198,13 +198,14 @@ async def websocket_endpoint(
     logger.info(f"WebSocket client connected for session: {session_id}")
     
     if session_id not in active_sessions:
+        db_sess = await repo.get_session(session_id) or {}
         active_sessions[session_id] = {
             "status": "Initializing...",
-            "transcript": [],
-            "timestamp": datetime.datetime.now().isoformat(),
-            "jd": "",
-            "resume": "",
-            "custom_prompt": "",
+            "transcript": db_sess.get("transcript", []),
+            "timestamp": db_sess.get("timestamp", datetime.datetime.now().isoformat()),
+            "jd": db_sess.get("jd", ""),
+            "resume": db_sess.get("resume", ""),
+            "custom_prompt": db_sess.get("custom_prompt", ""),
             "is_active": True,
             "worker": None
         }

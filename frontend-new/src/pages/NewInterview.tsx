@@ -18,19 +18,29 @@ const schema = zod.object({
 
 type FormData = zod.infer<typeof schema>;
 
-export const DEFAULT_SYSTEM_PROMPT = `=== VOICE INTERVIEWER PERSONA & RULES ===
-You are Miaa, a professional, warm, and encouraging mock interviewer conducting a voice-based screening interview.
-1. Greet the candidate warmly, introducing yourself as Miaa, and state the target role pulled from the Job Description.
-2. Ask 3 to 4 questions throughout the interview, one at a time. Mix technical and behavioral questions based on the candidate's resume and job description.
-3. Speak in short, natural sentences (1 to 3 sentences per turn). Do not use emojis, bullet points, or markdown formatting.
-4. Give a brief, natural acknowledgment after each answer before moving to the next question.
+export const DEFAULT_INTERVIEWER_PROMPT = `You are Miaa, a professional, warm, and encouraging mock interviewer conducting a voice-based screening interview to help a candidate practice.
+
+Interview flow:
+1. Greet the candidate warmly, introducing yourself as Miaa, stating the specific role you're mock-interviewing them for (pulled from the Job Description).
+2. Ask a total of 3 to 4 questions throughout the interview, one at a time. Mix technical and behavioral questions based on the candidate's resume and job description.
+3. Ask only one question per turn, then stop and wait for their answer.
+4. After each answer, give a brief natural acknowledgment before moving to the next question.
 5. Closing: let the candidate know the mock interview is complete, give concise feedback, and say goodbye.
 
-=== COPILOT OBSERVER & ASSISTANT GUIDANCE ===
-Real-time observer analysis rules:
+Voice output rules:
+- Speak in short, natural sentences, 1 to 3 sentences per turn.
+- Do not use emojis, bullet points, asterisks, headers, or markdown of any kind.
+- Spell out all numbers (say "three" not "3").
+- Avoid special characters.`;
+
+export const DEFAULT_COPILOT_PROMPT = `You are an expert technical co-pilot. Your job is to assist the INTERVIEWER in real-time. You must NEVER speak to the candidate directly.
+
+Real-Time Guidance Rules:
 1. Evaluate candidate technical accuracy, confidence, and practical depth.
-2. Recommend follow-up questions tailored to missing concepts or partial answers.
-3. Provide scenario-based architecture and coding questions for deep technical verification.`;
+2. Recommend 2-3 follow-up questions tailored to missing concepts or partial answers.
+3. Provide scenario-based architecture and coding questions for deep technical verification.
+4. Generate verification questions to verify candidate resume claims.
+5. Suggest the recommended next topic for the interviewer.`;
 
 export const NewInterview: React.FC = () => {
   const navigate = useNavigate();
@@ -58,13 +68,15 @@ export const NewInterview: React.FC = () => {
     defaultValues: {
       jd: '',
       resume: '',
-      custom_prompt: DEFAULT_SYSTEM_PROMPT,
+      custom_prompt: DEFAULT_INTERVIEWER_PROMPT,
     },
   });
 
-  React.useEffect(() => {
-    setValue('custom_prompt', DEFAULT_SYSTEM_PROMPT);
-  }, [setValue]);
+  const handleSelectMode = (mode: 'local' | 'teams' | 'simulation') => {
+    setInterviewType(mode);
+    const targetPrompt = mode === 'local' ? DEFAULT_INTERVIEWER_PROMPT : DEFAULT_COPILOT_PROMPT;
+    setValue('custom_prompt', targetPrompt);
+  };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -175,7 +187,7 @@ export const NewInterview: React.FC = () => {
             <span className="text-xs font-semibold text-primary uppercase tracking-wider">Select Operating Mode</span>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div 
-                onClick={() => setInterviewType('local')}
+                onClick={() => handleSelectMode('local')}
                 className={`border p-4 rounded-xl cursor-pointer transition-all flex flex-col items-start gap-2.5 relative ${
                   interviewType === 'local' 
                     ? 'border-primary bg-primary/5 text-primary' 
@@ -192,7 +204,7 @@ export const NewInterview: React.FC = () => {
               </div>
 
               <div 
-                onClick={() => setInterviewType('teams')}
+                onClick={() => handleSelectMode('teams')}
                 className={`border p-4 rounded-xl cursor-pointer transition-all flex flex-col items-start gap-2.5 relative ${
                   interviewType === 'teams' 
                     ? 'border-primary bg-primary/5 text-primary' 
@@ -209,7 +221,7 @@ export const NewInterview: React.FC = () => {
               </div>
 
               <div 
-                onClick={() => setInterviewType('simulation')}
+                onClick={() => handleSelectMode('simulation')}
                 className={`border p-4 rounded-xl cursor-pointer transition-all flex flex-col items-start gap-2.5 relative ${
                   interviewType === 'simulation' 
                     ? 'border-primary bg-primary/5 text-primary' 
@@ -332,10 +344,18 @@ export const NewInterview: React.FC = () => {
 
           {/* Custom prompt instructions */}
           <TextArea
-            label="System Interview & Copilot Prompt (Editable & Replaceable)"
+            label={
+              interviewType === 'local'
+                ? "Voice Interviewer System Prompt (Editable & Replaceable)"
+                : "Copilot Observer System Prompt (Editable & Replaceable)"
+            }
             id="custom_prompt"
             rows={10}
-            placeholder="Edit, modify, or completely replace the system instructions for both Voice Interviewer and Copilot Observer..."
+            placeholder={
+              interviewType === 'local'
+                ? "Edit, modify, or replace the system instructions for the AI Voice Interviewer..."
+                : "Edit, modify, or replace the system instructions for the Copilot Observer Assistant..."
+            }
             error={errors.custom_prompt?.message}
             {...register('custom_prompt')}
           />
