@@ -90,6 +90,16 @@ CRITICAL DECISION RULE (Weak Answer detected, rating: {rating}%):
 The candidate provided a Weak Answer. You must generate probing questions in "suggested_follow_up_questions" to verify their basic understanding or uncover critical gaps.
 """
 
+        custom_instructions = ""
+        if custom_prompt and custom_prompt.strip():
+            custom_instructions = f"""
+- CUSTOM INTERVIEW & COPILOT SYSTEM INSTRUCTIONS:
+\"\"\"
+{custom_prompt.strip()}
+\"\"\"
+Adhere strictly to the custom instructions above.
+"""
+
         prompt = f"""
 You are an expert technical co-pilot. Your job is to assist the INTERVIEWER in real-time. You must NEVER speak to the candidate directly.
 
@@ -102,6 +112,8 @@ Input:
 
 - Conversation Log and Evaluations So Far:
 {conversation_text}
+
+{custom_instructions}
 
 {decision_prompt}
 

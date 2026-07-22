@@ -18,6 +18,20 @@ const schema = zod.object({
 
 type FormData = zod.infer<typeof schema>;
 
+export const DEFAULT_SYSTEM_PROMPT = `=== VOICE INTERVIEWER PERSONA & RULES ===
+You are Miaa, a professional, warm, and encouraging mock interviewer conducting a voice-based screening interview.
+1. Greet the candidate warmly, introducing yourself as Miaa, and state the target role pulled from the Job Description.
+2. Ask 3 to 4 questions throughout the interview, one at a time. Mix technical and behavioral questions based on the candidate's resume and job description.
+3. Speak in short, natural sentences (1 to 3 sentences per turn). Do not use emojis, bullet points, or markdown formatting.
+4. Give a brief, natural acknowledgment after each answer before moving to the next question.
+5. Closing: let the candidate know the mock interview is complete, give concise feedback, and say goodbye.
+
+=== COPILOT OBSERVER & ASSISTANT GUIDANCE ===
+Real-time observer analysis rules:
+1. Evaluate candidate technical accuracy, confidence, and practical depth.
+2. Recommend follow-up questions tailored to missing concepts or partial answers.
+3. Provide scenario-based architecture and coding questions for deep technical verification.`;
+
 export const NewInterview: React.FC = () => {
   const navigate = useNavigate();
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -44,9 +58,13 @@ export const NewInterview: React.FC = () => {
     defaultValues: {
       jd: '',
       resume: '',
-      custom_prompt: '',
+      custom_prompt: DEFAULT_SYSTEM_PROMPT,
     },
   });
+
+  React.useEffect(() => {
+    setValue('custom_prompt', DEFAULT_SYSTEM_PROMPT);
+  }, [setValue]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -314,9 +332,10 @@ export const NewInterview: React.FC = () => {
 
           {/* Custom prompt instructions */}
           <TextArea
-            label="Custom Interview Instructions (Optional)"
+            label="System Interview & Copilot Prompt (Editable & Replaceable)"
             id="custom_prompt"
-            placeholder="e.g. Focus strictly on system design, ask harder coding questions, or adopt a strict tone..."
+            rows={10}
+            placeholder="Edit, modify, or completely replace the system instructions for both Voice Interviewer and Copilot Observer..."
             error={errors.custom_prompt?.message}
             {...register('custom_prompt')}
           />
