@@ -638,6 +638,7 @@ export const CopilotSession: React.FC = () => {
                   ) : (
                     transcript.map((msg, index) => {
                       const isCandidate = msg.speaker === 'Candidate';
+                      const isInterviewer = msg.speaker === 'Interviewer';
                       const isSystem = msg.speaker === 'System';
 
                       if (isSystem) {
@@ -655,10 +656,16 @@ export const CopilotSession: React.FC = () => {
                           key={index} 
                           className={`flex flex-col gap-1.5 ${isCandidate ? 'items-start' : 'items-end'}`}
                         >
-                          <span className="text-[10px] font-bold text-muted-gray px-1">
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${
+                            isCandidate
+                              ? 'bg-blue-50 text-blue-700 border-blue-200'
+                              : isInterviewer
+                              ? 'bg-purple-50 text-purple-700 border-purple-200'
+                              : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          }`}>
                             {msg.speaker}
                           </span>
-                          <div className={`group relative rounded-xl p-3 max-w-[90%] border shadow-sm transition-all ${
+                          <div className={`group relative rounded-xl p-3 max-w-[85%] border shadow-sm transition-all ${
                             isCandidate 
                               ? 'bg-white border-border-gray text-primary' 
                               : 'bg-primary text-white border-primary/30'

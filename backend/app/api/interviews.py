@@ -5,7 +5,7 @@ import wave
 import sys
 import io
 import struct
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends, UploadFile, File, Request
 from fastapi.responses import FileResponse
 from backend.app.parsers.factory import DocumentParserFactory
@@ -26,6 +26,40 @@ from backend.app.api.deps import (
 )
 
 router = APIRouter(prefix="/api")
+
+def classify_speaker_role(text: str, raw_spk: Optional[str], speaker_map: dict) -> str:
+    """Hybrid role classifier: combines high-speed linguistic patterns with Deepgram diarization pitch tags."""
+    clean_text = text.strip().lower()
+    
+    # Candidate linguistic markers (Overrides pitch misclassifications)
+    candidate_starters = (
+        "sir", "my name", "i am", "i have", "we visited", "in my", "my nanaji",
+        "i accompanied", "so basically", "i built", "i worked", "my project"
+    )
+    if any(clean_text.startswith(starter) for starter in candidate_starters):
+        return "Candidate"
+        
+    # Interviewer question indicators
+    question_starters = (
+        "tell me", "can you", "could you", "will you", "what is", "how do", 
+        "why did", "describe", "where", "who", "when", "please explain"
+    )
+    if clean_text.endswith("?") or any(clean_text.startswith(q) for q in question_starters):
+        return "Interviewer"
+        
+    # Dynamic Speaker ID Diarization Mapping
+    if raw_spk is not None:
+        spk_key = str(raw_spk)
+        if spk_key not in speaker_map:
+            if len(speaker_map) == 0:
+                speaker_map[spk_key] = "Candidate"
+            elif len(speaker_map) == 1:
+                speaker_map[spk_key] = "Interviewer"
+            else:
+                speaker_map[spk_key] = f"Speaker {len(speaker_map) + 1}"
+        return speaker_map[spk_key]
+        
+    return "Candidate"
 
 @router.post("/interviews/parse-resume")
 async def parse_resume(file: UploadFile = File(...)):
@@ -185,7 +219,8 @@ async def websocket_endpoint(
         sess["resume"], 
         sess["custom_prompt"]
     )
-    
+
+
     def make_transcript_callback(sid):
         async def callback(entry):
             if sid in active_sessions:
@@ -209,21 +244,17 @@ async def websocket_endpoint(
                         copilot_sess = copilot_sessions[sid]
                         engine = copilot_sess.get("engine")
                         if engine:
-                            if entry.get("speaker"):
-                                spk = str(entry.get("speaker")).lower()
-                                if spk in ("1", "interviewer", "speaker_1", "speaker1"):
-                                    speaker = "Interviewer"
-                                else:
-                                    speaker = "Candidate"
-                            else:
-                                speaker = "Candidate" if entry.get("role") == "user" else "Interviewer"
-                                
-                            logger.info(f"[CopilotObserver] Forwarding segment ({speaker}): {entry.get('text')}")
+                            speaker_map = copilot_sess.setdefault("speaker_map", {})
+                            raw_spk = entry.get("speaker")
+                            text_content = entry.get("text", "")
+                            
+                            speaker = classify_speaker_role(text_content, raw_spk, speaker_map)
+                            logger.info(f"[CopilotObserver] Forwarding segment ({speaker}): {text_content}")
                             
                             copilot_ws = copilot_sess.get("websocket")
                             
                             # Add statement to active Copilot engine memory (returns INSTANTLY <5ms)
-                            last_msg = await engine.add_message(speaker, entry.get("text", ""), websocket=copilot_ws)
+                            last_msg = await engine.add_message(speaker, text_content, websocket=copilot_ws)
                             
                             # Broadcast instant transcript update frame to dashboard WS client (<5ms)
                             if copilot_ws:

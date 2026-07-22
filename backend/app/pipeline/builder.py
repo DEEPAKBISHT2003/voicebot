@@ -64,7 +64,7 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
         stt = DeepgramSTTService(
             api_key=self.deepgram_api_key,
             settings=DeepgramSTTService.Settings(
-                endpointing=250,
+                endpointing=400,
                 diarize=True,
                 smart_format=True
             )

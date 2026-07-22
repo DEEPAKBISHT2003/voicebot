@@ -7,20 +7,101 @@ from loguru import logger
 # Configuration defaults
 BACKEND_WS_BASE = os.getenv("BACKEND_WS_BASE", "ws://localhost:8000")
 
+CAMERA_BLOCK_JS = """
+(() => {
+    if (window.__camera_block_injected__) return;
+    window.__camera_block_injected__ = true;
+    console.log("[TeamsBot] Injecting media device video blocker and microphone silencer...");
+    try {
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+            const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+            navigator.mediaDevices.getUserMedia = async function(constraints) {
+                if (constraints && constraints.video) {
+                    console.log("[TeamsBot] Intercepted camera request.");
+                    if (!constraints.audio) {
+                        console.log("[TeamsBot] Video-only request: throwing NotAllowedError.");
+                        throw new DOMException("Permission denied", "NotAllowedError");
+                    } else {
+                        console.log("[TeamsBot] Audio + Video request: disabling video track.");
+                        constraints.video = false;
+                    }
+                }
+                const stream = await originalGetUserMedia(constraints);
+                // Protocol-level privacy guard: disable outgoing audio tracks so bot mic sends 100% silence
+                if (stream && stream.getAudioTracks) {
+                    stream.getAudioTracks().forEach(track => {
+                        track.enabled = false;
+                        console.log("[TeamsBot] Outgoing microphone track disabled for privacy.");
+                    });
+                }
+                return stream;
+            };
+        }
+    } catch (e) {
+        console.error("[TeamsBot] Failed to inject media device video blocker:", e);
+    }
+})();
+"""
+
 INTERCEPT_JS = """
 (async () => {
     // Re-evaluation guard to prevent multiple injections in the same frame context
     if (window.__teams_audio_intercept_injected__) return;
     window.__teams_audio_intercept_injected__ = true;
 
-    console.log("[TeamsBot] Injecting WebRTC audio interceptor...");
+    console.log("[TeamsBot] Injecting WebRTC audio interceptor with shared mixer...");
     const wsUrl = "%WS_URL%";
     let socket = null;
     
-    // Initialize AudioContext at 16kHz
+    // Initialize AudioContext at 16kHz for Deepgram-compatible output
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
     const capturedTrackIds = new Set();
     const capturedStreams = new Set();
+    
+    // ── Shared Mixer: single ScriptProcessor that all audio sources connect to ──
+    let sharedProcessor = null;
+    
+    function initSharedProcessor() {
+        if (sharedProcessor) return;
+        
+        // Open a single WebSocket for all mixed audio output
+        console.log("[TeamsBot] Opening audio streaming WebSocket to:", wsUrl);
+        socket = new WebSocket(wsUrl);
+        socket.onopen = () => console.log("[TeamsBot] Interceptor WebSocket connected.");
+        socket.onclose = () => {
+            console.log("[TeamsBot] Interceptor WebSocket closed.");
+            socket = null;
+        };
+        socket.onerror = (e) => console.error("[TeamsBot] Interceptor WebSocket error:", e);
+        
+        // Create a single shared processor node for mixing
+        sharedProcessor = audioCtx.createScriptProcessor(4096, 1, 1);
+        
+        sharedProcessor.onaudioprocess = (e) => {
+            const inputData = e.inputBuffer.getChannelData(0);
+            
+            // Convert Float32Array to Int16 PCM Mono bytes
+            const outputData = new Int16Array(inputData.length);
+            for (let i = 0; i < inputData.length; i++) {
+                const s = Math.max(-1, Math.min(1, inputData[i]));
+                outputData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+            }
+            
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(outputData.buffer);
+            }
+        };
+        
+        // Route through a silent GainNode to prevent host speaker echo
+        // The processor needs to be connected to destination to keep firing,
+        // but we set gain to 0.0 so no actual sound plays on host machine.
+        const silentGain = audioCtx.createGain();
+        silentGain.gain.value = 0.0;
+        sharedProcessor.connect(silentGain);
+        silentGain.connect(audioCtx.destination);
+        
+        console.log("[TeamsBot] Shared audio mixer initialized (silent output).");
+    }
     
     function captureAudioStream(stream) {
         if (!stream || stream.getAudioTracks().length === 0) return;
@@ -29,44 +110,45 @@ INTERCEPT_JS = """
         
         console.log("[TeamsBot] Capturing WebRTC audio track from stream:", stream.id);
         
-        // Open WebSocket connection lazily on the first captured stream in this frame
-        if (!socket) {
-            console.log("[TeamsBot] Opening audio streaming WebSocket to:", wsUrl);
-            socket = new WebSocket(wsUrl);
-            socket.onopen = () => console.log("[TeamsBot] Interceptor WebSocket connected.");
-            socket.onclose = () => {
-                console.log("[TeamsBot] Interceptor WebSocket closed.");
-                socket = null;
-            };
-            socket.onerror = (e) => console.error("[TeamsBot] Interceptor WebSocket error:", e);
-        }
+        // Ensure the shared mixer is ready
+        initSharedProcessor();
         
         try {
+            // Connect this audio source to the shared mixer processor
+            // Web Audio API automatically sums (mixes) all connected inputs
             const source = audioCtx.createMediaStreamSource(stream);
-            const processor = audioCtx.createScriptProcessor(4096, 1, 1);
-            source.connect(processor);
-            // DO NOT connect to audioCtx.destination to prevent echo loops on host speakers!
-            
-            processor.onaudioprocess = (e) => {
-                const inputData = e.inputBuffer.getChannelData(0);
-                
-                // Convert Float32Array to Int16 PCM Mono bytes
-                const outputData = new Int16Array(inputData.length);
-                for (let i = 0; i < inputData.length; i++) {
-                    const s = Math.max(-1, Math.min(1, inputData[i]));
-                    outputData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-                }
-                
-                if (socket && socket.readyState === WebSocket.OPEN) {
-                    socket.send(outputData.buffer);
-                }
-            };
+            source.connect(sharedProcessor);
+            console.log("[TeamsBot] Audio source connected to shared mixer:", stream.id);
         } catch (err) {
             console.error("[TeamsBot] Failed to bind AudioContext source:", err);
         }
     }
 
-    // Intercept incoming WebRTC Peer Connections
+    // Intercept WebRTC Peer Connections and force recvonly for outgoing audio
+    if (RTCPeerConnection.prototype.addTransceiver) {
+        const origAddTransceiver = RTCPeerConnection.prototype.addTransceiver;
+        RTCPeerConnection.prototype.addTransceiver = function(trackOrKind, init) {
+            if (trackOrKind === 'audio' || (trackOrKind && trackOrKind.kind === 'audio')) {
+                init = init || {};
+                init.direction = 'recvonly';
+                console.log("[TeamsBot] Forced WebRTC audio transceiver to recvonly.");
+            }
+            return origAddTransceiver.apply(this, [trackOrKind, init]);
+        };
+    }
+
+    if (RTCPeerConnection.prototype.addTrack) {
+        const origAddTrack = RTCPeerConnection.prototype.addTrack;
+        RTCPeerConnection.prototype.addTrack = function(track, ...streams) {
+            if (track && track.kind === 'audio') {
+                track.enabled = false;
+                console.log("[TeamsBot] Muted outgoing audio track in addTrack.");
+            }
+            return origAddTrack.apply(this, [track, ...streams]);
+        };
+    }
+
+    // Intercept incoming WebRTC Peer Connections for transcript capture
     const origSetRemoteDescription = RTCPeerConnection.prototype.setRemoteDescription;
     RTCPeerConnection.prototype.setRemoteDescription = function(desc) {
         this.addEventListener('track', (e) => {
@@ -131,17 +213,17 @@ async def run_bot(meeting_url: str, session_id: str):
                 "--disable-setuid-sandbox",
                 "--autoplay-policy=no-user-gesture-required",
                 "--disable-web-security",
-                "--disable-features=BlockInsecurePrivateNetworkRequests",
-                "--mute-audio"
+                "--disable-features=BlockInsecurePrivateNetworkRequests"
             ]
         )
         
-        # Open context granting audio/microphone permission, but completely block camera visuals
+        # Open context granting microphone permission for WebRTC stack initialization
         context = await browser.new_context(
             permissions=["microphone"]
         )
         
         page = await context.new_page()
+        await page.add_init_script(CAMERA_BLOCK_JS)
         page.on("console", lambda msg: logger.info(f"[BrowserConsole] {msg.type}: {msg.text}"))
         
         # Navigate to Teams Meeting Link
@@ -194,30 +276,47 @@ async def run_bot(meeting_url: str, session_id: str):
             
             # Ensure Video Camera is toggled OFF for privacy
             try:
-                camera_button = page.locator("[aria-label*='camera' i], [aria-label*='video' i], [data-tid*='video']").first
-                if await camera_button.is_visible():
-                    label = await camera_button.get_attribute("aria-label") or ""
-                    pressed = await camera_button.get_attribute("aria-pressed") or ""
-                    checked = await camera_button.get_attribute("aria-checked") or ""
-                    if checked == "true" or pressed == "true" or "turn camera off" in label.lower() or "video off" not in label.lower():
-                        await camera_button.click()
+                camera_toggle = page.locator("[aria-label*='camera' i], [aria-label*='video' i], [data-tid*='video']").first
+                if await camera_toggle.is_visible(timeout=3000):
+                    label = (await camera_toggle.get_attribute("aria-label") or "").lower()
+                    camera_is_on = "turn camera off" in label or ("camera" in label and "turn camera on" not in label)
+                    if camera_is_on:
+                        await camera_toggle.click()
                         logger.info("[TeamsBot] Video camera toggled OFF.")
+                    else:
+                        logger.info(f"[TeamsBot] Camera already OFF (label: '{label}').")
             except Exception as ce:
                 logger.warning(f"[TeamsBot] Could not verify/toggle video camera button: {ce}")
 
-            # Ensure Microphone is toggled OFF (Muted) for privacy
+            # Ensure Microphone is toggled OFF (Muted) in UI for privacy
             try:
-                mic_button = page.locator("[aria-label*='microphone' i], [aria-label*='mute' i], [data-tid*='mute']").first
-                if await mic_button.is_visible():
-                    label = await mic_button.get_attribute("aria-label") or ""
-                    pressed = await mic_button.get_attribute("aria-pressed") or ""
-                    checked = await mic_button.get_attribute("aria-checked") or ""
-                    if checked == "true" or pressed == "true" or "mute" in label.lower() or "unmute" not in label.lower():
-                        await mic_button.click()
-                        logger.info("[TeamsBot] Microphone toggled OFF (Muted).")
+                mic_switch = page.locator(
+                    "[role='switch'][aria-label*='mic' i], "
+                    "[role='switch'][aria-label*='mute' i], "
+                    "[data-tid*='toggle-mute'], "
+                    "button[aria-label*='Mute microphone' i], "
+                    "button[aria-label='Mute']"
+                ).first
+                if await mic_switch.is_visible(timeout=4000):
+                    checked = (await mic_switch.get_attribute("aria-checked") or await mic_switch.get_attribute("aria-pressed") or "").lower()
+                    label = (await mic_switch.get_attribute("aria-label") or "").lower()
+                    
+                    # Mic is ON if switch is checked/pressed=true OR label says "Mute" (not "Unmute")
+                    mic_is_on = checked == "true" or ("mute" in label and "unmute" not in label)
+                    if mic_is_on:
+                        await mic_switch.click()
+                        logger.info("[TeamsBot] Microphone toggle switch clicked OFF (Muted).")
+                    else:
+                        logger.info(f"[TeamsBot] Microphone toggle switch already OFF (checked={checked}, label='{label}').")
+                else:
+                    # Fallback locator if explicit switch element is not found
+                    fallback_mic = page.locator("[data-tid*='mute']").first
+                    if await fallback_mic.is_visible(timeout=2000):
+                        await fallback_mic.click()
+                        logger.info("[TeamsBot] Microphone fallback button clicked.")
             except Exception as me:
                 logger.warning(f"[TeamsBot] Could not verify/toggle microphone button: {me}")
-            
+
             await name_input.first.fill("AI Copilot Teammate", timeout=10000)
             
             # Click "Join Now" or "Join" button
@@ -240,12 +339,34 @@ async def run_bot(meeting_url: str, session_id: str):
             
         # Keep connection open until script is cancelled
         try:
+            in_meeting_muted = False
             while True:
-                await asyncio.sleep(5)
+                await asyncio.sleep(3)
                 # Keep active check of the browser window health
                 if page.is_closed():
                     logger.warning("[TeamsBot] Teams browser page closed. Exiting...")
                     break
+
+                # In-meeting top toolbar microphone mute check across all frames
+                if not in_meeting_muted:
+                    all_frames = [page] + list(page.frames)
+                    for frame in all_frames:
+                        try:
+                            in_meeting_mic = frame.locator("button[data-tid='microphone-button'], button[aria-label*='Mute microphone' i], button[aria-label='Mute' i]").first
+                            if await in_meeting_mic.is_visible(timeout=500):
+                                label = (await in_meeting_mic.get_attribute("aria-label") or "").lower()
+                                pressed = (await in_meeting_mic.get_attribute("aria-pressed") or "").lower()
+                                if pressed == "true" or ("mute" in label and "unmute" not in label):
+                                    await in_meeting_mic.click()
+                                    in_meeting_muted = True
+                                    logger.info("[TeamsBot] In-meeting top toolbar microphone clicked OFF (Muted).")
+                                    break
+                                elif "unmute" in label or pressed == "false":
+                                    in_meeting_muted = True
+                                    logger.info(f"[TeamsBot] In-meeting microphone already muted (label: '{label}').")
+                                    break
+                        except Exception:
+                            pass
         except asyncio.CancelledError:
             logger.info("[TeamsBot] Stopping Teams observer bot.")
         finally:

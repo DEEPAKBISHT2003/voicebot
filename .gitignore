@@ -36,6 +36,9 @@ backend/storage/
 *.wav
 *.mp3
 *.pcm
+*.png
+*.jpg
+*.jpeg
 
 # Database Files
 *.db

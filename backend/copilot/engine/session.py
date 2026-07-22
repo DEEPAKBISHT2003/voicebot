@@ -129,10 +129,33 @@ class CopilotSessionEngine:
     async def add_message(self, speaker: str, text: str, websocket: Any = None) -> Dict[str, Any]:
         """
         Adds a new message to the session transcript and returns INSTANTLY (<5ms).
+        Stitches rapid same-speaker utterances into unified thoughts.
         All LLM processing (Evaluation, Intelligence, Assistance) runs asynchronously in parallel background task.
         """
         self.detected_speakers.add(speaker)
-        
+        clean_text = text.strip()
+        if not clean_text:
+            return {}
+
+        # Same-Speaker Utterance Stitching Engine (Merges rapid consecutive chunks)
+        if self.transcript:
+            last_entry = self.transcript[-1]
+            if last_entry.get("speaker") == speaker:
+                # Merge into existing message bubble
+                last_entry["text"] = (last_entry.get("text", "") + " " + clean_text).strip()
+                last_entry["timestamp"] = datetime.datetime.now().isoformat()
+                
+                # Retrieve last question if candidate
+                last_q = ""
+                if speaker == "Candidate":
+                    for msg in reversed(self.transcript[:-1]):
+                        if msg.get("speaker") == "Interviewer":
+                            last_q = msg.get("text", "")
+                            break
+                            
+                asyncio.create_task(self._update_all_background_llm_tasks(last_entry, last_q, websocket))
+                return last_entry
+
         # Retrieve the last interviewer question from transcript history
         last_question = ""
         if speaker == "Candidate":
@@ -143,7 +166,7 @@ class CopilotSessionEngine:
 
         message = {
             "speaker": speaker,
-            "text": text,
+            "text": clean_text,
             "timestamp": datetime.datetime.now().isoformat()
         }
 
