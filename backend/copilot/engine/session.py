@@ -15,12 +15,14 @@ class CopilotSessionEngine:
         repo: CopilotRepository, 
         initial_transcript: List[Dict[str, Any]] = None,
         jd: str = "",
-        resume: str = ""
+        resume: str = "",
+        custom_prompt: str = ""
     ):
         self.session_id = session_id
         self.repo = repo
         self.jd = jd
         self.resume = resume
+        self.custom_prompt = custom_prompt
         self.detected_speakers: Set[str] = set()
         
         # Normalize and map transcript entries for backward-compatibility with interview role keys
@@ -82,7 +84,8 @@ class CopilotSessionEngine:
             assist_task = self.copilot_assistant.generate_assistance(
                 transcript=self.transcript,
                 jd=self.jd,
-                resume=self.resume
+                resume=self.resume,
+                custom_prompt=self.custom_prompt
             )
             tasks.append(assist_task)
 
@@ -200,7 +203,8 @@ class CopilotSessionEngine:
             self.assistance = await self.copilot_assistant.generate_assistance(
                 transcript=self.transcript,
                 jd=self.jd,
-                resume=self.resume
+                resume=self.resume,
+                custom_prompt=self.custom_prompt
             )
             await self.repo.save_session(self.session_id, {
                 "transcript": self.transcript,

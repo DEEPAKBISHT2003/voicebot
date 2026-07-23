@@ -164,7 +164,7 @@ async def start_interview(
             transcript=[]
         )
         
-        engine = CopilotSessionEngine(session_id, copilot_repo, [], jd=req.jd, resume=req.resume)
+        engine = CopilotSessionEngine(session_id, copilot_repo, [], jd=req.jd, resume=req.resume, custom_prompt=req.custom_prompt)
         copilot_sessions[session_id] = {
             "engine": engine,
             "status": "Listening for audio stream...",
@@ -362,6 +362,40 @@ async def stop_interview(
     
     return {"status": "Stopped"}
 
+class UpdatePromptRequest(BaseModel):
+    custom_prompt: str
+
+@router.patch("/interviews/{session_id}/prompt")
+async def update_interview_prompt(
+    session_id: str,
+    req: UpdatePromptRequest,
+    repo=Depends(get_repo),
+    active_sessions=Depends(get_active_sessions)
+):
+    if session_id in active_sessions:
+        sess = active_sessions[session_id]
+        sess["custom_prompt"] = req.custom_prompt
+        await repo.save_session(
+            session_id,
+            {
+                "session_id": session_id,
+                "timestamp": sess["timestamp"],
+                "jd": sess["jd"],
+                "resume": sess["resume"],
+                "custom_prompt": sess["custom_prompt"],
+                "transcript": sess["transcript"]
+            }
+        )
+        logger.info(f"Updated custom prompt for session {session_id}")
+        return {"status": "success", "session_id": session_id, "custom_prompt": req.custom_prompt}
+    try:
+        data = await repo.load_session(session_id)
+        data["custom_prompt"] = req.custom_prompt
+        await repo.save_session(session_id, data)
+        return {"status": "success", "session_id": session_id, "custom_prompt": req.custom_prompt}
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found.")
+
 @router.get("/interviews/{session_id}/status")
 async def get_session_status(
     session_id: str,
@@ -374,7 +408,8 @@ async def get_session_status(
             "session_id": session_id,
             "is_active": sess["is_active"],
             "status": sess["status"],
-            "transcript": sess["transcript"]
+            "transcript": sess["transcript"],
+            "custom_prompt": sess.get("custom_prompt", "")
         }
     try:
         data = await repo.load_session(session_id)
@@ -382,7 +417,8 @@ async def get_session_status(
             "session_id": session_id,
             "is_active": False,
             "status": "Mock Interview Stopped.",
-            "transcript": data.get("transcript", [])
+            "transcript": data.get("transcript", []),
+            "custom_prompt": data.get("custom_prompt", "")
         }
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Session not found.")

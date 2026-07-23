@@ -64,3 +64,10 @@ export const uploadInterviewAudio = async (sessionId: string, file: File): Promi
   });
   return res.data;
 };
+
+export const updateSessionPrompt = async (sessionId: string, custom_prompt: string): Promise<{ status: string; custom_prompt: string }> => {
+  const res = await api.patch<{ status: string; custom_prompt: string }>(`/interviews/${sessionId}/prompt`, {
+    custom_prompt,
+  });
+  return res.data;
+};

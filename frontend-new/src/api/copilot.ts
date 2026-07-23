@@ -15,6 +15,7 @@ export interface StartCopilotResponse {
 export interface CopilotStatusResponse {
   status: string;
   transcript: TranscriptEntry[];
+  custom_prompt?: string;
 }
 
 export const startCopilot = async (data: StartCopilotRequest): Promise<StartCopilotResponse> => {
@@ -34,6 +35,13 @@ export const getCopilotStatus = async (sessionId: string): Promise<CopilotStatus
 
 export const finalizeCopilotReport = async (sessionId: string): Promise<any> => {
   const res = await api.post(`/copilot/${sessionId}/finalize`);
+  return res.data;
+};
+
+export const updateCopilotPrompt = async (sessionId: string, custom_prompt: string): Promise<{ status: string; custom_prompt: string }> => {
+  const res = await api.patch<{ status: string; custom_prompt: string }>(`/copilot/${sessionId}/prompt`, {
+    custom_prompt,
+  });
   return res.data;
 };
 

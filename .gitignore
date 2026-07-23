@@ -89,7 +89,17 @@ scratch/
 yarn-error.log
 pnpm-debug.log
 
-# Project Documentation
+# Playwright & Browser Automation Artifacts
+.playwright/
+ms-playwright/
+playwright-report/
+blob-report/
+test-results/
+.cache/
+teams_bot_profile/
+
+# Project Documentation & Notes
 VAD.md
 backend_api_docs.md
+
 

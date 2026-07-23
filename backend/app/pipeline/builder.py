@@ -72,13 +72,39 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
         user_accumulator = TranscriptAccumulator(transcript_callback)
         context = LLMContext()
 
+        # Audio buffer processor for recording audio
+        audio_buffer = AudioBufferProcessor(
+            num_channels=1,
+            auto_start_recording=True
+        )
+
+        @audio_buffer.event_handler("on_audio_data")
+        async def on_audio_data(processor, audio, sample_rate, num_channels):
+            if not session_id:
+                return
+            directory = os.path.join(Settings.DEFAULT_STORAGE_DIR, session_id)
+            os.makedirs(directory, exist_ok=True)
+            recording_path = os.path.join(directory, "recording.wav")
+            try:
+                with wave.open(recording_path, "wb") as wf:
+                    wf.setnchannels(num_channels)
+                    wf.setsampwidth(2)  # 16-bit
+                    wf.setframerate(sample_rate)
+                    wf.writeframes(audio)
+                from loguru import logger
+                logger.info(f"Saved complete session recording to {recording_path}")
+            except Exception as e:
+                from loguru import logger
+                logger.error(f"Failed to save audio recording: {e}")
+
         # Sequentially connect audio frames flow
         if is_observer:
-            # Lightweight Observer/Copilot pipeline — no VAD, TTS, or LLM overhead required
+            # Lightweight Observer/Copilot pipeline with STT and Audio Buffer Processor
             pipeline = Pipeline([
                 transport.input(),      # Capture raw bytes sent by Teams bot / audio upload
                 stt,                    # Convert audio -> text via Deepgram
-                user_accumulator        # Intercept transcripts and call Copilot callback
+                user_accumulator,       # Intercept transcripts and call Copilot callback
+                audio_buffer            # Record audio of observer stream
             ])
         else:
             # Full interactive Voice Interview pipeline
@@ -113,31 +139,6 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
             )
 
             assistant_accumulator = TranscriptAccumulator(transcript_callback)
-            
-            # Audio buffer processor for recording
-            audio_buffer = AudioBufferProcessor(
-                num_channels=1,
-                auto_start_recording=True
-            )
-
-            @audio_buffer.event_handler("on_audio_data")
-            async def on_audio_data(processor, audio, sample_rate, num_channels):
-                if not session_id:
-                    return
-                directory = os.path.join(Settings.DEFAULT_STORAGE_DIR, session_id)
-                os.makedirs(directory, exist_ok=True)
-                recording_path = os.path.join(directory, "recording.wav")
-                try:
-                    with wave.open(recording_path, "wb") as wf:
-                        wf.setnchannels(num_channels)
-                        wf.setsampwidth(2)  # 16-bit
-                        wf.setframerate(sample_rate)
-                        wf.writeframes(audio)
-                    from loguru import logger
-                    logger.info(f"Saved complete session recording to {recording_path}")
-                except Exception as e:
-                    from loguru import logger
-                    logger.error(f"Failed to save audio recording: {e}")
 
             playback_buffer = PlaybackBufferProcessor(buffer_size=5)
             

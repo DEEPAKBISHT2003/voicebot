@@ -170,7 +170,6 @@ export const CopilotSession: React.FC = () => {
   const [isTranscriptExpanded, setIsTranscriptExpanded] = useState<boolean>(false);
   const [isJdCoverageExpanded, setIsJdCoverageExpanded] = useState<boolean>(false);
   const [isResumeCoverageExpanded, setIsResumeCoverageExpanded] = useState<boolean>(false);
-  const [isAllQuestionsExpanded, setIsAllQuestionsExpanded] = useState<boolean>(false);
 
   // Auto-scroll ref for Live Transcript Log container
   const transcriptContainerRef = useRef<HTMLDivElement | null>(null);

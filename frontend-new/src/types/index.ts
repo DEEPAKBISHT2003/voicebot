@@ -31,4 +31,5 @@ export interface SessionStatusResponse {
   is_active: boolean;
   status: string;
   transcript: TranscriptEntry[];
+  custom_prompt?: string;
 }

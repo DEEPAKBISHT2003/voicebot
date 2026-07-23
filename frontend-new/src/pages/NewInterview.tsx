@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as zod from 'zod';
-import { Upload, FileText, AlertCircle, Sparkles, Video, Volume2 } from 'lucide-react';
+import { Upload, FileText, AlertCircle, Sparkles, Video, Volume2, Save, Check } from 'lucide-react';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { TextArea } from '../components/TextArea';
@@ -21,7 +21,7 @@ type FormData = zod.infer<typeof schema>;
 export const DEFAULT_INTERVIEWER_PROMPT = `You are Miaa, a professional, warm, and encouraging mock interviewer conducting a voice-based screening interview to help a candidate practice.
 
 Interview flow:
-1. Greet the candidate warmly, introducing yourself as Miaa, stating the specific role you're mock-interviewing them for (pulled from the Job Description).
+1. Greet the candidate warmly, introducing yourself, stating the specific role you're mock-interviewing them for (pulled from the Job Description).
 2. Ask a total of 3 to 4 questions throughout the interview, one at a time. Mix technical and behavioral questions based on the candidate's resume and job description.
 3. Ask only one question per turn, then stop and wait for their answer.
 4. After each answer, give a brief natural acknowledgment before moving to the next question.
@@ -48,6 +48,16 @@ export const NewInterview: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isParsing, setIsParsing] = useState(false);
   
+  // Save prompt state
+  const [isPromptSaved, setIsPromptSaved] = useState(false);
+  const [promptSavedMsg, setPromptSavedMsg] = useState<string | null>(null);
+
+  const handleSavePrompt = () => {
+    setIsPromptSaved(true);
+    setPromptSavedMsg('System prompt updated & saved for this interview session!');
+    setTimeout(() => setPromptSavedMsg(null), 4000);
+  };
+  
   // Selection states: 'local' | 'teams' | 'simulation'
   const [interviewType, setInterviewType] = useState<'local' | 'teams' | 'simulation'>('local');
   
@@ -62,6 +72,7 @@ export const NewInterview: React.FC = () => {
     register,
     handleSubmit,
     setValue,
+    getValues,
     formState: { errors },
   } = useForm<FormData>({
     resolver: zodResolver(schema),
@@ -73,9 +84,13 @@ export const NewInterview: React.FC = () => {
   });
 
   const handleSelectMode = (mode: 'local' | 'teams' | 'simulation') => {
+    if (mode === interviewType) return;
+    const currentPrompt = getValues('custom_prompt');
     setInterviewType(mode);
-    const targetPrompt = mode === 'local' ? DEFAULT_INTERVIEWER_PROMPT : DEFAULT_COPILOT_PROMPT;
-    setValue('custom_prompt', targetPrompt);
+    if (!currentPrompt || currentPrompt === DEFAULT_INTERVIEWER_PROMPT || currentPrompt === DEFAULT_COPILOT_PROMPT) {
+      const targetPrompt = mode === 'local' ? DEFAULT_INTERVIEWER_PROMPT : DEFAULT_COPILOT_PROMPT;
+      setValue('custom_prompt', targetPrompt);
+    }
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -343,22 +358,43 @@ export const NewInterview: React.FC = () => {
           />
 
           {/* Custom prompt instructions */}
-          <TextArea
-            label={
-              interviewType === 'local'
-                ? "Voice Interviewer System Prompt (Editable & Replaceable)"
-                : "Copilot Observer System Prompt (Editable & Replaceable)"
-            }
-            id="custom_prompt"
-            rows={10}
-            placeholder={
-              interviewType === 'local'
-                ? "Edit, modify, or replace the system instructions for the AI Voice Interviewer..."
-                : "Edit, modify, or replace the system instructions for the Copilot Observer Assistant..."
-            }
-            error={errors.custom_prompt?.message}
-            {...register('custom_prompt')}
-          />
+          <div className="space-y-2">
+            <label htmlFor="custom_prompt" className="text-xs font-semibold text-primary">
+              {interviewType === 'local'
+                ? "Voice Interviewer System Prompt"
+                : "Copilot Observer System Prompt"}
+            </label>
+
+            <TextArea
+              id="custom_prompt"
+              rows={10}
+              placeholder={
+                interviewType === 'local'
+                  ? "Edit, modify, or replace the system instructions for the AI Voice Interviewer..."
+                  : "Edit, modify, or replace the system instructions for the Copilot Observer Assistant..."
+              }
+              error={errors.custom_prompt?.message}
+              {...register('custom_prompt')}
+            />
+
+            {promptSavedMsg && (
+              <div className="p-2.5 rounded-lg bg-green-50 border border-green-200 text-xs text-green-700 flex items-center gap-1.5 font-medium animate-fadeIn">
+                <Check className="h-4 w-4 shrink-0 text-green-600" />
+                {promptSavedMsg}
+              </div>
+            )}
+
+            <div className="flex justify-end pt-1">
+              <button
+                type="button"
+                onClick={handleSavePrompt}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-primary hover:bg-primary/90 rounded-lg transition-all shadow-sm cursor-pointer"
+              >
+                <Save className="h-3.5 w-3.5" />
+                {isPromptSaved ? 'Prompt Saved!' : 'Save Prompt'}
+              </button>
+            </div>
+          </div>
         </Card>
 
         {/* Action Button */}

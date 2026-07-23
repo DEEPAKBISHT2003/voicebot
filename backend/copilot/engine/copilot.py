@@ -35,7 +35,8 @@ class AICopilotEngine:
         self,
         transcript: List[Dict[str, Any]],
         jd: str = "",
-        resume: str = ""
+        resume: str = "",
+        custom_prompt: str = ""
     ) -> dict:
         """
         Invokes Groq LLM to generate structured recommendations and observations.

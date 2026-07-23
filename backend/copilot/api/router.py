@@ -29,7 +29,7 @@ async def start_copilot(
         )
         
         # Track session in active memory
-        engine = CopilotSessionEngine(session_id, repo, [], jd=req.jd, resume=req.resume)
+        engine = CopilotSessionEngine(session_id, repo, [], jd=req.jd, resume=req.resume, custom_prompt=req.custom_prompt)
         active_sessions[session_id] = {
             "engine": engine,
             "status": "Connecting to audio stream...",
@@ -116,12 +116,40 @@ async def add_copilot_transcript(
                 repo, 
                 db_session.get("transcript", []),
                 jd=db_session.get("jd", ""),
-                resume=db_session.get("resume", "")
+                resume=db_session.get("resume", ""),
+                custom_prompt=db_session.get("custom_prompt", "")
             )
             msg = await engine.add_message(req.speaker, req.text)
             return msg
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="Session not found")
+
+class UpdateCopilotPromptRequest(BaseModel):
+    custom_prompt: str
+
+@router.patch("/{session_id}/prompt")
+async def update_copilot_prompt(
+    session_id: str,
+    req: UpdateCopilotPromptRequest,
+    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
+    repo: CopilotRepository = Depends(get_copilot_repo)
+):
+    if session_id in active_sessions:
+        active_sessions[session_id]["custom_prompt"] = req.custom_prompt
+        try:
+            db_session = await repo.load_session(session_id)
+            db_session["custom_prompt"] = req.custom_prompt
+            await repo.save_session(session_id, db_session)
+        except Exception as e:
+            logger.warning(f"Could not update custom_prompt file for {session_id}: {e}")
+        return {"status": "success", "session_id": session_id, "custom_prompt": req.custom_prompt}
+    try:
+        db_session = await repo.load_session(session_id)
+        db_session["custom_prompt"] = req.custom_prompt
+        await repo.save_session(session_id, db_session)
+        return {"status": "success", "session_id": session_id, "custom_prompt": req.custom_prompt}
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found")
 
 @router.get("/{session_id}/status")
 async def get_copilot_status(
@@ -138,7 +166,8 @@ async def get_copilot_status(
             "status": sess.get("status", "ready"),
             "transcript": engine.get_transcript(),
             "intelligence": engine.get_intelligence(),
-            "assistance": engine.get_assistance()
+            "assistance": engine.get_assistance(),
+            "custom_prompt": sess.get("custom_prompt", "")
         }
     else:
         # Fallback to database load
@@ -150,7 +179,8 @@ async def get_copilot_status(
                 "status": "Session completed.",
                 "transcript": db_session.get("transcript", []),
                 "intelligence": db_session.get("intelligence", {}),
-                "assistance": db_session.get("assistance", {})
+                "assistance": db_session.get("assistance", {}),
+                "custom_prompt": db_session.get("custom_prompt", "")
             }
         except FileNotFoundError:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -174,7 +204,8 @@ async def finalize_copilot_report(
                 repo,
                 db_session.get("transcript", []),
                 jd=db_session.get("jd", ""),
-                resume=db_session.get("resume", "")
+                resume=db_session.get("resume", ""),
+                custom_prompt=db_session.get("custom_prompt", "")
             )
             res = await engine.finalize_report()
             return res

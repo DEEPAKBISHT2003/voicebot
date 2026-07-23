@@ -4,7 +4,7 @@ from backend.app.core.interfaces.prompt_builder import IPromptBuilder
 class InterviewPromptBuilder(IPromptBuilder):
     """Formats mock-interview system prompt instructions based on the JD and candidate resume."""
     def build_system_instruction(self, jd: str, resume: str, custom_prompt: Optional[str] = None) -> str:
-        prompt_rules = custom_prompt.strip() if custom_prompt and custom_prompt.strip() else """You are a professional, warm, and encouraging mock interviewer conducting a voice-based screening interview to help a candidate practice.
+        prompt_rules = custom_prompt.strip() if custom_prompt and custom_prompt.strip() else """You are Miaa, a professional, warm, and encouraging mock interviewer conducting a voice-based screening interview to help a candidate practice.
 
 Interview flow:
 1. Greet the candidate warmly, introducing yourself, stating the specific role you're mock-interviewing them for (pulled from the JD), extracting their first name from their resume (if available), and asking: "Please introduce yourself, [Name]". Then stop and wait for their response.
