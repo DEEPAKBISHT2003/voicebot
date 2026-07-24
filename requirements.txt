@@ -4,6 +4,7 @@ pypdf
 python-dotenv
 loguru
 fastapi
+python-multipart
 httpx
 tortoise-orm
 asyncpg

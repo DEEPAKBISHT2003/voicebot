@@ -12,12 +12,18 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     g++ \
+    curl \
+    ffmpeg \
     portaudio19-dev \
+    libasound2-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Install Playwright browser binaries and system dependencies for Teams Observer bot
+RUN playwright install --with-deps chromium
 
 # Copy backend application packages
 COPY backend/__init__.py /app/backend/__init__.py
