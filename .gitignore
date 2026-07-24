@@ -33,6 +33,7 @@ __pycache__/
 interviews/
 storage/
 backend/storage/
+**/storage/
 *.wav
 *.mp3
 *.pcm
