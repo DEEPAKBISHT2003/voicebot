@@ -136,6 +136,36 @@ export const useCopilotAudio = (sessionId: string | null) => {
 
   const socketRef = useRef<WebSocket | null>(null);
 
+  const updateState = (data: any) => {
+    if (!data) return;
+    if (data.transcript) {
+      setTranscript(data.transcript);
+    }
+    if (data.intelligence) {
+      try {
+        const parsedIntel = typeof data.intelligence === 'string'
+          ? JSON.parse(data.intelligence.replace(/```json/g, '').replace(/```/g, '').trim())
+          : data.intelligence;
+        setIntelligence(parsedIntel);
+      } catch (intelErr) {
+        console.warn('[CopilotWS] Error parsing intelligence JSON:', intelErr);
+        setIntelligence(data.intelligence);
+      }
+    }
+    if (data.assistance) {
+      try {
+        const parsedAssist: CopilotAssistance = typeof data.assistance === 'string'
+          ? JSON.parse(data.assistance.replace(/```json/g, '').replace(/```/g, '').trim())
+          : data.assistance;
+        setAssistance(parsedAssist);
+        processIncomingQuestions(parsedAssist);
+      } catch (assistErr) {
+        console.warn('[CopilotWS] Error parsing assistance JSON:', assistErr);
+        setAssistance(data.assistance);
+      }
+    }
+  };
+
   const startConnection = async () => {
     if (!sessionId) return;
     setStatus('connecting');
@@ -157,32 +187,7 @@ export const useCopilotAudio = (sessionId: string | null) => {
           const data = JSON.parse(event.data);
           if (data.type === 'copilot_update') {
             console.log('[CopilotWS] Received structured state update:', data);
-            if (data.transcript) {
-              setTranscript(data.transcript);
-            }
-            if (data.intelligence) {
-              try {
-                const parsedIntel = typeof data.intelligence === 'string'
-                  ? JSON.parse(data.intelligence.replace(/```json/g, '').replace(/```/g, '').trim())
-                  : data.intelligence;
-                setIntelligence(parsedIntel);
-              } catch (intelErr) {
-                console.warn('[CopilotWS] Error parsing intelligence JSON:', intelErr);
-                setIntelligence(data.intelligence);
-              }
-            }
-            if (data.assistance) {
-              try {
-                const parsedAssist: CopilotAssistance = typeof data.assistance === 'string'
-                  ? JSON.parse(data.assistance.replace(/```json/g, '').replace(/```/g, '').trim())
-                  : data.assistance;
-                setAssistance(parsedAssist);
-                processIncomingQuestions(parsedAssist);
-              } catch (assistErr) {
-                console.warn('[CopilotWS] Error parsing assistance JSON:', assistErr);
-                setAssistance(data.assistance);
-              }
-            }
+            updateState(data);
           }
         } catch (err) {
           console.error('[CopilotWS] Failed to parse message frame:', err);
@@ -208,7 +213,11 @@ export const useCopilotAudio = (sessionId: string | null) => {
 
   const stopConnection = () => {
     if (socketRef.current) {
-      socketRef.current.close();
+      const state = socketRef.current.readyState;
+      if (state === WebSocket.OPEN || state === WebSocket.CONNECTING) {
+        socketRef.current.close();
+      }
+      socketRef.current = null;
     }
     setStatus('disconnected');
   };
@@ -241,5 +250,6 @@ export const useCopilotAudio = (sessionId: string | null) => {
     startConnection,
     stopConnection,
     sendMessage,
+    updateState,
   };
 };

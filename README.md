@@ -1,145 +1,120 @@
-# AI Mock Interviewer — Decoupled Voice Screening Platform
+# AI Mock Interviewer - Monorepo
 
-An AI-powered, real-time voice screening mock interviewer designed to help candidates prepare for interviews. The platform dynamically parses candidate resumes, reads target Job Descriptions (JD), extracts candidate details, and conducts interactive technical and behavioral screening screens over local microphone and speaker hardware.
+AI-powered real-time voice screening platform for technical interviews.
 
-Built with a modular, **SOLID design pattern** architecture, it features a fully decoupled FastAPI backend, a React + Vite + TypeScript frontend with client-side playout buffering, and a PostgreSQL database layer with Tortoise ORM.
+## Features
 
----
+- **Real-time Voice Interview**: AI-powered voice interviews with Deepgram transcription
+- **Copilot Assistance**: AI copilot provides real-time suggestions to interviewers
+- **Intelligence Reports**: Generate detailed reports with AI analysis
+- **Mock Interview Mode**: Simulate interview sessions for practice
+- **Teams Integration**: Join Teams meetings for live interviews
 
-## 📂 Codebase Architecture
+## Architecture
+
+This is a **microservices monorepo** with two independent services:
+
+### Interview Service (Port 8000)
+- AI Mock Interviewer backend
+- Voice pipeline coordination
+- Interview session management
+
+### Copilot Service (Port 8001)
+- AI Copilot backend
+- Intelligence reports
+- Transcript analysis
+
+## Quick Start
+
+```bash
+# Install dependencies
+cd applications/frontend && npm install
+
+# Start services with Docker
+docker-compose up --build
+
+# Run tests
+bash scripts/test.sh
+```
+
+## Structure
 
 ```
 demo/
-├── docker-compose.yml                    # Docker orchestration config
-├── .dockerignore                         # Excludes heavy/secret files from docker context
-├── .gitignore                            # Excludes venv, sqlite, and credential files from Git
-├── .env                                  # Local environment variables (gitignored)
-├── .env.example                          # Credentials outline template
-├── requirements.txt                      # Project dependency configurations
-├── README.md                             # Project setup and usage instructions
-├── backend_api_docs.md                   # Full REST & WebSocket API documentation reference
-├── backend/                              # Backend FastAPI service
-│   ├── Dockerfile                        # Backend container recipe
-│   └── app/
-│       ├── main.py                       # FastAPI entrypoint & Tortoise ORM startup
-│       ├── core/                         # Configuration and SOLID interfaces
-│       ├── models/                       # Database schemas (interview_sessions table)
-│       ├── parsers/                      # Resume parsing strategies (factory pattern)
-│       ├── prompts/                      # LLM prompt templates
-│       ├── repositories/                 # PostgreSQL and JSON disk repository patterns
-│       └── pipeline/                     # Pipecat real-time audio orchestration pipeline
-└── frontend-new/                         # React SPA Frontend UI
-    ├── Dockerfile                        # Frontend Nginx container recipe
-    ├── nginx.conf                        # Nginx server & routing configuration
-    ├── package.json                      # Node packages configuration
-    └── src/                              # React application source code
+├── packages/          # Shared packages
+│   ├── domain-models/
+│   ├── adapters/
+│   ├── infrastructure/
+│   └── types/
+├── services/          # Backend services
+│   ├── interview/     # Interview API
+│   └── copilot/       # Copilot API
+├── applications/      # Frontend applications
+│   └── frontend/
+├── tests/             # Test suites
+│   └── integration/
+├── infrastructure/    # Infrastructure as Code
+├── scripts/           # Build and deployment scripts
+├── docs/              # Documentation
+├── .kiro/             # AI-DLC configuration
+└── migration-plan-phase*.md
 ```
 
----
+## Services
 
-## 🛠️ Technology Stack
+| Service | Port | Database | Description |
+|---------|------|----------|-------------|
+| Interview | 8000 | PostgreSQL:5432 | AI Interviewer API |
+| Copilot | 8001 | PostgreSQL:5433 | AI Copilot API |
+| Frontend | 3000 | - | React Application |
 
-* **VAD (Voice Activity Detection)**: Silero VAD (ONNX model) for low-latency voice capture.
-* **STT (Speech-to-Text)**: Deepgram API WebSocket streams.
-* **LLM (Language Model)**: Groq Cloud API running `llama-3.3-70b-versatile`.
-* **TTS (Text-to-Speech)**: Deepgram API WebSocket streams.
-* **Database**: PostgreSQL (v15+) with Tortoise ORM.
-* **Audio Playout Jitter Buffer**: Client-side (JS) 150ms buffer in the browser to ensure staccato-free playback.
-* **Web UI**: React, Vite, TypeScript, Tailwind CSS, TanStack Query, React Hook Form.
+## Development
 
----
+### Prerequisites
+- Node.js 20+
+- Python 3.12+
+- Docker & Docker Compose
+- bun (for AI-DLC)
 
-## 🚀 Setup & Run Instructions
+### Setup
+1. Clone the repository
+2. Install dependencies: `cd applications/frontend && npm install`
+3. Configure environment variables (see `.env.example`)
+4. Start services: `docker-compose up --build`
 
-Choose one of the two deployment methods below to start the application.
-
-### Prerequisites (For Both Paths)
-* **API Accounts**:
-  * [Groq Cloud Console API Key](https://console.groq.com/)
-  * [Deepgram Console API Key](https://console.deepgram.com/)
-* **Create Environment File**:
-  Copy the template file to `.env` in the root folder:
-  ```powershell
-  copy .env.example .env
-  ```
-  Fill in your actual API keys in `.env`:
-  ```env
-  DEEPGRAM_API_KEY=your_actual_deepgram_api_key
-  GROQ_API_KEY=your_actual_groq_api_key
-  ```
-
----
-
-### Path A: Docker Compose Deployment (Recommended & Easiest)
-
-This compiles and runs the database, backend, and frontend inside isolated Docker containers with shared persistent volumes.
-
-#### Step 1: Start Docker Desktop
-Ensure that **Docker Desktop** is open and running on your host machine.
-
-#### Step 2: Spin Up Containers
-Open a terminal in the root of the project and execute:
+### Running Tests
 ```bash
-docker compose up -d --build
+# Run all tests
+bash scripts/test.sh
+
+# Run with coverage
+pytest services/interview/tests/ -v --cov=.
 ```
-This builds both service containers, pulls the PostgreSQL database image, mounts persistence folders, and starts the system in the background.
 
-#### Step 3: Access the Apps
-* **Frontend Web Dashboard:** Open **[http://localhost:8502](http://localhost:8502)** on your browser.
-* **Backend API Docs (Swagger):** View **[http://localhost:8000/docs](http://localhost:8000/docs)**.
-
-#### Step 4: Stop Containers
-To stop the services, run:
+### Building
 ```bash
-docker compose down
+# Build all services
+bash scripts/build.sh
+
+# Build specific service
+cd services/interview
+docker build -t interview-service:latest .
 ```
 
----
+## API Documentation
 
-### Path B: Local Native Development Setup
+- [Interview API](docs/api/interview-endpoints.md)
+- [Copilot API](docs/api/copilot-endpoints.md)
+- [Architecture](docs/architecture/monorepo-structure.md)
+- [Getting Started](docs/developer/getting-started.md)
 
-This setup runs services directly on your host machine.
+## Contributing
 
-#### Step 1: Set Up PostgreSQL
-1. Ensure you have a local PostgreSQL server running.
-2. Create a database named `interview` on your PostgreSQL server.
-3. Configure the database credentials in your `.env` file. For example:
-   ```env
-   DATABASE_URL=postgres://postgres:1234@localhost:5432/interview
-   ```
+1. Create a feature branch
+2. Add tests for new functionality
+3. Run lint and tests
+4. Submit a pull request
 
-#### Step 2: Install Python Dependencies
-We recommend using `uv` for package management:
-```bash
-# Initialize venv and install requirements
-uv pip install -r requirements.txt
-```
-*(Alternatively: `pip install -r requirements.txt`)*
+## License
 
-#### Step 3: Start the Backend Service
-Run the FastAPI backend server:
-```bash
-uv run uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-#### Step 4: Start the Frontend App
-In a separate terminal window, start the React development server:
-```bash
-cd frontend-new
-npm run dev
-```
-Now, open your browser and navigate to **[http://localhost:3000](http://localhost:3000)**.
-
----
-
-## 🎙️ How to Conduct an Interview
-
-1. **Wear Headphones**: **Crucial!** Wearing headphones prevents your microphone from picking up the interviewer's own voice (preventing echo and audio interruption feedback loops).
-2. **Setup Context**:
-   * Paste the target **Job Description (JD)**.
-   * Upload the candidate's **Resume** (PDF or TXT).
-3. **Start Interview**: Click the **"🚀 Start Voice Interview"** button. Speak into your microphone naturally.
-4. **Inspect Past Records (Tab 2)**:
-   * View previous transcripts formatted as chat bubbles.
-   * **Original PDF Resume View:** Displays the original uploaded PDF resume in an embedded viewer instead of raw text.
-   * **Search & Filters:** Search previous candidates dynamically by Name or Session UUID, and filter records by completion date ranges.
+MIT

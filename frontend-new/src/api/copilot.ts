@@ -1,10 +1,11 @@
-import api from './axios';
+import copilotApi from './copilot-axios';
 import type { TranscriptEntry } from '../types';
 
 export interface StartCopilotRequest {
   jd: string;
   resume: string;
   custom_prompt?: string;
+  session_id?: string;
 }
 
 export interface StartCopilotResponse {
@@ -19,41 +20,51 @@ export interface CopilotStatusResponse {
 }
 
 export const startCopilot = async (data: StartCopilotRequest): Promise<StartCopilotResponse> => {
-  const res = await api.post<StartCopilotResponse>('/copilot/start', data);
+  const res = await copilotApi.post<StartCopilotResponse>('/copilot/start', data);
   return res.data;
 };
 
 export const stopCopilot = async (sessionId: string): Promise<{ status: string }> => {
-  const res = await api.post<{ status: string }>(`/copilot/${sessionId}/stop`);
+  const res = await copilotApi.post<{ status: string }>(`/copilot/${sessionId}/stop`);
   return res.data;
 };
 
 export const getCopilotStatus = async (sessionId: string): Promise<CopilotStatusResponse> => {
-  const res = await api.get<CopilotStatusResponse>(`/copilot/${sessionId}/status`);
+  const res = await copilotApi.get<CopilotStatusResponse>(`/copilot/${sessionId}/status`);
   return res.data;
 };
 
 export const finalizeCopilotReport = async (sessionId: string): Promise<any> => {
-  const res = await api.post(`/copilot/${sessionId}/finalize`);
+  const res = await copilotApi.post(`/copilot/${sessionId}/finalize`);
   return res.data;
 };
 
 export const updateCopilotPrompt = async (sessionId: string, custom_prompt: string): Promise<{ status: string; custom_prompt: string }> => {
-  const res = await api.patch<{ status: string; custom_prompt: string }>(`/copilot/${sessionId}/prompt`, {
+  const res = await copilotApi.patch<{ status: string; custom_prompt: string }>(`/copilot/${sessionId}/prompt`, {
     custom_prompt,
   });
   return res.data;
 };
 
+export const uploadSimulationAudio = async (sessionId: string, file: File): Promise<{ status: string }> => {
+  const formData = new FormData();
+  formData.append('file', file);
+  const res = await copilotApi.post<{ status: string }>(`/copilot/${sessionId}/upload-audio`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return res.data;
+};
+
 export const getCopilotWebSocketUrl = (sessionId: string): string => {
-  const base = import.meta.env.VITE_API_URL || import.meta.env.VITE_BACKEND_URL || '';
+  // Always use port 8001 for copilot WebSocket
+  const base = import.meta.env.VITE_COPILOT_URL || '';
   if (base) {
     try {
       const parsedUrl = new URL(base);
       const wsProtocol = parsedUrl.protocol === 'https:' ? 'wss:' : 'ws:';
       return `${wsProtocol}//${parsedUrl.host}/api/ws/copilot/${sessionId}`;
     } catch (e) {
-      console.warn('[CopilotWS] Failed to parse env backend URL, using relative path fallback', e);
+      console.warn('[CopilotWS] Failed to parse VITE_COPILOT_URL, using localhost:8001', e);
     }
   }
 
@@ -61,9 +72,30 @@ export const getCopilotWebSocketUrl = (sessionId: string): string => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 
   if (host.includes('localhost') || host.includes('127.0.0.1')) {
-    const backendPort = import.meta.env.VITE_BACKEND_PORT || '8000';
-    return `ws://localhost:${backendPort}/api/ws/copilot/${sessionId}`;
+    return `ws://localhost:8001/api/ws/copilot/${sessionId}`;
   }
 
   return `${protocol}//${host}/api/ws/copilot/${sessionId}`;
+};
+
+export const getSimulationWebSocketUrl = (sessionId: string): string => {
+  const base = import.meta.env.VITE_COPILOT_URL || '';
+  if (base) {
+    try {
+      const parsedUrl = new URL(base);
+      const wsProtocol = parsedUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${wsProtocol}//${parsedUrl.host}/api/ws/copilot/${sessionId}/simulate`;
+    } catch (e) {
+      console.warn('[SimulationWS] Failed to parse VITE_COPILOT_URL, using localhost:8001', e);
+    }
+  }
+
+  const host = window.location.host;
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+
+  if (host.includes('localhost') || host.includes('127.0.0.1')) {
+    return `ws://localhost:8001/api/ws/copilot/${sessionId}/simulate`;
+  }
+
+  return `${protocol}//${host}/api/ws/copilot/${sessionId}/simulate`;
 };

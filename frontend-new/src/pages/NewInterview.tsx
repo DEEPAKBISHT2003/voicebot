@@ -7,7 +7,8 @@ import { Upload, FileText, AlertCircle, Sparkles, Video, Volume2, Save, Check } 
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { TextArea } from '../components/TextArea';
-import { startInterview, parseResumeFile, uploadInterviewAudio } from '../api/interview';
+import { startInterview, parseResumeFile } from '../api/interview';
+import { uploadSimulationAudio, startCopilot } from '../api/copilot';
 
 const schema = zod.object({
   jd: zod.string().min(10, 'Job description must be at least 10 characters.'),
@@ -160,8 +161,15 @@ export const NewInterview: React.FC = () => {
       });
 
       if (interviewType === 'simulation' && simulationAudioFile) {
-        // Upload the audio file to the newly created session folder
-        await uploadInterviewAudio(response.session_id, simulationAudioFile);
+        // Create copilot session using the same session_id as the interview
+        await startCopilot({
+          jd: data.jd,
+          resume: data.resume || '',
+          custom_prompt: data.custom_prompt || '',
+          session_id: response.session_id,
+        });
+        // Upload the audio file to the copilot service
+        await uploadSimulationAudio(response.session_id, simulationAudioFile);
         // Redirect to Copilot room with simulate query parameter!
         navigate(`/copilots/${response.session_id}?simulate=true`);
       } else if (interviewType === 'teams') {

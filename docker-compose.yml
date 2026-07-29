@@ -12,20 +12,16 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
-  backend:
+  interview-service:
     build:
-      context: .
-      dockerfile: backend/Dockerfile
-    container_name: voicebot-backend
+      context: ./services/interview
+      dockerfile: Dockerfile
+    container_name: voicebot-interview-service
     restart: always
-    depends_on:
-      - db
     ports:
       - "8000:8000"
-    volumes:
-      - ./interviews:/app/interviews
     environment:
-      - DATABASE_URL=${DATABASE_URL_DOCKER:-postgres://postgres:1234@db:5432/interview}
+      - DATABASE_URL=${DATABASE_URL:-postgres://postgres:1234@db:5432/interview}
       - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
       - DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-deepseek-v4-flash}
@@ -34,8 +30,23 @@ services:
       - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
       - GROQ_COPILOT_MODEL=${GROQ_COPILOT_MODEL:-llama-3.1-8b-instant}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*}
-      - BACKEND_URL=${BACKEND_URL:-http://localhost:8000}
-      - BACKEND_WS_BASE=${BACKEND_WS_BASE:-ws://localhost:8000}
+      - COPILLOT_SERVICE_URL=${COPILLOT_SERVICE_URL:-http://copilot-service:8001}
+    depends_on:
+      - db
+
+  copilot-service:
+    build:
+      context: ./services/copilot
+      dockerfile: Dockerfile
+    container_name: voicebot-copilot-service
+    restart: always
+    ports:
+      - "8001:8001"
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgres://postgres:1234@db:5432/interview}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*}
+    depends_on:
+      - db
 
   frontend:
     build:
@@ -44,7 +55,7 @@ services:
     container_name: voicebot-frontend
     restart: always
     depends_on:
-      - backend
+      - interview-service
     ports:
       - "${FRONTEND_PORT:-3000}:80"
 

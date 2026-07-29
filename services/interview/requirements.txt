@@ -1,0 +1,13 @@
+# Interview Service Requirements
+pipecat-ai[local,openai,groq,deepgram]
+pyaudio
+pypdf
+python-dotenv
+loguru
+fastapi
+python-multipart
+httpx
+tortoise-orm
+asyncpg
+uvicorn
+playwright

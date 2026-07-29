@@ -34,7 +34,8 @@ export const CopilotSession: React.FC = () => {
     questions,
     togglePinQuestion,
     startConnection, 
-    stopConnection
+    stopConnection,
+    updateState
   } = useCopilotAudio(id || null);
 
   const [uiMode, setUiMode] = useState<'live' | 'report'>('live');
@@ -74,17 +75,12 @@ export const CopilotSession: React.FC = () => {
 
     console.log('[Simulation] Initiating background simulation trigger connection...');
     
-    let wsUrl = `ws://localhost:8000/api/ws/interview/${id}?mode=observer&simulate=true`;
-    const rawEnvUrl = import.meta.env.VITE_API_URL || 
-                      import.meta.env.VITE_BACKEND_URL;
-    if (rawEnvUrl) {
-      try {
-        const parsedUrl = new URL(rawEnvUrl);
-        const wsProtocol = parsedUrl.protocol === 'https:' ? 'wss:' : 'ws:';
-        wsUrl = `${wsProtocol}//${parsedUrl.host}/api/ws/interview/${id}?mode=observer&simulate=true`;
-      } catch (e) {
-        console.warn('[SimulationWS] Failed to parse env backend URL', e);
-      }
+    // Use copilot service simulation WebSocket (port 8001)
+    const host = window.location.host;
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    let wsUrl = `ws://localhost:8001/api/ws/copilot/${id}/simulate`;
+    if (!host.includes('localhost') && !host.includes('127.0.0.1')) {
+      wsUrl = `${wsProtocol}//${host}/ws/copilot/${id}/simulate`;
     }
 
     const ws = new WebSocket(wsUrl);
@@ -210,9 +206,12 @@ export const CopilotSession: React.FC = () => {
     const checkStatus = async () => {
       try {
         const res = await getCopilotStatus(id);
-        const active = (res as any).is_active;
-        if (active === false) {
-          setIsSimulationFinished(true);
+        if (res) {
+          updateState(res);
+          const active = (res as any).is_active;
+          if (active === false) {
+            setIsSimulationFinished(true);
+          }
         }
       } catch (err) {
         console.error('Failed to query session status:', err);

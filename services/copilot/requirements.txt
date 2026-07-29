@@ -1,0 +1,10 @@
+# Copilot Service Requirements
+python-dotenv
+loguru
+fastapi
+httpx
+pydantic
+tortoise-orm
+asyncpg
+uvicorn
+pipecat-ai[local,openai,groq,deepgram]

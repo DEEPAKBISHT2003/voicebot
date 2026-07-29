@@ -103,4 +103,9 @@ teams_bot_profile/
 VAD.md
 backend_api_docs.md
 PROCESS.md
+.kiro/
+AGENTS.md
+aidlc/
+migration-plan-phase*.md
+packages
 
