@@ -38,11 +38,6 @@ export const useInterviewAudio = (sessionId: string | null) => {
       }
     }
 
-    // In local development fallback if env keys aren't set
-    if (host.includes('localhost') || host.includes('127.0.0.1')) {
-      return `ws://localhost:8000/api/ws/interview/${sid}`;
-    }
-
     return `${protocol}//${host}/api/ws/interview/${sid}`;
   };
 

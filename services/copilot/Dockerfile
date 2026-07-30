@@ -1,34 +1,31 @@
-FROM python:3.12-slim
+FROM mcr.microsoft.com/playwright/python:v1.52.0-noble
 
-# Set working directory
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app
+
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
+# Install system dependencies required for PyAudio C compilation & audio support
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    python3-dev \
+    portaudio19-dev \
+    ffmpeg \
+    libasound2-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better caching
+# Copy and install python dependencies
 COPY requirements.txt .
+RUN pip install --no-cache-dir --break-system-packages -r requirements.txt
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Create parent package init for Python import resolution
+RUN mkdir -p /app/services && touch /app/services/__init__.py
 
-# Copy application code
-COPY src/ ./src/
-COPY .env .env
+# Copy service source code
+COPY . /app/services/copilot
 
-# Create non-root user
-RUN useradd -m -u 1000 appuser
-RUN chown -R appuser:appuser /app
-USER appuser
-
-# Expose port
 EXPOSE 8001
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8001/health', timeout=5)" || exit 1
-
-# Run the application
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
+CMD ["uvicorn", "services.copilot.src.main:app", "--host", "0.0.0.0", "--port", "8001"]

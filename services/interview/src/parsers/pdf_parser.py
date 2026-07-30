@@ -1,6 +1,6 @@
 import io
 from pypdf import PdfReader
-from backend.app.core.interfaces.document_parser import IDocumentParser
+from services.interview.src.core.interfaces.document_parser import IDocumentParser
 
 class PDFDocumentParser(IDocumentParser):
     """Parses PDF binary streams and extracts text pages."""

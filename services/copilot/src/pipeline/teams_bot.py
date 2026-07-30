@@ -209,6 +209,7 @@ async def run_bot(meeting_url: str, session_id: str):
             headless=True,
             args=[
                 "--use-fake-ui-for-media-stream",
+                "--use-fake-device-for-media-stream",
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--autoplay-policy=no-user-gesture-required",
@@ -217,9 +218,9 @@ async def run_bot(meeting_url: str, session_id: str):
             ]
         )
         
-        # Open context granting microphone permission for WebRTC stack initialization
+        # Open context granting microphone and camera permissions for WebRTC stack initialization
         context = await browser.new_context(
-            permissions=["microphone"]
+            permissions=["microphone", "camera"]
         )
         
         page = await context.new_page()
@@ -269,10 +270,19 @@ async def run_bot(meeting_url: str, session_id: str):
         # Enter guest name in name field
         try:
             logger.info("[TeamsBot] Waiting for credentials page to load (can take up to 30-45s)...")
-            name_input = page.locator("input[placeholder*='Enter name'], input[id*='username'], input[placeholder*='name'], input[placeholder*='Name'], input[aria-label*='name'], input[aria-label*='Name'], input[type='text']")
+            name_input = page.locator(
+                "input[data-tid='prejoin-display-name-input'], "
+                "input[placeholder='Type your name'], "
+                "input.fui-Input__input, "
+                "input[placeholder*='Type your name' i], "
+                "input[placeholder*='Enter name' i], "
+                "input[aria-label*='Type your name' i], "
+                "input[aria-label*='Enter name' i]"
+            )
             
             # Wait for name field to be loaded/visible
-            await name_input.first.wait_for(state="visible", timeout=45000)
+            target_name_input = name_input.first
+            await target_name_input.wait_for(state="visible", timeout=45000)
             
             # Ensure Video Camera is toggled OFF for privacy
             try:
@@ -318,13 +328,51 @@ async def run_bot(meeting_url: str, session_id: str):
             except Exception as me:
                 logger.warning(f"[TeamsBot] Could not verify/toggle microphone button: {me}")
 
-            await name_input.first.fill("AI Copilot Teammate", timeout=10000)
+            # Fill name input field with fallbacks
+            try:
+                await target_name_input.click(timeout=3000, force=True)
+                await target_name_input.fill("AI Copilot Teammate", timeout=5000)
+            except Exception as fe:
+                logger.warning(f"[TeamsBot] Playwright fill/click failed ({fe}); applying direct JS value assignment fallback...")
+                await target_name_input.evaluate(
+                    "(el, val) => { el.value = val; el.dispatchEvent(new Event('input', {bubbles: true})); el.dispatchEvent(new Event('change', {bubbles: true})); }",
+                    "AI Copilot Teammate"
+                )
+
+            try:
+                await target_name_input.dispatch_event("input")
+                await target_name_input.dispatch_event("change")
+            except Exception:
+                pass
+            logger.info("[TeamsBot] Filled guest display name input field.")
             
             # Click "Join Now" or "Join" button
-            join_button = page.locator("button:has-text('Join now'), button:has-text('Join'), button[data-tid='prejoin-join-button'], button:has-text('Join meeting')")
-            await join_button.first.wait_for(state="visible", timeout=10000)
-            await join_button.first.click(timeout=10000)
-            logger.info("[TeamsBot] Join request submitted. Waiting in lobby...")
+            join_button = page.locator(
+                "button#prejoin-join-button, "
+                "button[data-tid='prejoin-join-button'], "
+                "[id='prejoin-join-button'], "
+                "[data-tid='prejoin-join-button'], "
+                "button[aria-label='Join now'], "
+                "button[aria-label*='Join now' i], "
+                "button:has-text('Join now'), "
+                "button:has-text('Join meeting'), "
+                "button:has-text('Join')"
+            )
+            target_join_button = join_button.first
+            try:
+                await target_join_button.wait_for(state="visible", timeout=5000)
+                await target_join_button.click(timeout=5000, force=True)
+                logger.info("[TeamsBot] Join request submitted via Join button click.")
+            except Exception as jbe:
+                logger.warning(f"[TeamsBot] Direct Join button click failed ({jbe}); attempting JS click & Enter key fallback...")
+                try:
+                    await target_join_button.evaluate("el => el.click()")
+                    logger.info("[TeamsBot] Join request submitted via JS click.")
+                except Exception:
+                    await target_name_input.press("Enter")
+                    logger.info("[TeamsBot] Join request submitted via Enter key press.")
+
+            logger.info("[TeamsBot] Waiting in lobby...")
             await asyncio.sleep(5.0)
             try:
                 await page.screenshot(path=os.path.join(debug_dir, "teams_bot_lobby.png"))
@@ -341,6 +389,7 @@ async def run_bot(meeting_url: str, session_id: str):
         # Keep connection open until script is cancelled
         try:
             in_meeting_muted = False
+            in_meeting_camera_off = False
             while True:
                 await asyncio.sleep(3)
                 # Keep active check of the browser window health
@@ -348,9 +397,30 @@ async def run_bot(meeting_url: str, session_id: str):
                     logger.warning("[TeamsBot] Teams browser page closed. Exiting...")
                     break
 
+                all_frames = [page] + list(page.frames)
+
+                # In-meeting top toolbar camera check across all frames
+                if not in_meeting_camera_off:
+                    for frame in all_frames:
+                        try:
+                            in_meeting_camera = frame.locator("button[data-tid='camera-button'], button[aria-label*='camera' i], button[aria-label*='video' i]").first
+                            if await in_meeting_camera.is_visible(timeout=500):
+                                label = (await in_meeting_camera.get_attribute("aria-label") or "").lower()
+                                pressed = (await in_meeting_camera.get_attribute("aria-pressed") or "").lower()
+                                if pressed == "true" or ("turn camera off" in label) or ("camera on" in label and "turn camera on" not in label):
+                                    await in_meeting_camera.click()
+                                    in_meeting_camera_off = True
+                                    logger.info("[TeamsBot] In-meeting top toolbar camera clicked OFF.")
+                                    break
+                                elif "turn camera on" in label or pressed == "false":
+                                    in_meeting_camera_off = True
+                                    logger.info(f"[TeamsBot] In-meeting camera already OFF (label: '{label}').")
+                                    break
+                        except Exception:
+                            pass
+
                 # In-meeting top toolbar microphone mute check across all frames
                 if not in_meeting_muted:
-                    all_frames = [page] + list(page.frames)
                     for frame in all_frames:
                         try:
                             in_meeting_mic = frame.locator("button[data-tid='microphone-button'], button[aria-label*='Mute microphone' i], button[aria-label='Mute' i]").first

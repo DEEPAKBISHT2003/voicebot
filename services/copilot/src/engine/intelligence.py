@@ -2,7 +2,7 @@ import json
 from openai import AsyncOpenAI
 from loguru import logger
 from typing import List, Dict, Any
-from backend.app.core.config import Settings
+from services.copilot.src.core.config import Settings
 
 
 def clean_json_loads(text: str) -> dict:

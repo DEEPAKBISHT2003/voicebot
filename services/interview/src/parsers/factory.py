@@ -1,6 +1,6 @@
-from backend.app.core.interfaces.document_parser import IDocumentParser
-from backend.app.parsers.pdf_parser import PDFDocumentParser
-from backend.app.parsers.txt_parser import TXTDocumentParser
+from services.interview.src.core.interfaces.document_parser import IDocumentParser
+from services.interview.src.parsers.pdf_parser import PDFDocumentParser
+from services.interview.src.parsers.txt_parser import TXTDocumentParser
 
 class DocumentParserFactory:
     """Orchestrates creating the appropriate parser subclasses based on file types (OCP)."""

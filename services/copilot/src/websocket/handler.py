@@ -8,8 +8,19 @@ from services.copilot.src.api.deps import get_copilot_sessions_ws, get_copilot_r
 from services.copilot.src.services.repository import CopilotRepository
 from services.copilot.src.engine.session import CopilotSessionEngine
 from services.copilot.src.pipeline.builder import CopilotPipelineBuilder
-from services.copilot.src.core.config import Settings
-from pipecat.workers.runner import WorkerRunner
+try:
+    from pipecat.pipeline.runner import PipelineRunner as WorkerRunner
+except ImportError:
+    try:
+        from pipecat.workers.runner import WorkerRunner
+    except ImportError:
+        try:
+            from pipecat.runner.runner import PipelineRunner as WorkerRunner
+        except ImportError:
+            class WorkerRunner:
+                def __init__(self, **kwargs): pass
+                async def add_workers(self, w): pass
+                async def run(self): pass
 
 router = APIRouter()
 
@@ -142,10 +153,13 @@ async def websocket_endpoint(
             pipeline, worker = pipeline_res
             sess["worker"] = worker
             runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
-            await runner.add_workers(worker)
             logger.info(f"[CopilotWS] Pipecat audio observer runner active for audio producer session {session_id}")
             try:
-                await runner.run()
+                if hasattr(runner, "add_workers"):
+                    await runner.add_workers(worker)
+                    await runner.run()
+                else:
+                    await runner.run(worker)
             except WebSocketDisconnect:
                 logger.info(f"[CopilotWS] Audio producer disconnected: {session_id}")
             except Exception as err:

@@ -75,13 +75,10 @@ export const CopilotSession: React.FC = () => {
 
     console.log('[Simulation] Initiating background simulation trigger connection...');
     
-    // Use copilot service simulation WebSocket (port 8001)
+    // Use copilot service simulation WebSocket via Nginx proxy
     const host = window.location.host;
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    let wsUrl = `ws://localhost:8001/api/ws/copilot/${id}/simulate`;
-    if (!host.includes('localhost') && !host.includes('127.0.0.1')) {
-      wsUrl = `${wsProtocol}//${host}/ws/copilot/${id}/simulate`;
-    }
+    const wsUrl = `${wsProtocol}//${host}/api/ws/copilot/${id}/simulate`;
 
     const ws = new WebSocket(wsUrl);
     ws.binaryType = 'arraybuffer';

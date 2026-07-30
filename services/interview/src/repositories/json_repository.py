@@ -2,8 +2,8 @@ import os
 import json
 import uuid
 import datetime
-from backend.app.core.interfaces.repository import IInterviewRepository
-from backend.app.core.config import Settings
+from services.interview.src.core.interfaces.repository import IInterviewRepository
+from services.interview.src.core.config import Settings
 
 class JSONFileInterviewRepository(IInterviewRepository):
     """Saves and loads session records from local files on disk."""

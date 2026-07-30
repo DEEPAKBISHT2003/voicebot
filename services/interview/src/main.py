@@ -39,7 +39,7 @@ app.include_router(interviews_router, tags=["Interviews"])
 register_tortoise(
     app,
     db_url=Settings.DATABASE_URL,
-    modules={"models": ["services.interview.src.models.interview", "services.copilot.src.models.copilot"]},
+    modules={"models": ["services.interview.src.models.interview"]},
     generate_schemas=True,
     add_exception_handlers=True,
 )

@@ -65,20 +65,7 @@ class CopilotRepository:
             raise FileNotFoundError(f"Invalid session id format: '{session_id}'")
         session = await CopilotSessionModel.get_or_none(session_id=sid_uuid)
         if not session:
-            # Fallback check on interview_sessions table (shared database)
-            from services.interview.src.models.interview import InterviewSessionModel
-            interview = await InterviewSessionModel.get_or_none(session_id=sid_uuid)
-            if not interview:
-                raise FileNotFoundError(f"Copilot record not found for session: {session_id}")
-            # Automatically initialize matching CopilotSessionModel record
-            session = await CopilotSessionModel.create(
-                session_id=interview.session_id,
-                timestamp=interview.timestamp,
-                jd=interview.jd,
-                resume=interview.resume,
-                custom_prompt=interview.custom_prompt or "",
-                transcript=interview.transcript
-            )
+            raise FileNotFoundError(f"Copilot record not found for session: {session_id}")
         return {
             "session_id": str(session.session_id),
             "timestamp": session.timestamp.isoformat() if session.timestamp else None,

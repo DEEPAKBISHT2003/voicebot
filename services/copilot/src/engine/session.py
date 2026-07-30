@@ -3,7 +3,7 @@ import datetime
 from typing import List, Dict, Any, Set
 from loguru import logger
 from services.copilot.src.services.repository import CopilotRepository
-from services.interview.src.services.evaluation import CandidateEvaluationService
+from services.copilot.src.services.evaluation import CandidateEvaluationService
 from services.copilot.src.engine.intelligence import ConversationIntelligenceEngine
 from services.copilot.src.engine.copilot import AICopilotEngine
 

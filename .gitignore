@@ -1,68 +1,68 @@
-# Credentials & Environment Files (Never commit secret keys)
+# =============================================================
+# AI Mock Interviewer Platform — .gitignore
+# =============================================================
+
+# ─── Credentials & Environment Files ───────────────────────
 .env
 .env.*
 !.env.example
 frontend-new/.env
-frontend-new/.env.local
-frontend-new/.env.development.local
-frontend-new/.env.test.local
-frontend-new/.env.production.local
 frontend-new/.env.*
 !frontend-new/.env.example
 *.pem
 *.key
 *.cert
 
-# Python Virtual Environments & Dependencies
+# ─── Python Virtual Environments ───────────────────────────
 .venv/
 venv/
 ENV/
 env/
 .python-version
 
-# Python Cache & Compiled Code
+# ─── Python Cache & Compiled Code ──────────────────────────
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
 .ipynb_checkpoints/
+*.egg-info/
 
-# Local Storage, Recordings & Data Files
+# ─── Runtime Data & Session Storage ────────────────────────
 interviews/
 storage/
 backend/storage/
 **/storage/
+
+# ─── Audio & Media Files ───────────────────────────────────
 *.wav
 *.mp3
 *.pcm
-*.png
-*.jpg
-*.jpeg
 
-# Database Files
+# ─── Database Files ────────────────────────────────────────
 *.db
 *.sqlite
 *.sqlite3
 *.sqlite3-shm
 *.sqlite3-wal
 *.sqlite-journal
+db.sqlite3
 
-# Node Modules & Build Artifacts
+# ─── Node.js ──────────────────────────────────────────────
 node_modules/
-frontend-new/node_modules/
 dist/
-frontend-new/dist/
 build/
-*.egg-info/
+.eslintcache
+yarn-error.log
+pnpm-debug.log
 
-# Streamlit Local Configurations & Secrets
-.streamlit/
-.streamlit/config.toml
-.streamlit/secrets.toml
+# ─── Docker ───────────────────────────────────────────────
+postgres_data/
 
-# IDE & Editor Configurations
+# ─── IDE & Editor ─────────────────────────────────────────
 .vscode/
 .idea/
 *.suo
@@ -71,26 +71,18 @@ build/
 *.sln
 *.swp
 
-# OS-Specific Files
+# ─── OS-Specific ──────────────────────────────────────────
 .DS_Store
-.DS_Store?
-._*
 Thumbs.db
 ehthumbs.db
 
-# Logs & Agent Temporary Files
+# ─── Logs & Temp Files ────────────────────────────────────
 *.log
 logs/
 temp/
 tmp/
-scratch/
-.antigravityignore
-.gemini/
-.eslintcache
-yarn-error.log
-pnpm-debug.log
 
-# Playwright & Browser Automation Artifacts
+# ─── Playwright & Browser Automation ──────────────────────
 .playwright/
 ms-playwright/
 playwright-report/
@@ -99,13 +91,32 @@ test-results/
 .cache/
 teams_bot_profile/
 
-# Project Documentation & Notes
+# ─── AI-DLC / Kiro Workspace ─────────────────────────────
+.kiro/
+aidlc/
+AGENTS.md
+
+# ─── Coverage Reports ────────────────────────────────────
+htmlcov/
+coverage.xml
+.coverage
+*.cover
+
+# ─── Archive (historical migration plans) ────────────────
+docs/archive/
+
+# ─── Excluded Project Files ───────────────────────────────
 VAD.md
 backend_api_docs.md
+docs/01-requirements/
+docs/02-technical/
+docs/03-architecture/
+docs/04-database/
+docs/05-api/
+migration-plan-phase1.md
+migration-plan-phase2.md
+migration-plan-phase3.md
+migration-plan-phase4.md
+migration-plan-phase5.md
+packages/
 PROCESS.md
-.kiro/
-AGENTS.md
-aidlc/
-migration-plan-phase*.md
-packages
-

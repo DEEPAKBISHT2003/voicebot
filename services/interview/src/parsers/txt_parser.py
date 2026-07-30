@@ -1,4 +1,4 @@
-from backend.app.core.interfaces.document_parser import IDocumentParser
+from services.interview.src.core.interfaces.document_parser import IDocumentParser
 
 class TXTDocumentParser(IDocumentParser):
     """Parses plain text document files."""

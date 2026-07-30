@@ -4,13 +4,18 @@ services:
     container_name: voicebot-db
     restart: always
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: "1234"
-      POSTGRES_DB: interview
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-1234}
+      POSTGRES_DB: ${POSTGRES_DB:-interview}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-interview}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   interview-service:
     build:
@@ -21,7 +26,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=${DATABASE_URL:-postgres://postgres:1234@db:5432/interview}
+      - DATABASE_URL=${DATABASE_URL_DOCKER:-postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-1234}@db:5432/${POSTGRES_DB:-interview}}
       - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
       - DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-deepseek-v4-flash}
@@ -30,9 +35,15 @@ services:
       - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
       - GROQ_COPILOT_MODEL=${GROQ_COPILOT_MODEL:-llama-3.1-8b-instant}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*}
-      - COPILLOT_SERVICE_URL=${COPILLOT_SERVICE_URL:-http://copilot-service:8001}
+      - COPILOT_URL=${COPILOT_INTERNAL_URL:-http://copilot-service:8001}
+      - COPILOT_SERVICE_URL=${COPILOT_INTERNAL_URL:-http://copilot-service:8001}
+    volumes:
+      - ./interviews:/app/interviews
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+      copilot-service:
+        condition: service_healthy
 
   copilot-service:
     build:
@@ -43,10 +54,26 @@ services:
     ports:
       - "8001:8001"
     environment:
-      - DATABASE_URL=${DATABASE_URL:-postgres://postgres:1234@db:5432/interview}
+      - DATABASE_URL=${DATABASE_URL_DOCKER:-postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-1234}@db:5432/${POSTGRES_DB:-interview}}
+      - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-deepseek-v4-flash}
+      - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
+      - GROQ_COPILOT_MODEL=${GROQ_COPILOT_MODEL:-llama-3.1-8b-instant}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*}
+    volumes:
+      - ./interviews:/app/interviews
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8001/health\")' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
 
   frontend:
     build:
@@ -54,10 +81,11 @@ services:
       dockerfile: Dockerfile
     container_name: voicebot-frontend
     restart: always
-    depends_on:
-      - interview-service
     ports:
       - "${FRONTEND_PORT:-3000}:80"
+    depends_on:
+      - interview-service
+      - copilot-service
 
 volumes:
   postgres_data:

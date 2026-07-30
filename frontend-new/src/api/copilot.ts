@@ -70,11 +70,6 @@ export const getCopilotWebSocketUrl = (sessionId: string): string => {
 
   const host = window.location.host;
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-
-  if (host.includes('localhost') || host.includes('127.0.0.1')) {
-    return `ws://localhost:8001/api/ws/copilot/${sessionId}`;
-  }
-
   return `${protocol}//${host}/api/ws/copilot/${sessionId}`;
 };
 
@@ -92,10 +87,5 @@ export const getSimulationWebSocketUrl = (sessionId: string): string => {
 
   const host = window.location.host;
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-
-  if (host.includes('localhost') || host.includes('127.0.0.1')) {
-    return `ws://localhost:8001/api/ws/copilot/${sessionId}/simulate`;
-  }
-
   return `${protocol}//${host}/api/ws/copilot/${sessionId}/simulate`;
 };

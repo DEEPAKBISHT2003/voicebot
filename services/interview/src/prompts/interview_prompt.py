@@ -1,5 +1,5 @@
 from typing import Optional
-from backend.app.core.interfaces.prompt_builder import IPromptBuilder
+from services.interview.src.core.interfaces.prompt_builder import IPromptBuilder
 
 class InterviewPromptBuilder(IPromptBuilder):
     """Formats mock-interview system prompt instructions based on the JD and candidate resume."""

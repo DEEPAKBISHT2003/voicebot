@@ -4,7 +4,13 @@ from typing import Any, Callable, Optional, Tuple
 from loguru import logger
 
 from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.worker import PipelineParams, PipelineWorker
+try:
+    from pipecat.pipeline.task import PipelineParams, PipelineTask as PipelineWorker
+except ImportError:
+    try:
+        from pipecat.pipeline.runner import PipelineParams, PipelineRunner as PipelineWorker
+    except ImportError:
+        from pipecat.pipeline.pipeline import PipelineParams, PipelineWorker
 from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketTransport, FastAPIWebsocketParams
 from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor

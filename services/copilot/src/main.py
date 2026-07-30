@@ -43,7 +43,7 @@ app.include_router(simulation_router, prefix="/api", tags=["Simulation"])
 register_tortoise(
     app,
     db_url=Settings.DATABASE_URL,
-    modules={"models": ["services.interview.src.models.interview", "services.copilot.src.models.copilot"]},
+    modules={"models": ["services.copilot.src.models.copilot"]},
     generate_schemas=True,
     add_exception_handlers=True,
 )

@@ -10,4 +10,5 @@ httpx
 tortoise-orm
 asyncpg
 uvicorn
-playwright
+playwright==1.40.0
+tzdata

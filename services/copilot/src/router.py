@@ -191,7 +191,17 @@ async def get_copilot_status(
                 "custom_prompt": db_session.get("custom_prompt", "")
             }
         except FileNotFoundError:
-            raise HTTPException(status_code=404, detail="Session not found")
+            # Session not yet initialized in copilot — return a default waiting state
+            # instead of 404 so the frontend doesn't break during startup
+            return {
+                "session_id": session_id,
+                "is_active": False,
+                "status": "Copilot session initializing...",
+                "transcript": [],
+                "intelligence": {},
+                "assistance": {},
+                "custom_prompt": ""
+            }
 
 @router.post("/{session_id}/finalize")
 async def finalize_copilot_report(

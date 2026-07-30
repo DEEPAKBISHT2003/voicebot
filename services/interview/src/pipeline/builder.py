@@ -4,7 +4,13 @@ from typing import Any, Callable, Optional, Tuple
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.worker import PipelineParams, PipelineWorker
+try:
+    from pipecat.pipeline.task import PipelineParams, PipelineTask as PipelineWorker
+except ImportError:
+    try:
+        from pipecat.pipeline.runner import PipelineParams, PipelineRunner as PipelineWorker
+    except ImportError:
+        from pipecat.pipeline.pipeline import PipelineParams, PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
@@ -16,11 +22,11 @@ from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
 from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 
-from backend.app.core.interfaces.pipeline_builder import IPipelineBuilder
-from backend.app.core.config import Settings
-from backend.app.pipeline.accumulator import TranscriptAccumulator
-from backend.app.pipeline.playback_buffer import PlaybackBufferProcessor
-from backend.app.pipeline.mic_gate import MicGateProcessor, MicUnmuterProcessor
+from services.interview.src.core.interfaces.pipeline_builder import IPipelineBuilder
+from services.interview.src.core.config import Settings
+from services.interview.src.pipeline.accumulator import TranscriptAccumulator
+from services.interview.src.pipeline.playback_buffer import PlaybackBufferProcessor
+from services.interview.src.pipeline.mic_gate import MicGateProcessor, MicUnmuterProcessor
 
 class LocalPipecatPipelineBuilder(IPipelineBuilder):
     """Sets up local hardware audio transport and chains STT/DeepSeek LLM/TTS/Accumulator elements."""
@@ -39,7 +45,7 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
     ) -> Tuple[Pipeline, LLMContext, PipelineWorker]:
         if websocket is not None:
             from pipecat.transports.websocket.fastapi import FastAPIWebsocketTransport, FastAPIWebsocketParams
-            from backend.app.pipeline.serializer import RawPCMAudioSerializer
+            from services.interview.src.pipeline.serializer import RawPCMAudioSerializer
             
             transport = FastAPIWebsocketTransport(
                 websocket=websocket,
