@@ -27,6 +27,6 @@ RUN mkdir -p /app/services && touch /app/services/__init__.py
 # Copy service source code
 COPY . /app/services/interview
 
-EXPOSE 8000
+EXPOSE ${INTERVIEW_PORT:-8000}
 
-CMD ["uvicorn", "services.interview.src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "uvicorn services.interview.src.main:app --host 0.0.0.0 --port ${INTERVIEW_PORT:-8000}"]

@@ -26,6 +26,6 @@ RUN mkdir -p /app/services && touch /app/services/__init__.py
 # Copy service source code
 COPY . /app/services/copilot
 
-EXPOSE 8001
+EXPOSE ${COPILOT_PORT:-8001}
 
-CMD ["uvicorn", "services.copilot.src.main:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["sh", "-c", "uvicorn services.copilot.src.main:app --host 0.0.0.0 --port ${COPILOT_PORT:-8001}"]

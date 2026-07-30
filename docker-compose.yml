@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-1234}
       POSTGRES_DB: ${POSTGRES_DB:-interview}
     ports:
-      - "5432:5432"
+      - "${DB_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -24,8 +24,9 @@ services:
     container_name: voicebot-interview-service
     restart: always
     ports:
-      - "8000:8000"
+      - "${INTERVIEW_PORT:-8000}:${INTERVIEW_PORT:-8000}"
     environment:
+      - INTERVIEW_PORT=${INTERVIEW_PORT:-8000}
       - DATABASE_URL=${DATABASE_URL_DOCKER:-postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-1234}@db:5432/${POSTGRES_DB:-interview}}
       - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
@@ -35,8 +36,8 @@ services:
       - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
       - GROQ_COPILOT_MODEL=${GROQ_COPILOT_MODEL:-llama-3.1-8b-instant}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*}
-      - COPILOT_URL=${COPILOT_INTERNAL_URL:-http://copilot-service:8001}
-      - COPILOT_SERVICE_URL=${COPILOT_INTERNAL_URL:-http://copilot-service:8001}
+      - COPILOT_URL=${COPILOT_INTERNAL_URL:-http://copilot-service:${COPILOT_PORT:-8001}}
+      - COPILOT_SERVICE_URL=${COPILOT_INTERNAL_URL:-http://copilot-service:${COPILOT_PORT:-8001}}
     volumes:
       - ./interviews:/app/interviews
     depends_on:
@@ -52,8 +53,9 @@ services:
     container_name: voicebot-copilot-service
     restart: always
     ports:
-      - "8001:8001"
+      - "${COPILOT_PORT:-8001}:${COPILOT_PORT:-8001}"
     environment:
+      - COPILOT_PORT=${COPILOT_PORT:-8001}
       - DATABASE_URL=${DATABASE_URL_DOCKER:-postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-1234}@db:5432/${POSTGRES_DB:-interview}}
       - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
@@ -63,13 +65,14 @@ services:
       - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
       - GROQ_COPILOT_MODEL=${GROQ_COPILOT_MODEL:-llama-3.1-8b-instant}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*}
+      - BACKEND_WS_BASE=${BACKEND_WS_BASE:-ws://localhost:${COPILOT_PORT:-8001}}
     volumes:
       - ./interviews:/app/interviews
     depends_on:
       db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8001/health\")' || exit 1"]
+      test: ["CMD-SHELL", "python3 -c 'import os,urllib.request; urllib.request.urlopen(f\"http://localhost:{os.getenv(\"COPILOT_PORT\",\"8001\")}/health\")' || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 10
