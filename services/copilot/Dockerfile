@@ -46,8 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install ONLY Chromium browser binary (without system deps — already installed above)
-RUN playwright install chromium \
-    && rm -rf /root/.cache
+RUN playwright install chromium
 
 # Create parent package init for Python import resolution
 RUN mkdir -p /app/services && touch /app/services/__init__.py
