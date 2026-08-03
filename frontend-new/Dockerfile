@@ -7,6 +7,15 @@ COPY package*.json ./
 RUN npm ci --prefer-offline --no-audit
 
 COPY . .
+
+# Accept build-time env vars so Vite can bake them into the bundle
+ARG VITE_API_URL
+ARG VITE_COPILOT_URL
+ARG VITE_BACKEND_URL
+ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_COPILOT_URL=$VITE_COPILOT_URL
+ENV VITE_BACKEND_URL=$VITE_BACKEND_URL
+
 RUN npm run build
 
 # Stage 2: Serve static production assets with Nginx
