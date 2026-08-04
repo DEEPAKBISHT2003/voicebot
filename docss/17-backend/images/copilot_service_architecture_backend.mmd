@@ -1,0 +1,67 @@
+﻿graph TB
+    subgraph ENTRY_CS["Entry Point"]
+        UV_CS[Uvicorn]
+        FA_CS[FastAPI App]
+    end
+
+    subgraph ROUTING_CS["Routing - Two Routers Mounted"]
+        R1[router.py - /api]
+        R2[api/router.py - /api - duplicate]
+        WS_R[websocket/handler.py - /api/ws/copilot]
+        SIM_R[api/simulation.py - /api/copilot]
+    end
+
+    subgraph HANDLERS_CS["Route Handlers"]
+        START_COP[POST /copilot/start]
+        STOP_COP[POST /copilot/:id/stop]
+        STATUS[GET /copilot/:id/status]
+        FINALIZE[POST /copilot/:id/finalize]
+        PROMPT_UPD[PATCH /copilot/:id/prompt]
+        JOIN_MTG[POST /copilot/:id/join-meeting]
+        SIM_HTTP[POST /copilot/:id/simulate]
+        WS_DASH[WebSocket /ws/copilot/:id]
+        WS_SIM[WebSocket /ws/copilot/:id/simulate]
+    end
+
+    subgraph ENGINE_CS["Engine Layer"]
+        SESSION_ENG[CopilotSessionEngine]
+        COPILOT_AI[AICopilotEngine]
+        INTEL_AI[ConversationIntelligenceEngine]
+        EVAL_AI[CandidateEvaluationService]
+    end
+
+    subgraph PERSIST_CS["Persistence"]
+        COP_REPO[CopilotRepository]
+        PG_COP[PostgreSQL - copilot_sessions]
+        FS_COP[File System - copilots/]
+    end
+
+    subgraph STATE_CS["App State"]
+        ACTIVE_COP[copilot_sessions dict]
+    end
+
+    UV_CS --> FA_CS
+    FA_CS --> R1
+    FA_CS --> R2
+    FA_CS --> WS_R
+    FA_CS --> SIM_R
+
+    R1 --> START_COP
+    R1 --> STOP_COP
+    R1 --> STATUS
+    R1 --> FINALIZE
+    R1 --> PROMPT_UPD
+    R1 --> JOIN_MTG
+    SIM_R --> SIM_HTTP
+    SIM_R --> WS_SIM
+    WS_R --> WS_DASH
+
+    START_COP --> ACTIVE_COP
+    START_COP --> COP_REPO
+    WS_DASH --> SESSION_ENG
+    SESSION_ENG --> COPILOT_AI
+    SESSION_ENG --> INTEL_AI
+    SESSION_ENG --> EVAL_AI
+    SESSION_ENG --> COP_REPO
+    COP_REPO --> PG_COP
+    COP_REPO --> FS_COP

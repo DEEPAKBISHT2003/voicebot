@@ -1,0 +1,40 @@
+﻿flowchart TD
+    A[docker compose up] --> B[PostgreSQL container starts]
+    B --> C{pg_isready health check}
+    C -->|fail| C
+    C -->|pass| D[Backend services start in parallel]
+
+    subgraph IS["Interview Service :8000"]
+        D --> IS1[Python 3.11 process starts]
+        IS1 --> IS2[Uvicorn loads FastAPI app]
+        IS2 --> IS3[lifespan: Tortoise.init]
+        IS3 --> IS4[generate_schemas - create tables]
+        IS4 --> IS5[app.state.active_sessions = dict]
+        IS5 --> IS6[CORS middleware registered]
+        IS6 --> IS7[Router mounted at /api]
+        IS7 --> IS8[Uvicorn ready - listening :8000]
+    end
+
+    subgraph CS["Copilot Service :8001"]
+        D --> CS1[Python 3.12 process starts]
+        CS1 --> CS2[Uvicorn loads FastAPI app]
+        CS2 --> CS3[lifespan: mkdir interviews/copilots]
+        CS3 --> CS4[CopilotRepository initialized]
+        CS4 --> CS5[Tortoise.init + generate_schemas]
+        CS5 --> CS6[NLTK punkt_tab download attempt]
+        CS6 --> CS7[app.state.copilot_sessions = dict]
+        CS7 --> CS8[Routers mounted]
+        CS8 --> CS9[Uvicorn ready - listening :8001]
+    end
+
+    IS8 --> FE[Frontend container starts]
+    CS9 --> FE
+    FE --> FE1[Node 20 build]
+    FE1 --> FE2[npm run build - Vite compile]
+    FE2 --> FE3[dist/ copied to Nginx image]
+    FE3 --> FE4[Nginx starts - listening :80]
+    FE4 --> READY[All services ready]
+
+    style READY fill:#dcfce7,stroke:#22c55e
+    style C fill:#fef9c3,stroke:#eab308
+

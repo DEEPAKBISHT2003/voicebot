@@ -1,0 +1,46 @@
+﻿graph LR
+    subgraph HTTP["HTTP Layer"]
+        FASTAPI_IS2[FastAPI IS]
+        FASTAPI_CS2[FastAPI CS]
+    end
+
+    subgraph BL["Business Logic Layer"]
+        PROMPT2[Prompt Builder]
+        CLASSIFY2[Speaker Classifier]
+        STITCH[Utterance Stitcher]
+        DECISION[Decision Engine]
+    end
+
+    subgraph SL["Service Layer"]
+        PIPELINE2[Pipecat Pipeline]
+        SESSION_ENG2[CopilotSessionEngine]
+        EVAL2[EvaluationService]
+        INTEL2[IntelligenceEngine]
+        ASSIST2[CopilotEngine]
+    end
+
+    subgraph RL["Repository Layer"]
+        PG_IS2[PG Interview Repo]
+        PG_CS2[PG Copilot Repo]
+        FS_IS2[FS Interview Repo]
+        FS_CS2[FS Copilot Repo]
+    end
+
+    subgraph EXT["External Services"]
+        DG2[Deepgram]
+        DS2[DeepSeek]
+        GQ2[Groq]
+    end
+
+    HTTP --> BL
+    BL --> SL
+    SL --> RL
+    SL --> EXT
+    RL --> DB2[(PostgreSQL)]
+    RL --> FS3[(File System)]
+
+    style HTTP fill:#dbeafe,stroke:#3b82f6
+    style BL fill:#dcfce7,stroke:#22c55e
+    style SL fill:#fce7f3,stroke:#ec4899
+    style RL fill:#fef9c3,stroke:#eab308
+    style EXT fill:#ffedd5,stroke:#f97316

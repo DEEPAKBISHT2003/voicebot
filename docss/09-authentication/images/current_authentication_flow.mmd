@@ -1,0 +1,14 @@
+﻿flowchart TD
+    A[User opens browser] --> B[React App loads]
+    B --> C[User fills JD + Resume form]
+    C --> D[POST /api/interviews/start]
+    D --> E{Nginx routing}
+    E --> F[Interview Service]
+    F --> G[Generate UUID session_id]
+    G --> H[Return session_id to browser]
+    H --> I[Browser stores session_id in component state]
+    I --> J[Open WebSocket with session_id in URL]
+    J --> K[All subsequent API calls use session_id]
+
+    style G fill:#fef9c3,stroke:#eab308
+    note_1["⚠️ No auth token, no JWT, no login — UUID is the only access control"]

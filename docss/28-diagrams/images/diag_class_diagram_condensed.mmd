@@ -1,0 +1,29 @@
+﻿classDiagram
+    class LocalPipecatPipelineBuilder {
+        +build_pipeline() Tuple~Pipeline,Context,Worker~
+    }
+    class CopilotSessionEngine {
+        -transcript: List
+        -evaluation_service: CandidateEvaluationService
+        -intelligence_engine: ConversationIntelligenceEngine
+        -copilot_assistant: AICopilotEngine
+        +add_message(speaker, text) Dict
+        +finalize_report() Dict
+    }
+    class AICopilotEngine {
+        +generate_assistance(transcript, jd, resume) dict
+    }
+    class ConversationIntelligenceEngine {
+        +analyze(transcript, jd, resume) dict
+    }
+    class CandidateEvaluationService {
+        +evaluate_response(response, jd, resume, question) dict
+    }
+    class CopilotRepository {
+        +save_session(id, data) None
+        +get_session(id) dict
+    }
+    CopilotSessionEngine --> AICopilotEngine
+    CopilotSessionEngine --> ConversationIntelligenceEngine
+    CopilotSessionEngine --> CandidateEvaluationService
+    CopilotSessionEngine --> CopilotRepository

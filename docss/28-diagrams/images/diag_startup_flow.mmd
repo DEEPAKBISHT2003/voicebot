@@ -1,0 +1,13 @@
+﻿flowchart TD
+    START[docker compose up] --> PG_START[PostgreSQL starts]
+    PG_START --> PG_HEALTH{pg_isready?}
+    PG_HEALTH -->|Fail| PG_HEALTH
+    PG_HEALTH -->|Pass| BACKENDS[Both services start]
+    BACKENDS --> IS_INIT[Interview: Tortoise.init + generate_schemas]
+    BACKENDS --> CS_INIT[Copilot: mkdir + CopilotRepository + Tortoise.init]
+    IS_INIT --> IS_READY[Interview Service Ready :8000]
+    CS_INIT --> CS_READY[Copilot Service Ready :8001]
+    IS_READY --> FE_START[Frontend build + Nginx start]
+    CS_READY --> FE_START
+    FE_START --> ALL_READY[All services ready - http://localhost]
+    style ALL_READY fill:#dcfce7,stroke:#22c55e

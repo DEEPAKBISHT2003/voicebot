@@ -1,0 +1,46 @@
+﻿sequenceDiagram
+    actor HR as 👤 Interviewer (HR)
+    participant FE as Copilot Dashboard
+    participant NX as Nginx
+    participant CS as Copilot Service
+    participant DS as DeepSeek API
+    participant GQ as Groq API
+    participant PG as PostgreSQL
+
+    HR->>FE: Open Copilot Session Page
+    FE->>NX: WebSocket /api/ws/copilot/{id}
+    NX->>CS: WebSocket upgrade (dashboard mode)
+    CS-->>FE: Connected - current state JSON
+
+    loop Per Candidate/Interviewer Utterance
+        Note over CS: Transcript arrives (from IS or mic)
+        CS->>CS: add_message() → <5ms return
+        CS->>CS: Utterance stitching (same-speaker merge)
+        CS->>CS: asyncio.create_task() - background tasks
+
+        par 3 parallel LLM tasks
+            CS->>GQ: CandidateEvaluationService (6-dimension scoring)
+            GQ-->>CS: { technical_accuracy: 75, confidence: 60, ... }
+        and
+            CS->>DS: ConversationIntelligenceEngine (JD/resume coverage)
+            DS-->>CS: { jd_coverage: [...], resume_coverage: [...] }
+        and
+            CS->>DS: AICopilotEngine (suggestions)
+            DS-->>CS: { suggested_follow_up_questions: [...] }
+        end
+
+        CS->>CS: Decision engine (Strong/Partial/Weak)
+        CS->>PG: Save updated session state
+        CS-->>FE: WebSocket JSON {type: "copilot_update", transcript, intelligence, assistance}
+        FE->>FE: Re-render suggestions panel (React state update)
+        HR->>HR: Views follow-up questions, coverage map
+    end
+
+    HR->>FE: Click "Generate Report"
+    FE->>NX: POST /api/copilot/{id}/finalize
+    NX->>CS: finalize_report()
+    CS->>DS: Final intelligence analysis
+    CS->>GQ: Final evaluation pass
+    CS->>PG: Save finalized report
+    CS-->>FE: Full report JSON
+    FE->>FE: Switch to report view

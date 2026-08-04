@@ -1,0 +1,10 @@
+﻿flowchart TD
+    A[User opens app] --> B[POST /interviews/start]
+    B --> C[Generate UUID session_id]
+    C --> D[Return session_id]
+    D --> E[All API calls use session_id in URL]
+    E --> F{Valid UUID in DB?}
+    F -->|Yes| G[Allow access]
+    F -->|No| H[404 Not Found]
+    note1["⚠️ UUID = only access control in V1\nNo JWT, no login, no auth tokens"]
+    style note1 fill:#fef9c3,stroke:#eab308

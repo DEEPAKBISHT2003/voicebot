@@ -1,0 +1,31 @@
+﻿flowchart TD
+    subgraph DG_FAIL["Deepgram Failure"]
+        DG1[STT WebSocket drops] --> DG2[Pipecat attempts reconnect]
+        DG2 -->|Fail| DG3[Audio stops transcribing]
+        DG3 --> DG4[Session still active - no crash]
+
+        DG_TTS[TTS API error] --> DG5[Log error]
+        DG5 --> DG6[No audio response - text only]
+    end
+
+    subgraph DS_FAIL["DeepSeek Failure"]
+        DS1[API timeout or 5xx] --> DS2[AsyncOpenAI retries 2x]
+        DS2 -->|Still fails| DS3[except block catches]
+        DS3 --> DS4[Return empty state dict]
+        DS4 --> DS5[Copilot shows no suggestions]
+    end
+
+    subgraph GQ_FAIL["Groq Failure"]
+        GQ1[API error] --> GQ2[except block]
+        GQ2 --> GQ3[Return empty evaluation]
+        GQ3 --> GQ4[No scores shown - interview continues]
+    end
+
+    subgraph PW_FAIL["Playwright Teams Bot Failure"]
+        PW1[Teams URL invalid] --> PW2[Browser navigation fails]
+        PW2 --> PW3[Process exits with error log]
+        PW3 --> PW4[Interview session unaffected]
+
+        PW5[Teams UI changes] --> PW6[Selector not found]
+        PW6 --> PW7[Bot cannot join - logs error]
+    end

@@ -1,0 +1,16 @@
+﻿flowchart TD
+    ERR[Error occurs] --> TYPE{Error type}
+    TYPE -->|LLM API failure| E1[Return empty state dict]
+    TYPE -->|WebSocket disconnect| E2[cancel worker + flush WAV + save DB]
+    TYPE -->|DB write failure| E3[Log error + continue session]
+    TYPE -->|File system full| E4[Log OSError - service may crash]
+    TYPE -->|Deepgram STT drops| E5[Pipecat reconnects automatically]
+    TYPE -->|JSON parse error| E6[clean_json_loads strips markdown + retry parse]
+    E1 --> CONT[Session continues]
+    E2 --> CLEAN[Clean shutdown]
+    E3 --> CONT
+    E5 --> CONT
+    E6 --> CONT
+    style CONT fill:#dcfce7,stroke:#22c55e
+    style CLEAN fill:#dbeafe,stroke:#3b82f6
+    style E4 fill:#fecaca,stroke:#ef4444

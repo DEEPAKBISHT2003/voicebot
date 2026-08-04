@@ -1,0 +1,40 @@
+﻿graph TD
+    subgraph VOICE["Voice Interview Pipeline - Pipecat"]
+        STT[Deepgram STT - nova-2 streaming]
+        VAD[Silero VAD - Voice Activity Detection]
+        CTX[LLMContext - Conversation Memory]
+        LLM1[DeepSeek LLM - deepseek-v4-flash]
+        TTS[Deepgram TTS - aura-2-amalthea-en]
+    end
+
+    subgraph COPILOT["Copilot Intelligence Engine - Parallel"]
+        EVAL[CandidateEvaluationService - Groq LLaMA]
+        INTEL[ConversationIntelligenceEngine - DeepSeek]
+        ASSIST[AICopilotEngine - DeepSeek]
+        DECIDE[Decision Engine - Strong/Partial/Weak]
+    end
+
+    subgraph TRANSCRIBE["Transcription Subsystem"]
+        DGREST[Deepgram REST API - Batch - Simulation]
+        STREAM_STT[Deepgram Streaming - Live Observer]
+    end
+
+    AUDIO[Browser Microphone / Teams WebRTC] --> STT
+    STT --> VAD
+    VAD --> CTX
+    CTX --> LLM1
+    LLM1 --> TTS
+    TTS --> AUDIO
+
+    TRANSCRIPT[Live Transcript] --> EVAL
+    TRANSCRIPT --> INTEL
+    TRANSCRIPT --> ASSIST
+    EVAL --> DECIDE
+    DECIDE --> ASSIST
+
+    WAV_FILE[Uploaded WAV] --> DGREST
+    TEAMS_AUDIO[Teams WebRTC Audio] --> STREAM_STT
+
+    style VOICE fill:#dcfce7,stroke:#22c55e
+    style COPILOT fill:#fce7f3,stroke:#ec4899
+    style TRANSCRIBE fill:#dbeafe,stroke:#3b82f6

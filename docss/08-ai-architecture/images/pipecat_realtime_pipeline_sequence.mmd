@@ -1,0 +1,37 @@
+﻿sequenceDiagram
+    participant MIC as Browser Mic
+    participant WS_C as WebSocket Client
+    participant GATE as MicGate
+    participant DG_STT as Deepgram STT
+    participant ACC as TranscriptAccumulator
+    participant VAD as Silero VAD
+    participant LLM as DeepSeek LLM
+    participant TTS_DG as Deepgram TTS
+    participant BUF as PlaybackBuffer
+    participant WS_S as WebSocket Server
+
+    Note over WS_S: Session starts - mic is BLOCKED
+    WS_S->>LLM: Initial greeting trigger
+    LLM-->>TTS_DG: "Hello, I'm Sarah. Please introduce yourself, John."
+    TTS_DG-->>BUF: PCM audio chunks
+    BUF-->>WS_C: Binary audio
+    WS_C->>MIC: Plays greeting
+    Note over GATE: Greeting complete - mic UNBLOCKED
+
+    MIC->>WS_C: 48kHz Float32 audio
+    WS_C->>WS_C: Downsample → 16kHz Int16
+    WS_C->>WS_S: Binary PCM ArrayBuffer
+    WS_S->>GATE: Audio frame
+    GATE->>DG_STT: Audio frame (gate open)
+    DG_STT-->>ACC: "I have 5 years of Python experience..."
+    ACC->>ACC: classify_speaker_role()
+    ACC-->>VAD: Text frame
+    VAD->>VAD: Detect end-of-speech (silence > 400ms)
+    VAD->>LLM: Aggregated user context
+    LLM-->>ACC: "That's great! Tell me about a challenging project."
+    ACC->>ACC: Save assistant transcript
+    ACC->>TTS_DG: Response text
+    TTS_DG-->>BUF: PCM chunks
+    BUF->>WS_S: Consolidated audio
+    WS_S-->>WS_C: Binary PCM
+    WS_C->>MIC: Schedule playback

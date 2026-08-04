@@ -1,0 +1,21 @@
+﻿graph TB
+    subgraph HOST["Ubuntu EC2 Host"]
+        subgraph COMPOSE["Docker Compose - voicebot-net"]
+            FE["voicebot-frontend\nnginx:alpine :80"]
+            IS2["voicebot-interview-service\npython:3.11-slim :8000"]
+            CS2["voicebot-copilot-service\npython:3.12-slim :8001"]
+            PG2["voicebot-db\npostgres:15-alpine :5432"]
+        end
+        V1["postgres_data (named volume)"]
+        V2["./interviews/ (bind mount)"]
+    end
+    INTERNET["Internet"] -->|:80| FE
+    FE --> IS2
+    FE --> CS2
+    IS2 --> PG2
+    CS2 --> PG2
+    IS2 <-->|HTTP :8001| CS2
+    PG2 -.-> V1
+    IS2 -.-> V2
+    CS2 -.-> V2
+    style HOST fill:#f0fdf4,stroke:#16a34a

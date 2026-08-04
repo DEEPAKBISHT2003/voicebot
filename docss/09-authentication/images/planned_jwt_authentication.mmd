@@ -1,0 +1,17 @@
+﻿flowchart TD
+    subgraph PLANNED["Planned - Future Implementation"]
+        A[User] --> B[Login Page]
+        B --> C[POST /auth/login - email + password]
+        C --> D[Verify credentials against users table]
+        D --> E[Generate JWT access token - 15 min]
+        D --> F[Generate JWT refresh token - 7 days - HttpOnly cookie]
+        E --> G[Return access token to browser]
+        G --> H[Browser stores in memory - not localStorage]
+        H --> I[Include Authorization: Bearer token in all API calls]
+        I --> J[JWT Middleware validates token]
+        J --> K[Extract user_id from claims]
+        K --> L[Check session ownership - sessions.owner_id = user_id]
+        L --> M[Allow/Deny access]
+    end
+
+    style PLANNED fill:#fef9c3,stroke:#eab308

@@ -1,0 +1,10 @@
+﻿stateDiagram-v2
+    [*] --> Initialized: build_pipeline() called
+    Initialized --> Running: runner.add_workers(worker)
+    Running --> Processing: LLMRunFrame queued
+    Processing --> Running: response cycle complete
+    Running --> Paused: MicGate blocks input
+    Paused --> Running: MicUnmuter fires
+    Running --> Cancelled: worker.cancel() or WebSocket close
+    Cancelled --> Saving: AudioBufferProcessor flush
+    Saving --> [*]: WAV + DB saved

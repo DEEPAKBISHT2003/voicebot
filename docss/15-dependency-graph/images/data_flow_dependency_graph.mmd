@@ -1,0 +1,66 @@
+﻿graph TD
+    subgraph SOURCES["Data Sources"]
+        MIC[Browser Microphone]
+        TEAMS_AUDIO[Teams WebRTC Audio]
+        WAV[Uploaded WAV File]
+        JD[Job Description text]
+        RESUME[Resume text]
+    end
+
+    subgraph PROCESSING["Processing Pipeline"]
+        STT_STREAM[Deepgram Streaming STT]
+        STT_REST[Deepgram REST STT]
+        LLM_INT[DeepSeek LLM - Interviewer]
+        LLM_ASSIST[DeepSeek LLM - Copilot]
+        LLM_INTEL[DeepSeek LLM - Intelligence]
+        LLM_EVAL[Groq LLaMA - Evaluation]
+        TTS_ENGINE[Deepgram TTS]
+        VAD_ENGINE[Silero VAD]
+    end
+
+    subgraph STORAGE["Storage Layer"]
+        POSTGRES_DB[(PostgreSQL)]
+        FILE_SYS[(File System)]
+    end
+
+    subgraph OUTPUT["Output"]
+        AUDIO_OUT[Browser Audio Playback]
+        DASHBOARD[Copilot Dashboard]
+        REPORT[Post-Interview Report]
+    end
+
+    MIC --> STT_STREAM
+    TEAMS_AUDIO --> STT_STREAM
+    WAV --> STT_REST
+
+    JD --> LLM_INT
+    JD --> LLM_ASSIST
+    JD --> LLM_INTEL
+    JD --> LLM_EVAL
+
+    RESUME --> LLM_INT
+    RESUME --> LLM_ASSIST
+    RESUME --> LLM_INTEL
+    RESUME --> LLM_EVAL
+
+    STT_STREAM --> VAD_ENGINE
+    VAD_ENGINE --> LLM_INT
+    LLM_INT --> TTS_ENGINE
+    TTS_ENGINE --> AUDIO_OUT
+
+    STT_STREAM --> LLM_ASSIST
+    STT_STREAM --> LLM_INTEL
+    STT_STREAM --> LLM_EVAL
+    STT_REST --> LLM_ASSIST
+    STT_REST --> LLM_INTEL
+    STT_REST --> LLM_EVAL
+
+    LLM_ASSIST --> DASHBOARD
+    LLM_INTEL --> DASHBOARD
+    LLM_EVAL --> DASHBOARD
+
+    STT_STREAM --> POSTGRES_DB
+    LLM_EVAL --> POSTGRES_DB
+    LLM_ASSIST --> POSTGRES_DB
+    POSTGRES_DB --> REPORT
+    MIC --> FILE_SYS

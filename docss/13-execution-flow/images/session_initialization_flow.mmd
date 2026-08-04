@@ -1,0 +1,27 @@
+﻿flowchart TD
+    A[User: POST /api/interviews/start] --> B[FastAPI receives request]
+    B --> C[InterviewSession.create in PostgreSQL]
+    C --> D[Generate UUID session_id]
+    D --> E[Create ./interviews/session_id/ directory]
+    E --> F[Write jd.txt + resume.txt files]
+    F --> G[Add session to active_sessions dict in memory]
+    G --> H{meeting_url provided?}
+    H -->|Yes| I[asyncio.create_task: spawn Teams bot via Copilot service]
+    H -->|No| J[asyncio.create_task: init copilot session via HTTP]
+    I --> J
+    J --> K[Return session_id to frontend]
+    K --> L[Frontend opens WebSocket]
+    L --> M[WebSocket handler: build Pipecat pipeline]
+    M --> N[InterviewPromptBuilder.build_system_instruction]
+    N --> O[LocalPipecatPipelineBuilder.build_pipeline]
+    O --> P[WorkerRunner.add_workers]
+    P --> Q{is_observer mode?}
+    Q -->|No| R[Queue LLMRunFrame - trigger AI greeting]
+    Q -->|Yes| S[Observer mode - no greeting]
+    R --> T[Pipeline running - audio exchange begins]
+    S --> T
+
+    style D fill:#dbeafe,stroke:#3b82f6
+    style T fill:#dcfce7,stroke:#22c55e
+
+

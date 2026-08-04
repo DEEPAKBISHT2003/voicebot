@@ -1,0 +1,57 @@
+﻿sequenceDiagram
+    actor User as 👤 User
+    participant FE as React Frontend
+    participant NX as Nginx
+    participant IS as Interview Service
+    participant DG_STT as Deepgram STT
+    participant DS_LLM as DeepSeek LLM
+    participant DG_TTS as Deepgram TTS
+    participant PG as PostgreSQL
+    participant CS as Copilot Service
+
+    User->>FE: Paste JD + Upload Resume
+    FE->>NX: POST /api/interviews/parse-resume
+    NX->>IS: POST /api/interviews/parse-resume
+    IS-->>FE: { text: "...resume text..." }
+
+    FE->>NX: POST /api/interviews/start {jd, resume}
+    NX->>IS: POST /api/interviews/start
+    IS->>PG: INSERT interview_sessions
+    IS->>CS: POST /api/copilot/start (async background)
+    IS-->>FE: { session_id: "abc123" }
+
+    FE->>NX: WebSocket /api/ws/interview/abc123
+    NX->>IS: WebSocket upgrade
+    IS->>IS: Build Pipecat pipeline
+    IS->>DS_LLM: Generate greeting (system prompt + LLMRunFrame)
+    DS_LLM-->>IS: "Hello! I'm Sarah, your AI interviewer..."
+    IS->>DG_TTS: Convert greeting to audio
+    DG_TTS-->>IS: 16kHz PCM audio chunks
+    IS-->>FE: Binary PCM audio (WebSocket)
+    FE->>FE: Web Audio API plays greeting
+
+    loop Interview Turns
+        User->>FE: Speaks into microphone
+        FE->>FE: Downsample 48kHz → 16kHz, Int16 PCM
+        FE->>IS: Binary PCM ArrayBuffer (WebSocket)
+        IS->>DG_STT: Stream audio (WebSocket)
+        DG_STT-->>IS: Transcript + speaker_id
+        IS->>IS: classify_speaker_role()
+        IS->>PG: Save transcript entry
+        IS->>CS: Forward to copilot engine (in-memory)
+        IS->>IS: Silero VAD detects end-of-speech
+        IS->>DS_LLM: POST with full conversation context
+        DS_LLM-->>IS: AI interviewer response text
+        IS->>DG_TTS: Text → speech synthesis
+        DG_TTS-->>IS: 16kHz PCM chunks
+        IS-->>FE: Binary PCM audio (WebSocket)
+        FE->>FE: Schedule playback via AudioContext
+        CS->>CS: Run 3 parallel LLM tasks (background)
+    end
+
+    User->>FE: Click "End Interview"
+    FE->>NX: POST /api/interviews/{id}/stop
+    NX->>IS: POST /api/interviews/{id}/stop
+    IS->>IS: worker.cancel()
+    IS->>PG: Mark session complete
+    IS-->>FE: { status: "stopped" }

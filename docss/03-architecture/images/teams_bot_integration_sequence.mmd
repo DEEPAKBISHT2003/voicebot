@@ -1,0 +1,26 @@
+﻿sequenceDiagram
+    participant FE as Frontend
+    participant IS as Interview Service
+    participant CS as Copilot Service
+    participant PW as Playwright Bot
+    participant TM as Microsoft Teams
+
+    FE->>IS: POST /api/interviews/start {meeting_url}
+    IS->>CS: POST /api/copilot/start {session_id, jd, resume}
+    IS->>CS: POST /api/copilot/{id}/join-meeting {meeting_url}
+    CS->>PW: subprocess.Popen(teams_bot.py, meeting_url, session_id)
+    PW->>TM: Playwright browser opens Teams URL
+    TM-->>PW: Teams meeting loads in headless Chromium
+    PW->>PW: Inject CAMERA_BLOCK_JS (disable video, mute mic)
+    PW->>PW: Inject INTERCEPT_JS (hook RTCPeerConnection)
+    TM-->>PW: WebRTC audio streams flow to participants
+    PW->>PW: Capture all participant audio via AudioContext
+    PW->>IS: WebSocket ws://backend/api/ws/interview/{id}?mode=observer
+    IS-->>PW: WebSocket accepted (observer mode)
+    loop Every audio chunk (4096 samples @ 16kHz)
+        PW->>IS: Binary PCM Int16 ArrayBuffer
+        IS->>IS: Pipecat STT-only pipeline → Deepgram
+        IS-->>CS: copilot_sessions[id] → add_message()
+        CS->>CS: 3x parallel LLM tasks (background)
+        CS-->>FE: WebSocket copilot_update JSON
+    end

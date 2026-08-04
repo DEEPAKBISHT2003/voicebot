@@ -1,0 +1,20 @@
+﻿flowchart TD
+    A[STT returns text + raw_spk tag] --> B{Check linguistic patterns}
+    B -->|starts with sir, my name, I am, I have...| C[Candidate]
+    B -->|ends with ? or starts with tell me, can you...| D[Interviewer]
+    B -->|no clear pattern| E{Check Deepgram diarization}
+    E -->|raw_spk in speaker_map| F[Return mapped role]
+    E -->|raw_spk not in map, map empty| G[Assign Candidate - first speaker]
+    E -->|raw_spk not in map, map has 1 entry| H[Assign Interviewer - second speaker]
+    E -->|raw_spk not in map, map has 2+ entries| I[Speaker N - additional]
+    G --> J[Add to speaker_map]
+    H --> J
+    I --> J
+    J --> K[Return classified role]
+    C --> L[Final speaker label]
+    D --> L
+    F --> L
+    K --> L
+
+    style C fill:#dcfce7,stroke:#22c55e
+    style D fill:#dbeafe,stroke:#3b82f6

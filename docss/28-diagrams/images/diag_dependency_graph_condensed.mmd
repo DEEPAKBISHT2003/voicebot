@@ -1,0 +1,13 @@
+﻿graph TD
+    BROWSER[React Frontend] --> NGINX2[Nginx :80]
+    NGINX2 --> IS3[Interview Service :8000]
+    NGINX2 --> CS3[Copilot Service :8001]
+    IS3 --> PG3[(PostgreSQL)]
+    CS3 --> PG3
+    IS3 --> DG3[Deepgram API]
+    IS3 --> DS3[DeepSeek API]
+    CS3 --> DG3
+    CS3 --> DS3
+    CS3 --> GQ3[Groq API]
+    IS3 -->|HTTP| CS3
+    IS3 -->|subprocess| PW3[Playwright → Teams]

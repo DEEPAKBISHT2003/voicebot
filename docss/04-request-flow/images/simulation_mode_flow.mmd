@@ -1,0 +1,26 @@
+﻿flowchart TD
+    A[HR clicks Simulate] --> B[POST /api/copilot/id/simulate]
+    B --> C[Open WebSocket /api/ws/copilot/id/simulate]
+    C --> D[Upload WAV file]
+    D --> E[Read WAV bytes]
+    E --> F[Validate: mono, PCM, get sample rate]
+    F --> G{Sample rate = 16kHz?}
+    G -->|No| H[Resample to 16kHz using audioop]
+    G -->|Yes| I[Use as-is]
+    H --> J[Normalize to Int16 PCM]
+    I --> J
+    J --> K[Stream 4096-sample chunks over WebSocket to frontend audio]
+    K --> L[Send same chunks to Deepgram REST API]
+    L --> M[Deepgram returns full transcript with timestamps]
+    M --> N[Split transcript into utterances by timestamp]
+    N --> O{More utterances?}
+    O -->|Yes| P[engine.add_message speaker text]
+    P --> Q[3 parallel LLM tasks run in background]
+    Q --> R[copilot_update JSON pushed to dashboard WS]
+    R --> O
+    O -->|Done| S[Send type: simulation_complete]
+    S --> T[Frontend shows Generate Report button]
+
+    style J fill:#dcfce7,stroke:#22c55e
+    style S fill:#dbeafe,stroke:#3b82f6
+

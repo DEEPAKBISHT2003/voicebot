@@ -1,0 +1,24 @@
+﻿flowchart TD
+    A[User selects resume file] --> B{File type?}
+    B -->|.pdf| C[PDF Parser - PyPDF2]
+    B -->|.docx| D[DOCX Parser - python-docx]
+    B -->|.txt| E[Text Parser - raw decode]
+    B -->|other| F[HTTP 400 - Unsupported format]
+    C --> G[Extracted text string]
+    D --> G
+    E --> G
+    G --> H[POST /api/interviews/start]
+    H --> I[Generate session_id UUID]
+    I --> J[Create ./interviews/id/ directory]
+    J --> K[Write jd.txt + resume.txt]
+    K --> L[INSERT into interview_sessions]
+    L --> M{Meeting URL provided?}
+    M -->|Yes| N[POST to Copilot /join-meeting async]
+    M -->|No| O[POST to Copilot /start async]
+    N --> O
+    O --> P[Return session_id to frontend]
+    P --> Q[Frontend opens WebSocket]
+
+    style F fill:#fecaca,stroke:#ef4444
+    style P fill:#dcfce7,stroke:#22c55e
+

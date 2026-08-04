@@ -1,0 +1,169 @@
+﻿classDiagram
+    %% ── INTERVIEW SERVICE ──────────────────────────────
+
+    class Settings {
+        +DEEPSEEK_API_KEY: str
+        +DEEPGRAM_API_KEY: str
+        +DEEPSEEK_BASE_URL: str
+        +DEEPSEEK_MODEL: str
+        +DEFAULT_STORAGE_DIR: str
+        +COPILOT_URL: str
+    }
+
+    class IPipelineBuilder {
+        <<interface>>
+        +build_pipeline(system_instruction, session_id, transcript_callback, websocket, is_observer, is_simulation) Tuple
+    }
+
+    class LocalPipecatPipelineBuilder {
+        -deepgram_api_key: str
+        -deepseek_api_key: str
+        +build_pipeline(system_instruction, session_id, transcript_callback, websocket, is_observer, is_simulation) Tuple~Pipeline, LLMContext, PipelineWorker~
+    }
+
+    class TranscriptAccumulator {
+        -callback: Optional~Callable~
+        +process_frame(frame, direction) None
+    }
+
+    class MicGateProcessor {
+        -shared_state: dict
+        +process_frame(frame, direction) None
+    }
+
+    class MicUnmuterProcessor {
+        -shared_state: dict
+        +process_frame(frame, direction) None
+    }
+
+    class PlaybackBufferProcessor {
+        -buffer_size: int
+        -buffer: List
+        +process_frame(frame, direction) None
+    }
+
+    class InterviewPromptBuilder {
+        +build_system_instruction(jd, resume, custom_prompt) str
+    }
+
+    class DocumentParserFactory {
+        +get_parser(filename) IDocumentParser$
+    }
+
+    class InterviewSession {
+        +id: UUIDField
+        +jd: TextField
+        +resume: TextField
+        +custom_prompt: TextField
+        +transcript: JSONField
+        +timestamp: DatetimeField
+        +is_active: BooleanField
+        +meeting_url: TextField
+    }
+
+    class PostgresInterviewRepository {
+        +create_session(jd, resume, custom_prompt) str
+        +get_session(session_id) dict
+        +save_session(session_id, data) None
+        +list_sessions() List
+    }
+
+    class JSONInterviewRepository {
+        -base_dir: str
+        +create_session(jd, resume, custom_prompt) str
+        +get_session(session_id) dict
+        +save_session(session_id, data) None
+        +list_sessions() List
+    }
+
+    %% ── COPILOT SERVICE ────────────────────────────────
+
+    class CopilotSettings {
+        +DEEPSEEK_API_KEY: str
+        +DEEPGRAM_API_KEY: str
+        +GROQ_API_KEY: str
+        +DEEPSEEK_BASE_URL: str
+        +GROQ_MODEL: str
+        +DEFAULT_STORAGE_DIR: str
+        +BACKEND_WS_BASE: str
+    }
+
+    class CopilotSessionEngine {
+        -session_id: str
+        -repo: CopilotRepository
+        -jd: str
+        -resume: str
+        -custom_prompt: str
+        -transcript: List~Dict~
+        -intelligence: Dict
+        -assistance: Dict
+        -detected_speakers: Set~str~
+        -evaluation_service: CandidateEvaluationService
+        -intelligence_engine: ConversationIntelligenceEngine
+        -copilot_assistant: AICopilotEngine
+        +add_message(speaker, text, websocket) Dict
+        +get_transcript() List~Dict~
+        +get_intelligence() Dict
+        +get_assistance() Dict
+        +finalize_report() Dict
+        -_update_all_background_llm_tasks(message, last_question, websocket) None
+    }
+
+    class AICopilotEngine {
+        -client: AsyncOpenAI
+        -model: str
+        +generate_assistance(transcript, jd, resume, custom_prompt) dict
+        -_get_empty_state() dict
+    }
+
+    class ConversationIntelligenceEngine {
+        -client: AsyncOpenAI
+        -model: str
+        +analyze(transcript, jd, resume) dict
+        -_get_empty_state() dict
+    }
+
+    class CandidateEvaluationService {
+        -client: AsyncOpenAI
+        -model: str
+        +evaluate_response(candidate_response, jd, resume, question) dict
+        -_get_empty_state() dict
+    }
+
+    class CopilotRepository {
+        -directory: str
+        +save_session(session_id, data) None
+        +get_session(session_id) dict
+        +create_session_dir(session_id) str
+    }
+
+    class CopilotSession {
+        +id: UUIDField
+        +jd: TextField
+        +resume: TextField
+        +custom_prompt: TextField
+        +transcript: JSONField
+        +intelligence: JSONField
+        +assistance: JSONField
+        +is_finalized: BooleanField
+        +timestamp: DatetimeField
+    }
+
+    %% ── RELATIONSHIPS ──────────────────────────────────
+
+    IPipelineBuilder <|.. LocalPipecatPipelineBuilder : implements
+    LocalPipecatPipelineBuilder --> TranscriptAccumulator : creates
+    LocalPipecatPipelineBuilder --> MicGateProcessor : creates
+    LocalPipecatPipelineBuilder --> MicUnmuterProcessor : creates
+    LocalPipecatPipelineBuilder --> PlaybackBufferProcessor : creates
+    LocalPipecatPipelineBuilder --> Settings : reads
+
+    CopilotSessionEngine --> AICopilotEngine : has
+    CopilotSessionEngine --> ConversationIntelligenceEngine : has
+    CopilotSessionEngine --> CandidateEvaluationService : has
+    CopilotSessionEngine --> CopilotRepository : has
+
+    PostgresInterviewRepository --> InterviewSession : uses ORM
+    CopilotRepository --> CopilotSession : uses ORM
+
+    DocumentParserFactory ..> InterviewPromptBuilder : used by API layer

@@ -1,0 +1,31 @@
+﻿sequenceDiagram
+    actor User as 👤 User
+    participant FE as Frontend
+    participant IS as Interview Service
+    participant DG_STT as Deepgram STT
+    participant DS as DeepSeek LLM
+    participant DG_TTS as Deepgram TTS
+
+    User->>FE: Paste JD + Upload Resume
+    FE->>IS: POST /api/interviews/start
+    IS-->>FE: {session_id}
+    FE->>IS: WebSocket /ws/interview/{id}
+    IS->>DS: Generate greeting
+    DS-->>IS: "Hello, I'm Sarah..."
+    IS->>DG_TTS: Text → audio
+    DG_TTS-->>IS: 16kHz PCM
+    IS-->>FE: Binary audio
+    FE->>FE: Play greeting
+
+    loop Interview turns
+        User->>FE: Speaks
+        FE->>IS: Binary PCM
+        IS->>DG_STT: Stream audio
+        DG_STT-->>IS: Transcript + speaker_id
+        IS->>IS: classify_speaker_role()
+        IS->>DS: Conversation context
+        DS-->>IS: AI response
+        IS->>DG_TTS: Response text
+        DG_TTS-->>IS: Audio
+        IS-->>FE: Binary audio
+    end

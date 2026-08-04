@@ -1,0 +1,12 @@
+﻿flowchart LR
+    IS4[Interview Service\nloguru] --> STDOUT1[stdout]
+    CS4[Copilot Service\nloguru] --> STDOUT2[stdout]
+    NX4[Nginx] --> STDOUT3[access.log + error.log]
+    PG4[PostgreSQL] --> STDOUT4[pg logs]
+    STDOUT1 --> DOCKER[Docker json-file driver]
+    STDOUT2 --> DOCKER
+    STDOUT3 --> DOCKER
+    STDOUT4 --> DOCKER
+    DOCKER --> LOGS[docker compose logs]
+    DOCKER --> LOKI2[Loki - future]
+    LOKI2 --> GRAFANA2[Grafana - future]

@@ -1,0 +1,21 @@
+﻿flowchart TD
+    A[SIGTERM received by container] --> B[Uvicorn graceful shutdown]
+    B --> C[FastAPI lifespan exit]
+    C --> D[Tortoise.close_connections]
+    D --> E{Active sessions?}
+    E -->|Yes| F[For each active worker: worker.cancel]
+    F --> G[Save final session state to PostgreSQL]
+    G --> H[Close WebSocket connections]
+    E -->|No| H
+    H --> I[Process exits cleanly]
+
+    A2[User clicks End Interview] --> B2[POST /api/interviews/:id/stop]
+    B2 --> C2[Get worker from active_sessions]
+    C2 --> D2[worker.cancel]
+    D2 --> E2[AudioBufferProcessor flushes WAV file]
+    E2 --> F2[Final transcript saved to DB]
+    F2 --> G2[Session marked is_active=False]
+    G2 --> H2[200 OK returned]
+
+    style I fill:#dcfce7,stroke:#22c55e
+    style H2 fill:#dcfce7,stroke:#22c55e

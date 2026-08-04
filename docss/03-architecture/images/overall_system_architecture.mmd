@@ -1,0 +1,92 @@
+﻿graph TB
+    subgraph CLIENT["Client Layer"]
+        B[Browser]
+        B_WS[WebSocket - Raw PCM Audio]
+        B_REST[REST - JSON]
+    end
+
+    subgraph NGINX["Nginx Reverse Proxy :80"]
+        NX[Nginx]
+        NX_STATIC[Static Files - React App]
+        NX_PROXY_INT[Route interview to :8000]
+        NX_PROXY_COP[Route copilot to :8001]
+    end
+
+    subgraph INTERVIEW["Interview Service :8000"]
+        IS_API[FastAPI HTTP Router]
+        IS_WS[WebSocket Handler]
+        IS_PIPE[Pipecat Pipeline]
+        IS_STT[Deepgram STT]
+        IS_LLM[DeepSeek LLM]
+        IS_TTS[Deepgram TTS]
+        IS_VAD[Silero VAD]
+        IS_REPO[Session Repository]
+        IS_BOT[Teams Playwright Bot]
+    end
+
+    subgraph COPILOT["Copilot Service :8001"]
+        CS_API[FastAPI HTTP Router]
+        CS_WS[WebSocket Handler]
+        CS_ENGINE[CopilotSessionEngine]
+        CS_EVAL[EvaluationService]
+        CS_INTEL[IntelligenceEngine]
+        CS_ASSIST[AICopilotEngine]
+        CS_REPO[Copilot Repository]
+    end
+
+    subgraph DB["Data Layer"]
+        PG[(PostgreSQL 15)]
+        FS[File System - interviews folder]
+    end
+
+    subgraph EXTERNAL["External APIs"]
+        DG_STT[Deepgram STT API]
+        DG_TTS[Deepgram TTS API]
+        DS_LLM[DeepSeek API]
+        GQ_LLM[Groq API]
+        TEAMS[Microsoft Teams]
+    end
+
+    B -->|HTTP/WS| NGINX
+    NGINX --> NX_STATIC
+    NGINX --> NX_PROXY_INT
+    NGINX --> NX_PROXY_COP
+
+    NX_PROXY_INT --> IS_API
+    NX_PROXY_INT --> IS_WS
+    NX_PROXY_COP --> CS_API
+    NX_PROXY_COP --> CS_WS
+
+    IS_WS --> IS_PIPE
+    IS_PIPE --> IS_STT
+    IS_PIPE --> IS_VAD
+    IS_PIPE --> IS_LLM
+    IS_PIPE --> IS_TTS
+    IS_PIPE --> IS_BOT
+
+    IS_STT -->|API| DG_STT
+    IS_TTS -->|API| DG_TTS
+    IS_LLM -->|API| DS_LLM
+    IS_REPO --> PG
+    IS_REPO --> FS
+
+    CS_WS --> CS_ENGINE
+    CS_ENGINE --> CS_EVAL
+    CS_ENGINE --> CS_INTEL
+    CS_ENGINE --> CS_ASSIST
+    CS_EVAL -->|API| GQ_LLM
+    CS_INTEL -->|API| DS_LLM
+    CS_ASSIST -->|API| DS_LLM
+    CS_REPO --> PG
+    CS_REPO --> FS
+
+    IS_BOT -->|Playwright| TEAMS
+    IS_BOT -->|WebSocket| CS_WS
+    IS_API -->|HTTP POST| CS_API
+
+    style CLIENT fill:#dbeafe,stroke:#3b82f6
+    style NGINX fill:#fef9c3,stroke:#eab308
+    style INTERVIEW fill:#dcfce7,stroke:#22c55e
+    style COPILOT fill:#fce7f3,stroke:#ec4899
+    style DB fill:#f3e8ff,stroke:#a855f7
+    style EXTERNAL fill:#ffedd5,stroke:#f97316

@@ -1,0 +1,18 @@
+﻿flowchart LR
+    subgraph BROWSER["Browser"]
+        MIC2[Mic 48kHz] -->|ScriptProcessor| DS_SAMP[Downsample to 16kHz]
+        DS_SAMP -->|Int16 PCM binary| WS_OUT[WebSocket send]
+        WS_IN[WebSocket receive] -->|Int16 PCM| FLOAT[Convert to Float32]
+        FLOAT --> SCHED[Schedule via AudioContext.currentTime]
+        SCHED --> SPEAKER[Speaker output]
+    end
+    subgraph SERVER["Server Pipeline"]
+        WS_RCV[WebSocket receive] --> PIPECAT2[Pipecat Transport.input]
+        PIPECAT2 --> DG2[Deepgram STT WebSocket]
+        DG2 -->|text| LLM2[DeepSeek API]
+        LLM2 -->|text| DG_TTS2[Deepgram TTS API]
+        DG_TTS2 -->|16kHz PCM chunks| BUF2[PlaybackBuffer x5]
+        BUF2 --> WS_SND[WebSocket send]
+    end
+    WS_OUT --> WS_RCV
+    WS_SND --> WS_IN

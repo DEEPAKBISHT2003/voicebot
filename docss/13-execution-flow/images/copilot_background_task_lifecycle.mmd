@@ -1,0 +1,19 @@
+﻿stateDiagram-v2
+    [*] --> MessageReceived: add_message() called
+    MessageReceived --> Stitching: Check same-speaker merge
+    Stitching --> Appended: Transcript entry added
+    Appended --> Dispatched: asyncio.create_task(_update_all)
+    Appended --> [*]: Returns immediately to caller (<5ms)
+    
+    Dispatched --> EvalTask: CandidateEvaluationService
+    Dispatched --> IntelTask: ConversationIntelligenceEngine
+    Dispatched --> AssistTask: AICopilotEngine
+    
+    EvalTask --> Gather: asyncio.gather()
+    IntelTask --> Gather
+    AssistTask --> Gather
+    
+    Gather --> DecisionEngine: Apply Strong/Partial/Weak rules
+    DecisionEngine --> Persist: Save to PostgreSQL
+    Persist --> Broadcast: WebSocket send_json()
+    Broadcast --> [*]

@@ -1,0 +1,43 @@
+﻿flowchart LR
+    subgraph BROWSER["Browser"]
+        MIC[Microphone]
+        SP[Script Processor]
+        WSJS[WebSocket Client]
+        PLAYBACK[Web Audio Playback]
+    end
+
+    subgraph PIPELINE["Pipecat Pipeline - Interview Service"]
+        WSTRANS[FastAPI WebSocket Transport]
+        MICGATE[MicGateProcessor - Blocks until greeting ends]
+        STT[Deepgram STT - nova-2 diarize]
+        USERACC[TranscriptAccumulator - User]
+        USERAGG[LLM User Aggregator + Silero VAD]
+        LLM[DeepSeek LLM - deepseek-v4-flash]
+        ASSTACC[TranscriptAccumulator - Assistant]
+        TTS[Deepgram TTS - aura-2-amalthea-en]
+        PLAYBACK_BUF[PlaybackBufferProcessor]
+        WSTRANS_OUT[Transport Output]
+        AUDIOBUF[AudioBufferProcessor - Records WAV]
+        MICUNMUTE[MicUnmuterProcessor]
+        ASTAGG[LLM Assistant Aggregator]
+    end
+
+    MIC -->|48kHz Float32| SP
+    SP -->|downsample to 16kHz Int16 PCM| WSJS
+    WSJS -->|binary ArrayBuffer| WSTRANS
+    WSTRANS --> MICGATE
+    MICGATE --> STT
+    STT -->|text + speaker tag| USERACC
+    USERACC --> USERAGG
+    USERAGG -->|LLMContext| LLM
+    LLM -->|text tokens| ASSTACC
+    ASSTACC --> TTS
+    TTS -->|16kHz PCM audio| PLAYBACK_BUF
+    PLAYBACK_BUF --> WSTRANS_OUT
+    WSTRANS_OUT -->|binary ArrayBuffer| PLAYBACK
+    WSTRANS_OUT --> AUDIOBUF
+    AUDIOBUF --> MICUNMUTE
+    MICUNMUTE --> ASTAGG
+
+    style BROWSER fill:#dbeafe,stroke:#3b82f6
+    style PIPELINE fill:#dcfce7,stroke:#22c55e

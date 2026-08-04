@@ -1,0 +1,52 @@
+﻿flowchart TD
+    subgraph INPUT["Input Sources"]
+        WS_BROWSER[Browser Mic - WebSocket PCM]
+        WS_BOT[Teams Bot - WebSocket PCM]
+        WS_INTERVIEW[Interview Service - HTTP transcript push]
+        WAV_UPLOAD[WAV File Upload - Simulation]
+    end
+
+    subgraph COPILOT_ENGINE["CopilotSessionEngine"]
+        STITCH[Utterance Stitcher - Same-speaker merge]
+        DISPATCH[Background Task Dispatcher - asyncio.create_task]
+        TRANSCRIPT[In-Memory Transcript List]
+        LAST_Q[Last Question Tracker]
+    end
+
+    subgraph PARALLEL["3x Parallel Async LLM Tasks"]
+        EVAL[CandidateEvaluationService - Groq LLM - 6 dimensions]
+        INTEL[ConversationIntelligenceEngine - DeepSeek - JD/Resume coverage]
+        ASSIST[AICopilotEngine - DeepSeek - Suggestions]
+    end
+
+    subgraph DECISION["Decision Engine"]
+        STRONG[Strong answer ≥80% → Move to next topic]
+        PARTIAL[Partial answer 50-79% → 2-3 drill questions]
+        WEAK[Weak answer <50% → Probing questions]
+    end
+
+    subgraph OUTPUT["Real-Time Output - WebSocket"]
+        WS_DASH[Dashboard WebSocket - copilot_update JSON]
+        PERSIST[PostgreSQL + File System persist]
+    end
+
+    INPUT --> STITCH
+    STITCH --> TRANSCRIPT
+    STITCH --> DISPATCH
+    DISPATCH --> EVAL
+    DISPATCH --> INTEL
+    DISPATCH --> ASSIST
+    EVAL --> DECISION
+    DECISION --> STRONG
+    DECISION --> PARTIAL
+    DECISION --> WEAK
+    ASSIST --> WS_DASH
+    INTEL --> WS_DASH
+    EVAL --> WS_DASH
+    WS_DASH --> PERSIST
+
+    style INPUT fill:#dbeafe,stroke:#3b82f6
+    style COPILOT_ENGINE fill:#dcfce7,stroke:#22c55e
+    style PARALLEL fill:#fce7f3,stroke:#ec4899
+    style DECISION fill:#fef9c3,stroke:#eab308
+    style OUTPUT fill:#f3e8ff,stroke:#a855f7

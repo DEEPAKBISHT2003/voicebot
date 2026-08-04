@@ -1,0 +1,28 @@
+﻿flowchart LR
+    A[Browser sends PCM chunk] --> B[Nginx WebSocket proxy]
+    B --> C[FastAPI WebSocket endpoint]
+    C --> D[Pipecat Transport.input]
+    D --> E[MicGateProcessor]
+    E -->|gate open| F[Deepgram STT]
+    E -->|gate closed| DISCARD[Discard frame]
+    F --> G{is final transcript?}
+    G -->|interim| PASS[Pass downstream - no action]
+    G -->|final| H[TranscriptAccumulator]
+    H --> I[classify_speaker_role]
+    I --> J[transcript_callback async]
+    J --> K[Save to PostgreSQL]
+    J --> L[Forward to Copilot engine]
+    L --> M[engine.add_message - instant return]
+    M --> N[asyncio.create_task - background LLM]
+    H --> O[Silero VAD]
+    O -->|speaking| BUFFER[Buffer in LLMUserAggregator]
+    O -->|end of speech| P[LLM inference - DeepSeek]
+    P --> Q[TranscriptAccumulator - assistant]
+    Q --> R[Deepgram TTS]
+    R --> S[PlaybackBufferProcessor]
+    S --> T[WebSocket Transport.output]
+    T --> U[Nginx proxy]
+    U --> V[Browser plays audio]
+
+    style M fill:#dcfce7,stroke:#22c55e
+    style N fill:#fce7f3,stroke:#ec4899

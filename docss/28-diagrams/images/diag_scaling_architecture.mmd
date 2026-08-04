@@ -1,0 +1,20 @@
+﻿flowchart TD
+    subgraph P1["Phase 1 - Now"]
+        D1[Docker Compose\nSingle EC2\n5-10 sessions]
+    end
+    subgraph P2["Phase 2 - Near"]
+        D2[Multi-worker Uvicorn\nRedis session state\n20-40 sessions]
+    end
+    subgraph P3["Phase 3 - Future"]
+        D3[Kubernetes HPA\nManaged PostgreSQL RDS\nS3 storage\n200+ sessions]
+    end
+    subgraph P4["Phase 4 - Enterprise"]
+        D4[Multi-region\nCloudFront CDN\nRDS replicas\nUnlimited scale]
+    end
+    P1 -->|Add Redis + workers| P2
+    P2 -->|Migrate to K8s| P3
+    P3 -->|Multi-region| P4
+    style P1 fill:#dcfce7,stroke:#22c55e
+    style P2 fill:#fef9c3,stroke:#eab308
+    style P3 fill:#dbeafe,stroke:#3b82f6
+    style P4 fill:#f3e8ff,stroke:#a855f7

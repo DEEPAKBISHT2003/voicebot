@@ -1,0 +1,61 @@
+﻿graph TB
+    subgraph HOST["Ubuntu EC2 / VM Host"]
+        subgraph COMPOSE["Docker Compose Network: voicebot-net"]
+            subgraph FE["voicebot-frontend"]
+                FE_NGINX[Nginx :80]
+                FE_STATIC[React Static Files]
+            end
+
+            subgraph INT["voicebot-interview-service"]
+                INT_UV[Uvicorn :8000]
+                INT_PY[Python 3.11 + PortAudio + ffmpeg]
+                INT_VOL[Volume: ./interviews → /app/interviews]
+            end
+
+            subgraph COP["voicebot-copilot-service"]
+                COP_UV[Uvicorn :8001]
+                COP_PY[Python 3.12 + Playwright Chromium]
+                COP_VOL[Volume: ./interviews → /app/interviews]
+            end
+
+            subgraph PG["voicebot-db"]
+                PG_DB[PostgreSQL 15 Alpine :5432]
+                PG_VOL[Volume: postgres_data]
+            end
+        end
+
+        subgraph STORAGE["Host Storage"]
+            S1[./interviews/ - shared bind mount]
+        end
+    end
+
+    subgraph INTERNET["Internet"]
+        USER[👤 User Browser]
+        DG[Deepgram API]
+        DS[DeepSeek API]
+        GR[Groq API]
+        TEAMS_NET[Microsoft Teams]
+    end
+
+    USER -->|:80| FE_NGINX
+    FE_NGINX -->|/api/ws/interview/*| INT_UV
+    FE_NGINX -->|/api/ws/copilot/*| COP_UV
+    FE_NGINX --> FE_STATIC
+
+    INT_UV -->|asyncpg| PG_DB
+    COP_UV -->|asyncpg| PG_DB
+    INT_UV -->|HTTP POST :8001| COP_UV
+
+    INT_PY -->|HTTPS| DG
+    INT_PY -->|HTTPS| DS
+    COP_PY -->|HTTPS| DG
+    COP_PY -->|HTTPS| DS
+    COP_PY -->|HTTPS| GR
+    COP_PY -->|Playwright| TEAMS_NET
+
+    INT_VOL -.->|bind mount| S1
+    COP_VOL -.->|bind mount| S1
+
+    style HOST fill:#f0fdf4,stroke:#16a34a
+    style INTERNET fill:#fff7ed,stroke:#f97316
+    style COMPOSE fill:#eff6ff,stroke:#2563eb

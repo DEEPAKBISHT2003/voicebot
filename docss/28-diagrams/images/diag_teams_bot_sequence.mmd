@@ -1,0 +1,18 @@
+﻿sequenceDiagram
+    participant IS5 as Interview Service
+    participant CS5 as Copilot Service
+    participant PW5 as Playwright Bot
+    participant TM5 as Microsoft Teams
+
+    IS5->>CS5: POST /join-meeting {meeting_url}
+    CS5->>PW5: subprocess.Popen(teams_bot.py, url, session_id)
+    PW5->>TM5: Playwright opens Teams URL
+    PW5->>PW5: Inject CAMERA_BLOCK_JS + INTERCEPT_JS
+    TM5-->>PW5: WebRTC audio streams
+    loop Audio streaming
+        PW5->>IS5: WebSocket binary PCM (16kHz)
+        IS5->>IS5: Observer Pipecat pipeline → STT
+        IS5->>CS5: copilot_sessions[id].add_message()
+        CS5-->>FE5: WebSocket copilot_update
+    end
+    participant FE5 as Copilot Dashboard

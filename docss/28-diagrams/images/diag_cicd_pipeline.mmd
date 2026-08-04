@@ -1,0 +1,10 @@
+﻿flowchart LR
+    PUSH[Git push] --> LINT[1. Lint - ruff + oxlint]
+    LINT --> TEST[2. pytest + coverage]
+    TEST --> COV[3. Codecov upload]
+    COV --> BUILD[4. Docker build all images]
+    BUILD --> INTTEST[5. Integration tests]
+    INTTEST -->|main branch| DEPLOY[6. DockerHub push]
+    INTTEST -->|PR| GATE[PR check passes]
+    style DEPLOY fill:#dcfce7,stroke:#22c55e
+    style GATE fill:#dbeafe,stroke:#3b82f6

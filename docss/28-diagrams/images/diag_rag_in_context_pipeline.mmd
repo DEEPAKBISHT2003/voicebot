@@ -1,0 +1,11 @@
+﻿flowchart TD
+    JD[Job Description] --> CTX[LLM Context Window]
+    RESUME[Candidate Resume] --> CTX
+    HIST[Last 20 Transcript Messages] --> CTX
+    CUSTOM[Custom Instructions] --> CTX
+    CTX --> LLM_CALL[DeepSeek / Groq API]
+    LLM_CALL --> OUT[Structured JSON Response]
+    OUT --> DECISION[Decision Engine]
+    DECISION --> FE_UPDATE[WebSocket Push to Dashboard]
+    note["No vector DB — full in-context injection\nTranscript window: last 20 messages"]
+    style note fill:#fef9c3,stroke:#eab308

@@ -1,0 +1,101 @@
+﻿graph LR
+    subgraph FE["Frontend"]
+        REACT[React 19]
+        VITE[Vite 8]
+        TS[TypeScript]
+        TAILWIND[TailwindCSS 4]
+        ROUTER[React Router 7]
+        QUERY[TanStack Query 5]
+        AXIOS[Axios]
+        ZOD[Zod]
+        LUCIDE[Lucide React]
+    end
+
+    subgraph IS["Interview Service"]
+        FASTAPI_IS[FastAPI]
+        PIPECAT[Pipecat-AI 1.6.0]
+        TORTOISE_IS[Tortoise ORM]
+        ASYNCPG_IS[asyncpg]
+        DEEPGRAM_SDK[Deepgram Python SDK]
+        OPENAI_SDK_IS[AsyncOpenAI]
+        LOGURU_IS[loguru]
+        HTTPX_IS[httpx]
+        PYPDF[PyPDF2]
+        DOCX[python-docx]
+        UVICORN_IS[uvicorn]
+    end
+
+    subgraph CS["Copilot Service"]
+        FASTAPI_CS[FastAPI]
+        TORTOISE_CS[Tortoise ORM]
+        ASYNCPG_CS[asyncpg]
+        OPENAI_SDK_CS[AsyncOpenAI]
+        GROQ_SDK[AsyncOpenAI - Groq endpoint]
+        PLAYWRIGHT[Playwright]
+        LOGURU_CS[loguru]
+        HTTPX_CS[httpx]
+        PIPECAT_CS[Pipecat-AI - observer only]
+        UVICORN_CS[uvicorn]
+        NLTK[nltk]
+    end
+
+    subgraph INFRA["Infrastructure"]
+        NGINX[Nginx]
+        POSTGRES[(PostgreSQL 15)]
+        DOCKER[Docker Compose]
+        FS[(File System)]
+    end
+
+    subgraph EXTERNAL["External Services"]
+        DG[Deepgram API]
+        DS[DeepSeek API]
+        GQ[Groq API]
+        TEAMS[Microsoft Teams]
+    end
+
+    REACT --> ROUTER
+    REACT --> QUERY
+    REACT --> AXIOS
+    REACT --> TAILWIND
+    REACT --> ZOD
+    REACT --> LUCIDE
+    VITE --> REACT
+    TS --> REACT
+
+    FASTAPI_IS --> PIPECAT
+    FASTAPI_IS --> TORTOISE_IS
+    FASTAPI_IS --> UVICORN_IS
+    PIPECAT --> DEEPGRAM_SDK
+    PIPECAT --> OPENAI_SDK_IS
+    DEEPGRAM_SDK --> DG
+    OPENAI_SDK_IS --> DS
+    TORTOISE_IS --> ASYNCPG_IS
+    ASYNCPG_IS --> POSTGRES
+    HTTPX_IS --> FASTAPI_CS
+    IS -->|spawns subprocess| PLAYWRIGHT
+    PLAYWRIGHT --> TEAMS
+
+    FASTAPI_CS --> TORTOISE_CS
+    FASTAPI_CS --> UVICORN_CS
+    FASTAPI_CS --> PIPECAT_CS
+    OPENAI_SDK_CS --> DS
+    GROQ_SDK --> GQ
+    TORTOISE_CS --> ASYNCPG_CS
+    ASYNCPG_CS --> POSTGRES
+    PIPECAT_CS --> DEEPGRAM_SDK
+
+    NGINX --> FE
+    NGINX --> IS
+    NGINX --> CS
+    DOCKER --> NGINX
+    DOCKER --> IS
+    DOCKER --> CS
+    DOCKER --> POSTGRES
+    IS --> FS
+    CS --> FS
+
+    style FE fill:#dbeafe,stroke:#3b82f6
+    style IS fill:#dcfce7,stroke:#22c55e
+    style CS fill:#fce7f3,stroke:#ec4899
+    style INFRA fill:#f3e8ff,stroke:#a855f7
+    style EXTERNAL fill:#ffedd5,stroke:#f97316

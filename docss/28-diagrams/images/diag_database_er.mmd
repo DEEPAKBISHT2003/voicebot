@@ -1,0 +1,22 @@
+﻿erDiagram
+    INTERVIEW_SESSIONS {
+        uuid id PK
+        text jd
+        text resume
+        text custom_prompt
+        jsonb transcript
+        timestamptz timestamp
+        boolean is_active
+        text meeting_url
+    }
+    COPILOT_SESSIONS {
+        uuid id PK
+        text jd
+        text resume
+        jsonb transcript
+        jsonb intelligence
+        jsonb assistance
+        boolean is_finalized
+        timestamptz timestamp
+    }
+    INTERVIEW_SESSIONS ||--o| COPILOT_SESSIONS : "session_id links"

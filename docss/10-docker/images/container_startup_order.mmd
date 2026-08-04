@@ -1,0 +1,16 @@
+﻿flowchart TD
+    A[docker compose up] --> B[voicebot-db starts]
+    B --> C{Health check: pg_isready}
+    C -->|Fail - retry| C
+    C -->|Pass| D[voicebot-interview-service starts]
+    C -->|Pass| E[voicebot-copilot-service starts]
+    D --> F{interview-service ready?}
+    E --> G{copilot-service ready?}
+    F -->|Yes| H[voicebot-frontend starts]
+    G -->|Yes| H
+    H --> I[All containers running]
+
+    style B fill:#f3e8ff,stroke:#a855f7
+    style D fill:#dcfce7,stroke:#22c55e
+    style E fill:#fce7f3,stroke:#ec4899
+    style H fill:#dbeafe,stroke:#3b82f6

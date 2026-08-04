@@ -1,0 +1,24 @@
+﻿flowchart TD
+    INPUT[New transcript utterance] --> STITCH{Same speaker as last?}
+    STITCH -->|Yes| MERGE[Merge into existing entry]
+    STITCH -->|No| NEW[Create new entry]
+    MERGE --> DISPATCH[asyncio.create_task - non-blocking return in <5ms]
+    NEW --> DISPATCH
+    
+    DISPATCH --> T1[Task 1: CandidateEvaluationService - Groq]
+    DISPATCH --> T2[Task 2: IntelligenceEngine - DeepSeek]
+    DISPATCH --> T3[Task 3: AICopilotEngine - DeepSeek]
+    
+    T1 --> GATHER[asyncio.gather - parallel execution]
+    T2 --> GATHER
+    T3 --> GATHER
+    
+    GATHER --> DECISION{Answer rating?}
+    DECISION -->|>=80| STRONG[Move to next topic]
+    DECISION -->|50-79| PARTIAL[2-3 drill questions]
+    DECISION -->|<50| WEAK[Probing questions]
+    
+    STRONG --> PERSIST[Save to PostgreSQL]
+    PARTIAL --> PERSIST
+    WEAK --> PERSIST
+    PERSIST --> BROADCAST[WebSocket copilot_update JSON]

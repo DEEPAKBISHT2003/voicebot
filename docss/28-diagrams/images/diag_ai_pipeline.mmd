@@ -1,0 +1,13 @@
+﻿flowchart LR
+    MIC[Browser Mic] --> WS[WebSocket]
+    WS --> GATE[MicGate]
+    GATE --> STT[Deepgram STT nova-2]
+    STT --> ACC1[TranscriptAccumulator]
+    ACC1 --> VAD[Silero VAD]
+    VAD --> LLM[DeepSeek LLM]
+    LLM --> ACC2[TranscriptAccumulator]
+    ACC2 --> TTS[Deepgram TTS Aura-2]
+    TTS --> BUF[PlaybackBuffer x5]
+    BUF --> WS2[WebSocket Out]
+    WS2 --> PLAY[Browser Playback]
+    WS2 --> AUDIO[AudioBuffer → WAV]

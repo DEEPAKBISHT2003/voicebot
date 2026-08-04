@@ -1,0 +1,45 @@
+﻿graph TB
+    subgraph CLIENT["🌐 Client Layer"]
+        B[Browser]
+    end
+    subgraph NGINX["⚡ Nginx :80"]
+        NX[Reverse Proxy + Static Files]
+    end
+    subgraph INTERVIEW["🎙️ Interview Service :8000"]
+        IS_PIPE[Pipecat Pipeline: STT → VAD → LLM → TTS]
+        IS_BOT[Teams Playwright Bot]
+    end
+    subgraph COPILOT["🤖 Copilot Service :8001"]
+        CS_ENG[CopilotSessionEngine: 3× Parallel LLM Tasks]
+    end
+    subgraph DB["🗄️ Data"]
+        PG[(PostgreSQL 15)]
+        FS[(File System ./interviews/)]
+    end
+    subgraph EXTERNAL["☁️ External APIs"]
+        DG[Deepgram STT+TTS]
+        DS[DeepSeek LLM]
+        GQ[Groq LLM]
+        TEAMS[Microsoft Teams]
+    end
+
+    B -->|HTTP+WS| NGINX
+    NGINX --> IS_PIPE
+    NGINX --> CS_ENG
+    IS_PIPE --> DG
+    IS_PIPE --> DS
+    IS_BOT --> TEAMS
+    CS_ENG --> DS
+    CS_ENG --> GQ
+    CS_ENG --> DG
+    IS_PIPE --> PG
+    CS_ENG --> PG
+    IS_PIPE --> FS
+    CS_ENG --> FS
+
+    style CLIENT fill:#dbeafe,stroke:#3b82f6
+    style NGINX fill:#fef9c3,stroke:#eab308
+    style INTERVIEW fill:#dcfce7,stroke:#22c55e
+    style COPILOT fill:#fce7f3,stroke:#ec4899
+    style DB fill:#f3e8ff,stroke:#a855f7
+    style EXTERNAL fill:#ffedd5,stroke:#f97316

@@ -1,0 +1,26 @@
+﻿flowchart TD
+    A[Developer pushes to GitHub] --> B{Branch?}
+    B -->|feature branch| C[PR opened]
+    B -->|main| D[Direct push to main]
+
+    C --> E[CI Pipeline runs on PR]
+    D --> E
+
+    subgraph CI["CI Pipeline - GitHub Actions"]
+        E --> F[1. Lint - ruff Python + oxlint TS]
+        F --> G[2. Unit Tests - pytest with PostgreSQL service]
+        G --> H[3. Coverage upload to Codecov]
+        H --> I[4. Docker build - all 3 images]
+        I --> J[5. Integration tests against built containers]
+    end
+
+    J -->|PR - all pass| K[PR ready to merge]
+    J -->|main push - all pass| L[6. Deploy - docker compose push to DockerHub]
+    L --> M[Tag images with git SHA]
+    M --> N[Notify deployment complete]
+
+    J -->|any fail| O[Block merge / alert developer]
+
+    style CI fill:#dbeafe,stroke:#3b82f6
+    style L fill:#dcfce7,stroke:#22c55e
+    style O fill:#fecaca,stroke:#ef4444

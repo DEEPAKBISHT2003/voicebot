@@ -1,0 +1,35 @@
+﻿graph TD
+    APP[App.tsx] --> IL[InterviewsList]
+    APP --> NI[NewInterview]
+    APP --> IS[InterviewSession]
+    APP --> NC[NewCopilot]
+    APP --> CS[CopilotSession]
+
+    IS --> IAH[useInterviewAudio hook]
+    IS --> SC[StatusCard]
+    IS --> VC[VolumeVisualizer]
+    IS --> TC[TranscriptPanel]
+    IS --> AC[AudioControls]
+
+    CS --> CAH[useCopilotAudio hook]
+    CS --> TP[TranscriptPanel]
+    CS --> SQ[SuggestionsPanel]
+    SQ --> FQ[FollowUpQuestions]
+    SQ --> PQ[PracticalQuestions]
+    SQ --> MC[MissingConcepts]
+    SQ --> VQ[VerificationQuestions]
+    CS --> CP[CoveragePanel]
+    CP --> JC[JDCoverageAccordion]
+    CP --> RC[ResumeCoverageAccordion]
+    CS --> RP[ReportPanel]
+    CS --> SIM[SimulationControls]
+
+    NI --> FU[FileUpload]
+    NI --> JF[JDForm]
+    NI --> RES[ResumeTextarea]
+    NI --> CPF[CustomPromptField]
+    NI --> MU[MeetingUrlField]
+
+    style APP fill:#dbeafe,stroke:#3b82f6
+    style IAH fill:#dcfce7,stroke:#22c55e
+    style CAH fill:#fce7f3,stroke:#ec4899

@@ -1,0 +1,10 @@
+﻿graph LR
+    USER["User :80"] --> FE_C["frontend\nnginx:alpine"]
+    FE_C --> IS_C["interview-service\npython:3.11"]
+    FE_C --> CS_C["copilot-service\npython:3.12+Playwright"]
+    IS_C --> DB_C["voicebot-db\npostgres:15"]
+    CS_C --> DB_C
+    IS_C <-->|HTTP| CS_C
+    DB_C --- V1[("postgres_data\nnamed volume")]
+    IS_C --- V2[("./interviews/\nbind mount")]
+    CS_C --- V2

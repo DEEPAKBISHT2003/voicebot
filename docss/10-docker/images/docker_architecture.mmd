@@ -1,0 +1,29 @@
+﻿graph TB
+    subgraph HOST["Ubuntu Host Machine"]
+        subgraph NET["Docker Bridge Network: voicebot-net"]
+            FE["voicebot-frontend\nnginx:alpine\n:80"]
+            IS["voicebot-interview-service\npython:3.11-slim\n:8000"]
+            CS["voicebot-copilot-service\npython:3.12-slim\n:8001"]
+            DB["voicebot-db\npostgres:15-alpine\n:5432"]
+        end
+
+        subgraph VOLS["Volumes"]
+            V1["postgres_data\n(named volume)"]
+            V2["./interviews\n(bind mount)"]
+        end
+    end
+
+    INTERNET["Internet (User)"] -->|:80| FE
+    FE -->|/api/ws/interview/*| IS
+    FE -->|/api/ws/copilot/*| CS
+    IS -->|:5432| DB
+    CS -->|:5432| DB
+    IS -->|:8001 HTTP| CS
+    IS <-->|:8000 WS observer| CS
+    DB -.->|writes| V1
+    IS -.->|./interviews| V2
+    CS -.->|./interviews| V2
+
+    style HOST fill:#f0fdf4,stroke:#16a34a
+    style NET fill:#eff6ff,stroke:#2563eb
+    style VOLS fill:#fef9c3,stroke:#eab308

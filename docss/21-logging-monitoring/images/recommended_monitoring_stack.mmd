@@ -1,0 +1,36 @@
+﻿graph LR
+    subgraph SERVICES["Application Services"]
+        IS[Interview Service]
+        CS[Copilot Service]
+        DB[PostgreSQL]
+        NX[Nginx]
+    end
+
+    subgraph COLLECT["Collection Layer"]
+        PROM[Prometheus]
+        LOKI[Loki - Log Aggregation]
+        PROMTAIL[Promtail - Log Shipper]
+    end
+
+    subgraph VISUALIZE["Visualization"]
+        GRAFANA[Grafana Dashboards]
+    end
+
+    subgraph ALERT["Alerting"]
+        ALERTMGR[Alertmanager]
+        PAGERDUTY[PagerDuty / Slack]
+    end
+
+    IS -->|/metrics| PROM
+    CS -->|/metrics| PROM
+    DB -->|postgres_exporter| PROM
+    NX -->|nginx_exporter| PROM
+
+    IS -->|stdout logs| PROMTAIL
+    CS -->|stdout logs| PROMTAIL
+    PROMTAIL --> LOKI
+
+    PROM --> GRAFANA
+    LOKI --> GRAFANA
+    PROM --> ALERTMGR
+    ALERTMGR --> PAGERDUTY

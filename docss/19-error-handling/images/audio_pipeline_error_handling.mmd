@@ -1,0 +1,18 @@
+﻿flowchart TD
+    A[Audio chunk received] --> B{Deepgram STT available?}
+    B -->|Yes| C[Transcribe chunk]
+    B -->|No - connection dropped| D[Pipecat reconnects]
+    D -->|Reconnected| C
+    D -->|Max retries| E[Log error, pipeline pauses]
+    C --> F{LLM available?}
+    F -->|Yes| G[Generate response]
+    F -->|No - API error| H[Log error, skip turn]
+    H --> I[Mic ungated - candidate can continue speaking]
+    G --> J{TTS available?}
+    J -->|Yes| K[Synthesize audio]
+    J -->|No| L[Log error, no audio playback]
+    L --> I
+
+    style E fill:#fecaca,stroke:#ef4444
+    style H fill:#fef9c3,stroke:#eab308
+    style L fill:#fef9c3,stroke:#eab308

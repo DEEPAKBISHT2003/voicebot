@@ -1,0 +1,70 @@
+﻿classDiagram
+    class useInterviewAudio {
+        -sessionId: string | null
+        -status: AudioConnectionStatus
+        -error: string | null
+        -socketRef: Ref~WebSocket~
+        -audioContextRef: Ref~AudioContext~
+        -mediaStreamRef: Ref~MediaStream~
+        -inputNodeRef: Ref~ScriptProcessorNode~
+        -micSourceRef: Ref~MediaStreamAudioSourceNode~
+        -nextPlayTimeRef: Ref~number~
+        -micVolumeRef: Ref~number~
+        +startConnection() Promise~void~
+        +stopConnection() void
+        -cleanupAudio() void
+        -getWebSocketUrl(sid) string
+        -downsampleBuffer(buffer, inputRate, outputRate) Int16Array
+    }
+
+    class useCopilotAudio {
+        -sessionId: string | null
+        -status: AudioConnectionStatus
+        -error: string | null
+        -socketRef: Ref~WebSocket~
+        -transcript: TranscriptEntry[]
+        -intelligence: IntelligenceState
+        -assistance: AssistanceState
+        -questions: PinnedQuestion[]
+        +startConnection() void
+        +stopConnection() void
+        +togglePinQuestion(q) void
+        +updateState(data) void
+    }
+
+    class InterviewSession {
+        -sessionId: string
+        -useInterviewAudio: hook
+        +render() JSX
+    }
+
+    class CopilotSession {
+        -id: string
+        -useCopilotAudio: hook
+        -uiMode: live | report
+        -isSimulation: boolean
+        +render() JSX
+    }
+
+    class APIClient {
+        +parseResume(file) Promise
+        +startInterview(data) Promise
+        +stopInterview(id) Promise
+        +getInterview(id) Promise
+        +listInterviews() Promise
+    }
+
+    class CopilotAPIClient {
+        +startCopilot(data) Promise
+        +getCopilotStatus(id) Promise
+        +stopCopilot(id) Promise
+        +finalizeCopilotReport(id) Promise
+        +updateCopilotPrompt(id, prompt) Promise
+    }
+
+    InterviewSession --> useInterviewAudio : uses
+    InterviewSession --> APIClient : calls
+    CopilotSession --> useCopilotAudio : uses
+    CopilotSession --> CopilotAPIClient : calls
+    useInterviewAudio ..> WebSocket : manages
+    useCopilotAudio ..> WebSocket : manages

@@ -1,0 +1,50 @@
+﻿graph TB
+    subgraph P["Presentation Layer"]
+        P1[React Pages - InterviewsList, NewInterview, InterviewSession]
+        P2[React Pages - NewCopilot, CopilotSession]
+        P3[Shared Components - Cards, Buttons, Layouts]
+    end
+
+    subgraph BL["Business Layer"]
+        BL1[InterviewPromptBuilder - JD+Resume → System Instruction]
+        BL2[SpeakerRoleClassifier - Hybrid Diarization]
+        BL3[DecisionEngine - Strong/Partial/Weak Routing]
+        BL4[UtteranceStitching - Same-Speaker Merge]
+    end
+
+    subgraph SL["Service Layer"]
+        SL1[CopilotSessionEngine - Session Orchestrator]
+        SL2[AICopilotEngine - Suggestion Generation]
+        SL3[ConversationIntelligenceEngine - Coverage Analysis]
+        SL4[CandidateEvaluationService - 6-Dimension Scoring]
+        SL5[LocalPipecatPipelineBuilder - Audio Pipeline Factory]
+        SL6[DocumentParserFactory - Resume Parsing]
+    end
+
+    subgraph RL["Repository Layer"]
+        RL1[PostgresInterviewRepository]
+        RL2[JSONInterviewRepository - dev fallback]
+        RL3[CopilotRepository - PostgreSQL + File]
+    end
+
+    subgraph IL["Infrastructure Layer"]
+        IL1[FastAPI Application - HTTP + WebSocket]
+        IL2[Pipecat - Real-Time Audio Orchestration]
+        IL3[Tortoise ORM - Async PostgreSQL]
+        IL4[Nginx - Reverse Proxy + Static]
+        IL5[Docker Compose - Container Orchestration]
+        IL6[Deepgram SDK - STT + TTS]
+        IL7[AsyncOpenAI Client - LLM Calls]
+        IL8[Playwright - Browser Automation]
+    end
+
+    P --> BL
+    BL --> SL
+    SL --> RL
+    RL --> IL
+
+    style P fill:#dbeafe,stroke:#3b82f6
+    style BL fill:#dcfce7,stroke:#22c55e
+    style SL fill:#fce7f3,stroke:#ec4899
+    style RL fill:#fef9c3,stroke:#eab308
+    style IL fill:#f3e8ff,stroke:#a855f7

@@ -1,0 +1,72 @@
+﻿graph TB
+    subgraph ENTRY["Entry Point"]
+        UVICORN[Uvicorn ASGI Server]
+        FASTAPI[FastAPI App]
+    end
+
+    subgraph ROUTING["HTTP + WebSocket Routing"]
+        ROUTER[APIRouter /api]
+        WS_INT[WebSocket /ws/interview/:id]
+        HTTP_INT[HTTP /interviews/*]
+    end
+
+    subgraph MIDDLEWARE["Middleware"]
+        CORS[CORSMiddleware]
+    end
+
+    subgraph HANDLERS["Request Handlers - interviews.py"]
+        PARSE_RESUME[POST parse-resume]
+        START_INT[POST start]
+        STOP_INT[POST stop]
+        GET_INT[GET :id]
+        LIST_INT[GET list]
+        WS_HANDLER[WebSocket handler]
+    end
+
+    subgraph SERVICES["Business Services"]
+        PROMPT[InterviewPromptBuilder]
+        PARSER[DocumentParserFactory]
+        CLASSIFY[classify_speaker_role]
+    end
+
+    subgraph PIPELINE["Audio Pipeline"]
+        BUILDER[LocalPipecatPipelineBuilder]
+        PIPECAT_PIPE[Pipecat Pipeline]
+        WORKER[PipelineWorker]
+        RUNNER[WorkerRunner]
+    end
+
+    subgraph REPOS["Data Layer"]
+        PG_REPO[PostgresInterviewRepository]
+        JSON_REPO[JSONInterviewRepository]
+    end
+
+    subgraph STATE["App State - In Memory"]
+        ACTIVE[active_sessions dict]
+        COPILOT_SESS[copilot_sessions dict]
+    end
+
+    UVICORN --> FASTAPI
+    FASTAPI --> CORS
+    FASTAPI --> ROUTER
+    ROUTER --> HTTP_INT
+    ROUTER --> WS_INT
+    HTTP_INT --> PARSE_RESUME
+    HTTP_INT --> START_INT
+    HTTP_INT --> STOP_INT
+    HTTP_INT --> GET_INT
+    HTTP_INT --> LIST_INT
+    WS_INT --> WS_HANDLER
+
+    PARSE_RESUME --> PARSER
+    START_INT --> PG_REPO
+    START_INT --> ACTIVE
+    WS_HANDLER --> PROMPT
+    WS_HANDLER --> BUILDER
+    WS_HANDLER --> CLASSIFY
+    WS_HANDLER --> ACTIVE
+    WS_HANDLER --> COPILOT_SESS
+    BUILDER --> PIPECAT_PIPE
+    PIPECAT_PIPE --> WORKER
+    WORKER --> RUNNER
+    PG_REPO --> JSON_REPO

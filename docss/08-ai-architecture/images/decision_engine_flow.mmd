@@ -1,0 +1,27 @@
+﻿flowchart TD
+    A[Candidate Evaluation Complete] --> B{technical_accuracy rating}
+    B -->|>= 80| C[STRONG]
+    B -->|50-79| D[PARTIAL]
+    B -->|< 50| E[WEAK]
+    
+    C --> F[Inject: Do NOT generate follow-up Qs]
+    C --> G[Set questions = Move to the next topic]
+    
+    D --> H[Inject: Generate 2-3 drill-down questions]
+    D --> I[Truncate to max 3 questions]
+    
+    E --> J[Inject: Generate probing questions]
+    E --> K[Verify basic understanding]
+    
+    F --> L[AICopilotEngine prompt + rules]
+    H --> L
+    J --> L
+    L --> M[DeepSeek LLM response]
+    M --> N{Python post-processing}
+    N -->|STRONG| O[Override: questions = Move to next topic]
+    N -->|PARTIAL| P[Truncate questions list to 3]
+    N -->|other| Q[Return as-is]
+
+    style C fill:#dcfce7,stroke:#22c55e
+    style D fill:#fef9c3,stroke:#eab308
+    style E fill:#fecaca,stroke:#ef4444

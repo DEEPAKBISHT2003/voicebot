@@ -1,0 +1,7 @@
+﻿graph LR
+    ROOT[Home /] --> IL[InterviewsList]
+    IL -->|New Interview| NI[NewInterview /interviews/new]
+    NI -->|Start Interview| IS[InterviewSession /interviews/:id]
+    ROOT --> NC[NewCopilot /copilot/new]
+    NC -->|Start Copilot| CS[CopilotSession /copilot/:id]
+    IL -->|View Session| IS
