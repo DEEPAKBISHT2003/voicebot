@@ -3,11 +3,13 @@ FROM python:3.12-slim
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    PULSE_SERVER=unix:/tmp/pulse/native \
+    XDG_RUNTIME_DIR=/tmp/pulse
 
 WORKDIR /app
 
-# Install system dependencies for audio processing + Chromium
+# Install system dependencies for audio processing + Chromium + PulseAudio
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     python3-dev \
@@ -16,6 +18,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libasound2-dev \
     wget \
     gnupg \
+    pulseaudio \
+    pulseaudio-utils \
+    alsa-utils \
+    libasound2-plugins \
+    libpulse-dev \
+    libpulse0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy and install python dependencies
@@ -48,10 +56,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install ONLY Chromium browser binary (without system deps — already installed above)
 RUN playwright install chromium
 
+# PulseAudio configuration for headless Docker
+COPY pulse-daemon.conf /etc/pulse/daemon.conf
+COPY pulse-default.pa /etc/pulse/default.pa
+
+# Create runtime directory for PulseAudio socket
+RUN mkdir -p /tmp/pulse && chmod 777 /tmp/pulse
+
 # Create parent package init for Python import resolution
 RUN mkdir -p /app/services && touch /app/services/__init__.py
 
 # Copy service source code
 COPY . /app/services/copilot
 
-CMD ["sh", "-c", "uvicorn services.copilot.src.main:app --host 0.0.0.0 --port ${COPILOT_PORT:-8001}"]
+# Copy and set up entrypoint
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

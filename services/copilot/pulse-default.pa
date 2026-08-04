@@ -1,0 +1,12 @@
+# PulseAudio startup script for headless Docker
+# All module commands must be single-line (no backslash continuation)
+
+# Load null sink as the only audio output — Chromium plays to this
+load-module module-null-sink sink_name=VirtualSink sink_properties=device.description=VirtualSink
+
+# Set as default sink and source
+set-default-sink VirtualSink
+set-default-source VirtualSink.monitor
+
+# Native protocol via unix socket
+load-module module-native-protocol-unix socket=/tmp/pulse/native
