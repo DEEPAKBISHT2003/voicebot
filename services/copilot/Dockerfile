@@ -24,6 +24,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libasound2-plugins \
     libpulse-dev \
     libpulse0 \
+    xvfb \
+    x11-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy and install python dependencies
@@ -69,8 +71,8 @@ RUN mkdir -p /app/services && touch /app/services/__init__.py
 # Copy service source code
 COPY . /app/services/copilot
 
-# Copy and set up entrypoint
+# Copy and set up entrypoint — convert line endings to LF (fixes Windows CRLF issue)
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN sed -i 's/\r//' /entrypoint.sh && chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]

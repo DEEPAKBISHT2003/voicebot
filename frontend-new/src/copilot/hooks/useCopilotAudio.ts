@@ -203,6 +203,13 @@ export const useCopilotAudio = (sessionId: string | null) => {
       ws.onclose = () => {
         console.log('[CopilotWS] Connection closed');
         setStatus((prev) => (prev === 'error' ? 'error' : 'disconnected'));
+        // Auto-reconnect after 3s unless intentionally stopped (socketRef cleared)
+        setTimeout(() => {
+          if (socketRef.current !== null && sessionId) {
+            console.log('[CopilotWS] Auto-reconnecting...');
+            startConnection();
+          }
+        }, 3000);
       };
     } catch (err: any) {
       console.error('[CopilotWS] Setup error:', err);

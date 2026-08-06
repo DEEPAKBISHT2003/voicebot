@@ -2,17 +2,28 @@
 Teams Bot — Playwright headless browser that joins a Teams meeting and
 streams audio to the Copilot Service via a Python-level WebSocket.
 
-Architecture (PulseAudio virtual device approach):
-    Teams WebRTC audio
+Architecture (PulseAudio virtual sink approach):
+    Candidate speaks in Microsoft Teams
         ↓
-    Chromium plays to PulseAudio VirtualSink (null sink)
+    Chromium (Playwright) — headless browser in the meeting
         ↓
-    Python reads from VirtualSink.monitor (PulseAudio loopback)
+    Teams WebRTC decodes incoming audio
         ↓
-    Python WebSocket → Copilot Service /api/ws/copilot/{id}?mode=audio_stream
+    Chromium routes audio output → PulseAudio VirtualSink
+        ↓
+    PulseAudio Monitor Source (VirtualSink.monitor) captures playback
+        ↓
+    Python sounddevice reads 16kHz mono Int16 PCM from monitor
+        ↓
+    Python WebSocket → Copilot Service → Deepgram STT
+        ↓
+    Live Transcript → AI Copilot
 
-This approach bypasses the Teams Content Security Policy that blocks WebSocket
-connections opened from inside injected JavaScript.
+KEY: Do NOT use --use-fake-device-for-media-stream.
+That flag replaces Chromium's real audio pipeline with a null device,
+which means Teams WebRTC audio never reaches PulseAudio VirtualSink.
+Use --use-fake-ui-for-media-stream ONLY — it silently grants permissions
+without replacing the real audio output pipeline.
 """
 
 import asyncio
@@ -28,16 +39,16 @@ from loguru import logger
 # ── Configuration ──────────────────────────────────────────────────────────────
 BACKEND_WS_BASE = os.getenv("COPILOT_WS_BASE", os.getenv("BACKEND_WS_BASE", "ws://localhost:8001"))
 
-# PulseAudio virtual sink name — must match pulse-default.pa
+# PulseAudio virtual sink — must match entrypoint.sh sink_name
 PULSE_MONITOR_DEVICE = "VirtualSink.monitor"
 
 # Audio capture settings — must match Deepgram STT expectations
-SAMPLE_RATE = 16000
-CHANNELS = 1
-CHUNK_SIZE = 4096        # samples per chunk (~256ms at 16kHz)
-DTYPE = "int16"
+SAMPLE_RATE = 16000   # Hz — Deepgram expects 16kHz
+CHANNELS    = 1       # Mono
+CHUNK_SIZE  = 4096    # samples per chunk (~256ms at 16kHz)
+DTYPE       = "int16" # 16-bit signed PCM
 
-# ── Camera block JS (keep — prevents camera permission issues) ──────────────────
+# ── Camera block JS ────────────────────────────────────────────────────────────
 CAMERA_BLOCK_JS = """
 (() => {
     if (window.__camera_block_injected__) return;
@@ -73,7 +84,7 @@ CAMERA_BLOCK_JS = """
 })();
 """
 
-# ── WebRTC recvonly enforcer JS (keep — ensures bot only receives, never sends) ──
+# ── WebRTC recvonly enforcer JS ────────────────────────────────────────────────
 RECVONLY_JS = """
 (() => {
     if (window.__recvonly_injected__) return;
@@ -105,7 +116,7 @@ RECVONLY_JS = """
 """
 
 
-# ── PulseAudio audio capture + WebSocket streaming ─────────────────────────────
+# ── PulseAudio audio capture + WebSocket streaming ────────────────────────────
 
 class AudioStreamer:
     """
@@ -134,11 +145,12 @@ class AudioStreamer:
     def _capture_loop(self):
         """Blocking audio capture loop running in a dedicated thread."""
         try:
-            # Find the VirtualSink.monitor device index
             device_index = self._find_pulse_monitor()
             if device_index is None:
-                logger.error(f"[AudioStreamer] PulseAudio device '{PULSE_MONITOR_DEVICE}' not found. "
-                             f"Available devices: {sd.query_devices()}")
+                logger.error(
+                    f"[AudioStreamer] PulseAudio device '{PULSE_MONITOR_DEVICE}' not found. "
+                    f"Available: {sd.query_devices()}"
+                )
                 return
 
             logger.info(f"[AudioStreamer] Using device index {device_index}: {PULSE_MONITOR_DEVICE}")
@@ -151,17 +163,22 @@ class AudioStreamer:
                 blocksize=CHUNK_SIZE,
             ) as stream:
                 logger.info("[AudioStreamer] PulseAudio stream opened. Streaming audio...")
+                chunk_count = 0
                 while not self._stop_event.is_set():
                     raw_data, overflowed = stream.read(CHUNK_SIZE)
                     if overflowed:
-                        logger.debug("[AudioStreamer] Buffer overflow — audio chunks arriving faster than consumed.")
-                    # Push into asyncio queue from this thread safely
+                        logger.debug("[AudioStreamer] Buffer overflow.")
                     try:
                         self.loop.call_soon_threadsafe(
                             self.queue.put_nowait, bytes(raw_data)
                         )
+                        chunk_count += 1
+                        if chunk_count % 500 == 0:
+                            # Check audio level to detect silence vs real audio
+                            samples = np.frombuffer(raw_data, dtype=np.int16)
+                            rms = np.sqrt(np.mean(samples.astype(float) ** 2))
+                            logger.info(f"[AudioStreamer] {chunk_count} chunks sent. RMS level: {rms:.1f}")
                     except asyncio.QueueFull:
-                        logger.debug("[AudioStreamer] Queue full — dropping oldest chunk.")
                         try:
                             self.queue.get_nowait()
                             self.loop.call_soon_threadsafe(
@@ -179,7 +196,7 @@ class AudioStreamer:
         for i, dev in enumerate(devices):
             if PULSE_MONITOR_DEVICE in dev.get("name", "") and dev.get("max_input_channels", 0) > 0:
                 return i
-        # Fallback: try device named 'pulse' (default PulseAudio device)
+        # Fallback: try any pulse device
         for i, dev in enumerate(devices):
             if "pulse" in dev.get("name", "").lower() and dev.get("max_input_channels", 0) > 0:
                 logger.warning(f"[AudioStreamer] Exact match not found, using fallback: {dev['name']}")
@@ -192,10 +209,7 @@ async def stream_audio_to_server(
     streamer: AudioStreamer,
     stop_event: asyncio.Event,
 ):
-    """
-    Consumes audio chunks from AudioStreamer queue and sends them
-    over a Python WebSocket — no CSP restrictions apply here.
-    """
+    """Consumes audio chunks from AudioStreamer and sends them via WebSocket."""
     retry_delay = 1.0
     while not stop_event.is_set():
         try:
@@ -207,13 +221,13 @@ async def stream_audio_to_server(
                 close_timeout=5,
             ) as ws:
                 logger.info("[AudioStreamer] WebSocket connected. Streaming audio chunks...")
-                retry_delay = 1.0  # Reset on successful connect
+                retry_delay = 1.0
                 while not stop_event.is_set():
                     try:
                         chunk = await asyncio.wait_for(streamer.queue.get(), timeout=2.0)
                         await ws.send(chunk)
                     except asyncio.TimeoutError:
-                        continue  # No audio yet, loop back
+                        continue
                     except websockets.exceptions.ConnectionClosed as cc:
                         logger.warning(f"[AudioStreamer] WebSocket closed: {cc}. Reconnecting...")
                         break
@@ -222,12 +236,12 @@ async def stream_audio_to_server(
                 break
             logger.error(f"[AudioStreamer] WebSocket error: {e}. Retrying in {retry_delay}s...")
             await asyncio.sleep(retry_delay)
-            retry_delay = min(retry_delay * 2, 15.0)  # Exponential backoff, max 15s
+            retry_delay = min(retry_delay * 2, 15.0)
 
     logger.info("[AudioStreamer] WebSocket streaming stopped.")
 
 
-# ── Playwright periodic recvonly injector ──────────────────────────────────────
+# ── Playwright periodic recvonly injector ─────────────────────────────────────
 
 async def periodic_injector(page):
     """Re-injects recvonly JS periodically to handle Teams SPA navigations."""
@@ -256,12 +270,17 @@ async def run_bot(meeting_url: str, session_id: str):
     stop_event = asyncio.Event()
 
     async with async_playwright() as p:
-        # Launch Chromium with PulseAudio routing
-        # --disable-features=ProtocolHandlerRoundTrip suppresses the
-        # "Open Microsoft Teams?" OS-level dialog that blocks the web lobby
+        pulse_socket = os.getenv("PULSE_SERVER", "unix:/tmp/pulse/native")
+        display = os.getenv("DISPLAY", ":99")
+
         browser = await p.chromium.launch(
-            headless=True,
+            # Use non-headless with Xvfb virtual display
+            # This forces Chromium to initialize its full audio pipeline through PulseAudio
+            # headless=True causes Chromium to skip PulseAudio audio output routing entirely
+            headless=False,
             args=[
+                # --use-fake-ui-for-media-stream: silently grants mic/camera permission
+                # prompts without showing a browser dialog.
                 "--use-fake-ui-for-media-stream",
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
@@ -271,13 +290,25 @@ async def run_bot(meeting_url: str, session_id: str):
                 "--no-default-browser-check",
                 "--disable-component-update",
                 "--disable-extensions",
-                # Route Chromium audio output to PulseAudio VirtualSink
+                "--disable-dev-shm-usage",
+                "--enable-unsafe-swiftshader",
+                # Disable GPU rendering (Xvfb uses software rendering)
+                "--disable-gpu",
+                # Route Chromium audio through PulseAudio
                 "--alsa-output-device=pulse",
                 "--alsa-input-device=pulse",
+                "--alsa-output-device=pulse",
+                "--alsa-input-device=pulse",
+                # Ensure audio renderer process is started (headless may skip it otherwise)
+                "--audio-output-channels=2",
+                "--disable-audio-output=false",
             ],
             env={
                 **os.environ,
-                "PULSE_SERVER": os.getenv("PULSE_SERVER", "unix:/tmp/pulse/native"),
+                # Point Chromium PulseAudio client at our VirtualSink socket
+                "PULSE_SERVER": pulse_socket,
+                "XDG_RUNTIME_DIR": "/tmp/pulse",
+                "DISPLAY": display,
             }
         )
 
@@ -286,12 +317,9 @@ async def run_bot(meeting_url: str, session_id: str):
             ignore_https_errors=True,
         )
 
-        # Block the msteams:// protocol handler — prevents the OS dialog
-        # "Open Microsoft Teams?" from appearing and blocking the web lobby
         async def block_protocol_handler(route):
             if route.request.url.startswith("msteams:") or \
                route.request.url.startswith("ms-teams:"):
-                logger.info("[TeamsBot] Blocked msteams:// protocol handler request.")
                 await route.abort()
             else:
                 await route.continue_()
@@ -302,27 +330,35 @@ async def run_bot(meeting_url: str, session_id: str):
         await page.add_init_script(CAMERA_BLOCK_JS)
         await page.add_init_script(RECVONLY_JS)
         page.on("console", lambda msg: logger.info(f"[BrowserConsole] {msg.type}: {msg.text}"))
-
-        # Auto-dismiss any browser dialogs (including protocol handler popups)
         page.on("dialog", lambda dialog: asyncio.ensure_future(dialog.dismiss()))
 
-        # Navigate to Teams meeting — append &skipAppLaunch=1 to skip the
-        # "Open Teams app" redirect and land directly on the web lobby
-        web_url = meeting_url
+        # Build Teams web lobby URL
         if "?" in meeting_url:
             web_url = meeting_url + "&skipAppLaunch=1&anon=true&launchAgent=join_launcher_web&lightExperience=true"
         else:
             web_url = meeting_url + "?skipAppLaunch=1&anon=true&launchAgent=join_launcher_web&lightExperience=true"
 
         logger.info(f"[TeamsBot] Navigating to web lobby URL: {web_url}")
-        await page.goto(web_url)
+        await page.goto(web_url, wait_until="domcontentloaded", timeout=60000)
 
-        # Start periodic JS re-injector
         injector_task = asyncio.create_task(periodic_injector(page))
 
-        await asyncio.sleep(5.0)
+        # ── Dismiss "no audio/video" dialog immediately after navigation ──────
+        # Poll for 10s after navigation — dialog appears during redirect phase.
+        # Dismissing it does NOT affect WebRTC audio RECEPTION — Teams still
+        # plays incoming audio through Chromium → PulseAudio VirtualSink.
+        logger.info("[TeamsBot] Checking for 'no audio/video' dialog (10s)...")
+        for _ in range(10):
+            try:
+                no_av_btn = page.locator("button:has-text('Continue without audio or video')")
+                if await no_av_btn.is_visible(timeout=1000):
+                    await no_av_btn.click(timeout=2000)
+                    logger.info("[TeamsBot] Dismissed 'no audio/video' dialog.")
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(1.0)
 
-        # Save landing screenshot
         debug_dir = os.path.join(os.getcwd(), "interviews", session_id)
         os.makedirs(debug_dir, exist_ok=True)
         try:
@@ -331,20 +367,38 @@ async def run_bot(meeting_url: str, session_id: str):
         except Exception as se:
             logger.warning(f"[TeamsBot] Failed to save landing screenshot: {se}")
 
-        # ── UI: Select web join ─────────────────────────────────────────────
+        logger.info("[TeamsBot] Waiting for page to settle after redirects (5s)...")
+        await asyncio.sleep(5.0)
+        current_url = page.url
+        logger.info(f"[TeamsBot] Current URL after settle: {current_url}")
+
         try:
-            logger.info("[TeamsBot] Selecting Web Join option...")
+            await page.screenshot(path=os.path.join(debug_dir, "teams_bot_after_redirect.png"))
+            logger.info("[TeamsBot] Saved post-redirect screenshot.")
+        except Exception as se:
+            logger.warning(f"[TeamsBot] Could not save post-redirect screenshot: {se}")
+
+        # ── Check for Web Join button ───────────────────────────────────────
+        try:
+            logger.info("[TeamsBot] Looking for Web Join option...")
             web_join_button = page.locator(
                 "button:has-text('Join on the web'), "
                 "button:has-text('Continue on this browser'), "
                 "button:has-text('Continue in this browser'), "
+                "button:has-text('Join in a browser'), "
                 "[aria-label*='Join on the web'], "
-                "[data-tid='join-on-web']"
+                "[data-tid='join-on-web'], "
+                "a:has-text('Join on the web'), "
+                "a:has-text('Continue in this browser')"
             )
-            await web_join_button.first.click(timeout=10000)
-            await asyncio.sleep(5.0)
+            if await web_join_button.first.is_visible(timeout=5000):
+                await web_join_button.first.click(timeout=10000)
+                logger.info("[TeamsBot] Clicked Web Join button.")
+                await asyncio.sleep(5.0)
+            else:
+                logger.info("[TeamsBot] No Web Join button found — already on lobby page.")
         except Exception as e:
-            logger.warning(f"[TeamsBot] Bypassing Web Join select step (already on lobby page or redirected): {e}")
+            logger.warning(f"[TeamsBot] Web Join step skipped: {e}")
 
         try:
             await page.evaluate(RECVONLY_JS)
@@ -352,7 +406,23 @@ async def run_bot(meeting_url: str, session_id: str):
         except Exception as ee:
             logger.warning(f"[TeamsBot] Recvonly script evaluation skipped: {ee}")
 
-        # ── UI: Lobby — fill name, mute mic, turn off camera, join ─────────
+        # ── Handle "no audio/video" dialog if it appears ───────────────────
+        # This dialog does NOT prevent Teams from receiving/playing incoming audio.
+        # Teams WebRTC audio playback still routes through Chromium → PulseAudio.
+        # Clicking "Continue without audio or video" only means the bot won't
+        # send outgoing audio/video — which is exactly what we want.
+        try:
+            no_av_btn = page.locator("button:has-text('Continue without audio or video')")
+            if await no_av_btn.is_visible(timeout=4000):
+                await no_av_btn.click(timeout=3000)
+                logger.info("[TeamsBot] Handled 'no audio/video' dialog — bot joins as listener only (correct behavior).")
+                await asyncio.sleep(1.0)
+            else:
+                logger.info("[TeamsBot] No audio/video dialog — Teams found audio devices, joining normally.")
+        except Exception:
+            pass
+
+        # ── Lobby: fill name, mute mic/cam, join ───────────────────────────
         try:
             logger.info("[TeamsBot] Waiting for lobby name input (up to 45s)...")
             name_input = page.locator(
@@ -361,8 +431,11 @@ async def run_bot(meeting_url: str, session_id: str):
                 "input.fui-Input__input, "
                 "input[placeholder*='Type your name' i], "
                 "input[placeholder*='Enter name' i], "
+                "input[placeholder*='your name' i], "
                 "input[aria-label*='Type your name' i], "
-                "input[aria-label*='Enter name' i]"
+                "input[aria-label*='Enter name' i], "
+                "input[aria-label*='name' i], "
+                "input[type='text']"
             )
             target_name_input = name_input.first
             await target_name_input.wait_for(state="visible", timeout=45000)
@@ -391,7 +464,6 @@ async def run_bot(meeting_url: str, session_id: str):
                     "input[data-cid*='toggle-mute'], "
                     "input[data-tid='toggle-mute'], "
                     "input[title*='Mute mic' i], "
-                    "input[title*='Unmute mic' i], "
                     "[role='switch'][data-tid*='toggle-mute']"
                 ).first
                 if await mic_switch.is_visible(timeout=5000):
@@ -407,18 +479,16 @@ async def run_bot(meeting_url: str, session_id: str):
                         await mic_switch.click(force=True)
                         logger.info("[TeamsBot] Clicked Fluent UI mic switch OFF (Muted).")
                     else:
-                        logger.info(f"[TeamsBot] Mic switch already OFF.")
+                        logger.info("[TeamsBot] Mic switch already OFF.")
                 else:
-                    fallback_mic = page.locator(
-                        "[data-tid*='toggle-mute'], [data-tid*='mute']"
-                    ).first
+                    fallback_mic = page.locator("[data-tid*='toggle-mute'], [data-tid*='mute']").first
                     if await fallback_mic.is_visible(timeout=2000):
                         await fallback_mic.click(force=True)
                         logger.info("[TeamsBot] Microphone fallback button clicked.")
             except Exception as me:
                 logger.warning(f"[TeamsBot] Could not verify/toggle microphone: {me}")
 
-            # Fill name
+            # Fill display name
             try:
                 await target_name_input.click(timeout=3000, force=True)
                 await target_name_input.fill("AI Copilot Teammate", timeout=5000)
@@ -437,12 +507,10 @@ async def run_bot(meeting_url: str, session_id: str):
                 pass
             logger.info("[TeamsBot] Filled guest display name input field.")
 
-            # Click Join
+            # Click Join button
             join_button = page.locator(
                 "button#prejoin-join-button, "
                 "button[data-tid='prejoin-join-button'], "
-                "[id='prejoin-join-button'], "
-                "[data-tid='prejoin-join-button'], "
                 "button[aria-label='Join now'], "
                 "button[aria-label*='Join now' i], "
                 "button:has-text('Join now'), "
@@ -477,12 +545,11 @@ async def run_bot(meeting_url: str, session_id: str):
             except Exception:
                 pass
 
-        # ── Wait for lobby admission (bot must be admitted before audio starts) ──
+        # ── Wait for lobby admission ───────────────────────────────────────
         logger.info("[TeamsBot] Waiting for lobby admission (up to 120s)...")
         admitted = False
-        for _ in range(40):  # 40 x 3s = 120s max wait
+        for _ in range(40):
             try:
-                # These elements only appear INSIDE the meeting, not in the lobby
                 in_meeting_indicators = page.locator(
                     "button[data-tid='microphone-button'], "
                     "button[data-tid='camera-button'], "
@@ -496,39 +563,40 @@ async def run_bot(meeting_url: str, session_id: str):
                     break
             except Exception:
                 pass
-
-            # Also check for lobby waiting text — if visible, still waiting
-            try:
-                lobby_text = page.locator(
-                    "text=Someone will let you in soon, "
-                    "text=Waiting for someone to let you in, "
-                    "[data-tid='prejoin-waiting-lobby']"
-                )
-                if await lobby_text.first.is_visible(timeout=500):
-                    logger.info("[TeamsBot] Still in lobby — waiting for admission...")
-            except Exception:
-                pass
-
             await asyncio.sleep(3.0)
 
         if not admitted:
-            logger.warning("[TeamsBot] Was not admitted to meeting within 120s. "
-                           "Starting audio capture anyway (meeting may have open lobby).")
+            logger.warning("[TeamsBot] Was not admitted within 120s. Starting audio capture anyway.")
 
-        # Give WebRTC audio a moment to stabilize after admission
+        # Give WebRTC audio time to stabilize after admission
         logger.info("[TeamsBot] Waiting for Teams WebRTC audio to stabilize (3s)...")
         await asyncio.sleep(3.0)
+
+        # Verify PulseAudio is receiving Chromium audio before starting capture
+        try:
+            import subprocess
+            sink_result = subprocess.run(
+                ["pactl", "-s", "unix:/tmp/pulse/native", "list", "sink-inputs"],
+                capture_output=True, text=True, timeout=5
+            )
+            if "chromium" in sink_result.stdout.lower() or "headless" in sink_result.stdout.lower():
+                logger.info("[TeamsBot] Confirmed: Chromium audio is flowing into PulseAudio VirtualSink.")
+            elif sink_result.stdout.strip():
+                logger.info(f"[TeamsBot] PulseAudio has active sink inputs: {len(sink_result.stdout.splitlines())} lines")
+            else:
+                logger.warning("[TeamsBot] No active PulseAudio sink inputs — Chromium may not be routing audio yet.")
+        except Exception as ve:
+            logger.warning(f"[TeamsBot] PulseAudio verification failed: {ve}")
 
         logger.info("[TeamsBot] Starting PulseAudio monitor capture...")
         streamer.start()
 
-        # Run WebSocket streaming as a background task
         streaming_task = asyncio.create_task(
             stream_audio_to_server(ws_url, streamer, stop_event)
         )
         logger.info("[TeamsBot] Audio streaming task started. Bot is now live.")
 
-        # ── Keep alive: monitor meeting + enforce mute/camera off ──────────
+        # ── Keep alive: enforce mute/camera off ────────────────────────────
         try:
             in_meeting_muted = False
             in_meeting_camera_off = False
@@ -547,8 +615,7 @@ async def run_bot(meeting_url: str, session_id: str):
                         try:
                             cam_btn = frame.locator(
                                 "button[data-tid='camera-button'], "
-                                "button[aria-label*='camera' i], "
-                                "button[aria-label*='video' i]"
+                                "button[aria-label*='camera' i]"
                             ).first
                             if await cam_btn.is_visible(timeout=500):
                                 label = (await cam_btn.get_attribute("aria-label") or "").lower()
@@ -583,7 +650,7 @@ async def run_bot(meeting_url: str, session_id: str):
                                     break
                                 elif "unmute" in label or pressed == "false":
                                     in_meeting_muted = True
-                                    logger.info(f"[TeamsBot] In-meeting microphone already muted.")
+                                    logger.info("[TeamsBot] In-meeting microphone already muted.")
                                     break
                         except Exception:
                             pass

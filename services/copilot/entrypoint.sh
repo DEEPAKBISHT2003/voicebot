@@ -5,6 +5,15 @@ echo "[Entrypoint] Creating PulseAudio runtime directory..."
 mkdir -p /tmp/pulse
 chmod 777 /tmp/pulse
 
+# Start virtual display (Xvfb) so Chromium initializes full audio pipeline
+# Without a display, headless Chromium skips PulseAudio audio output routing
+echo "[Entrypoint] Starting Xvfb virtual display..."
+Xvfb :99 -screen 0 1280x720x24 -ac &
+XVFB_PID=$!
+export DISPLAY=:99
+sleep 1
+echo "[Entrypoint] Xvfb started on DISPLAY=:99"
+
 export XDG_RUNTIME_DIR=/tmp/pulse
 export PULSE_SERVER=unix:/tmp/pulse/native
 # Tell PulseAudio not to use D-Bus (not available in Docker)
@@ -21,6 +30,7 @@ pulseaudio \
     --no-cpu-limit \
     -n \
     --load="module-null-sink sink_name=VirtualSink sink_properties=device.description=VirtualSink" \
+    --load="module-null-source source_name=VirtualMic" \
     --load="module-native-protocol-unix socket=/tmp/pulse/native" \
     &
 
@@ -42,8 +52,8 @@ done
 if [ -S /tmp/pulse/native ]; then
     echo "[Entrypoint] PulseAudio socket ready."
     pactl -s unix:/tmp/pulse/native set-default-sink VirtualSink 2>/dev/null && \
-    pactl -s unix:/tmp/pulse/native set-default-source VirtualSink.monitor 2>/dev/null && \
-    echo "[Entrypoint] VirtualSink set as default." || \
+    pactl -s unix:/tmp/pulse/native set-default-source VirtualMic 2>/dev/null && \
+    echo "[Entrypoint] VirtualSink + VirtualMic set as defaults." || \
     echo "[Entrypoint] WARNING: Could not set default sink/source."
 else
     echo "[Entrypoint] WARNING: PulseAudio socket not found — audio capture will not work."

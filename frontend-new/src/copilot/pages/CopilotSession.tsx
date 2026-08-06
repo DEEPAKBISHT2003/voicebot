@@ -204,10 +204,16 @@ export const CopilotSession: React.FC = () => {
       try {
         const res = await getCopilotStatus(id);
         if (res) {
-          updateState(res);
-          const active = (res as any).is_active;
+          // Only update transcript/intelligence/assistance from HTTP polling
+          // if WebSocket is NOT connected (avoid overwriting live WS state)
+          const { transcript: t, intelligence: i, assistance: a, ...rest } = res as any;
+          const active = rest.is_active;
           if (active === false) {
             setIsSimulationFinished(true);
+          }
+          // Only sync state from HTTP if websocket is disconnected
+          if (status !== 'connected') {
+            updateState(res);
           }
         }
       } catch (err) {
@@ -218,7 +224,7 @@ export const CopilotSession: React.FC = () => {
     checkStatus();
     const interval = setInterval(checkStatus, 3000);
     return () => clearInterval(interval);
-  }, [id]);
+  }, [id, status]);
 
   const handleEndSession = async () => {
     stopConnection();

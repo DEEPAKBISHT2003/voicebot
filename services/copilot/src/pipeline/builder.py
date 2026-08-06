@@ -94,7 +94,11 @@ class CopilotPipelineBuilder:
                 params=PipelineParams(
                     enable_metrics=False,
                     enable_usage_metrics=False,
-                )
+                ),
+                # Disable idle timeout — pipeline runs continuously even during silence
+                # Default timeout kills the pipeline when no speech is detected
+                idle_timeout_secs=None,
+                cancel_on_idle_timeout=False,
             )
 
             logger.info(f"[CopilotPipeline] Successfully built audio observer pipeline for session: {session_id}")
