@@ -239,6 +239,7 @@ class JoinMeetingRequest(BaseModel):
 async def join_meeting(
     session_id: str,
     req: JoinMeetingRequest,
+    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
 ):
     """
     Spawns the Playwright Teams Bot from the Copilot Service.
@@ -282,6 +283,11 @@ async def join_meeting(
                     decoded = line.decode("utf-8", errors="replace").strip()
                     if decoded:
                         logger.info(f"[TeamsBot] {decoded}")
+                        if "[CopilotSession] State:" in decoded:
+                            state_val = decoded.split("[CopilotSession] State:")[1].strip()
+                            if session_id in active_sessions:
+                                active_sessions[session_id]["status"] = state_val
+                                active_sessions[session_id]["state"] = state_val
                 process.stdout.close()
                 process.wait()
                 logger.info(f"[TeamsBot] Bot process exited with code: {process.returncode}")

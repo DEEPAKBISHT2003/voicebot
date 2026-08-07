@@ -4,9 +4,11 @@ const getCopilotBaseUrl = (): string => {
   let url = import.meta.env.VITE_COPILOT_URL ||
             (process.env as any).COPILOT_URL;
 
-  if (!url) {
-    // Fall back to relative path so Vite proxy handles it
-    return '/api';
+  if (!url || url.includes('localhost')) {
+    if (typeof window !== 'undefined') {
+      return '/api';
+    }
+    return 'http://127.0.0.1:8001/api';
   }
 
   if (url.endsWith('/')) {

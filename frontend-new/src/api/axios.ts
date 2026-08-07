@@ -5,8 +5,11 @@ const getBaseUrl = (): string => {
             import.meta.env.VITE_BACKEND_URL || 
             (process.env as any).BACKEND_URL;
 
-  if (!url) {
-    return '/api';
+  if (!url || url.includes('localhost')) {
+    if (typeof window !== 'undefined') {
+      return '/api';
+    }
+    return 'http://127.0.0.1:8000/api';
   }
 
   // Clean trailing slash

@@ -262,6 +262,8 @@ async def periodic_injector(page):
 
 async def run_bot(meeting_url: str, session_id: str):
     ws_url = f"{BACKEND_WS_BASE}/api/ws/copilot/{session_id}?mode=audio_stream"
+    logger.info(f"[CopilotSession] Session created: {session_id}")
+    logger.info(f"[CopilotSession] State: STARTING")
     logger.info(f"[TeamsBot] Connecting Playwright bot to meeting: {meeting_url}")
     logger.info(f"[TeamsBot] Will stream audio via Python WebSocket to: {ws_url}")
 
@@ -273,6 +275,7 @@ async def run_bot(meeting_url: str, session_id: str):
         pulse_socket = os.getenv("PULSE_SERVER", "unix:/tmp/pulse/native")
         display = os.getenv("DISPLAY", ":99")
 
+        logger.info("[TeamsBot] Starting browser")
         browser = await p.chromium.launch(
             # Use non-headless with Xvfb virtual display
             # This forces Chromium to initialize its full audio pipeline through PulseAudio
@@ -338,15 +341,13 @@ async def run_bot(meeting_url: str, session_id: str):
         else:
             web_url = meeting_url + "?skipAppLaunch=1&anon=true&launchAgent=join_launcher_web&lightExperience=true"
 
-        logger.info(f"[TeamsBot] Navigating to web lobby URL: {web_url}")
+        logger.info(f"[TeamsBot] Navigating to meeting: {web_url}")
+        logger.info("[CopilotSession] State: JOINING_MEETING")
         await page.goto(web_url, wait_until="domcontentloaded", timeout=60000)
 
         injector_task = asyncio.create_task(periodic_injector(page))
 
         # ── Dismiss "no audio/video" dialog immediately after navigation ──────
-        # Poll for 10s after navigation — dialog appears during redirect phase.
-        # Dismissing it does NOT affect WebRTC audio RECEPTION — Teams still
-        # plays incoming audio through Chromium → PulseAudio VirtualSink.
         logger.info("[TeamsBot] Checking for 'no audio/video' dialog (10s)...")
         for _ in range(10):
             try:
@@ -396,7 +397,7 @@ async def run_bot(meeting_url: str, session_id: str):
                 logger.info("[TeamsBot] Clicked Web Join button.")
                 await asyncio.sleep(5.0)
             else:
-                logger.info("[TeamsBot] No Web Join button found — already on lobby page.")
+                logger.info("[TeamsBot] No Web Join button found — already on pre-join page.")
         except Exception as e:
             logger.warning(f"[TeamsBot] Web Join step skipped: {e}")
 
@@ -406,25 +407,11 @@ async def run_bot(meeting_url: str, session_id: str):
         except Exception as ee:
             logger.warning(f"[TeamsBot] Recvonly script evaluation skipped: {ee}")
 
-        # ── Handle "no audio/video" dialog if it appears ───────────────────
-        # This dialog does NOT prevent Teams from receiving/playing incoming audio.
-        # Teams WebRTC audio playback still routes through Chromium → PulseAudio.
-        # Clicking "Continue without audio or video" only means the bot won't
-        # send outgoing audio/video — which is exactly what we want.
-        try:
-            no_av_btn = page.locator("button:has-text('Continue without audio or video')")
-            if await no_av_btn.is_visible(timeout=4000):
-                await no_av_btn.click(timeout=3000)
-                logger.info("[TeamsBot] Handled 'no audio/video' dialog — bot joins as listener only (correct behavior).")
-                await asyncio.sleep(1.0)
-            else:
-                logger.info("[TeamsBot] No audio/video dialog — Teams found audio devices, joining normally.")
-        except Exception:
-            pass
+        logger.info("[TeamsBot] Pre-join page detected")
 
         # ── Lobby: fill name, mute mic/cam, join ───────────────────────────
         try:
-            logger.info("[TeamsBot] Waiting for lobby name input (up to 45s)...")
+            logger.info("[TeamsBot] Waiting for pre-join name input (up to 45s)...")
             name_input = page.locator(
                 "input[data-tid='prejoin-display-name-input'], "
                 "input[placeholder='Type your name'], "
@@ -521,17 +508,17 @@ async def run_bot(meeting_url: str, session_id: str):
             try:
                 await target_join_button.wait_for(state="visible", timeout=5000)
                 await target_join_button.click(timeout=5000, force=True)
-                logger.info("[TeamsBot] Join request submitted via Join button click.")
+                logger.info("[TeamsBot] Joining meeting (Join button clicked).")
             except Exception as jbe:
                 logger.warning(f"[TeamsBot] Direct click failed ({jbe}); trying JS click...")
                 try:
                     await target_join_button.evaluate("el => el.click()")
-                    logger.info("[TeamsBot] Join request submitted via JS click.")
+                    logger.info("[TeamsBot] Joining meeting (JS click).")
                 except Exception:
                     await target_name_input.press("Enter")
-                    logger.info("[TeamsBot] Join request submitted via Enter key.")
+                    logger.info("[TeamsBot] Joining meeting (Enter key).")
 
-            logger.info("[TeamsBot] Waiting in lobby...")
+            logger.info("[TeamsBot] Waiting for meeting admission...")
             await asyncio.sleep(5.0)
             try:
                 await page.screenshot(path=os.path.join(debug_dir, "teams_bot_lobby.png"))
@@ -539,40 +526,85 @@ async def run_bot(meeting_url: str, session_id: str):
                 pass
 
         except Exception as e:
-            logger.error(f"[TeamsBot] Failed to automate lobby flow: {e}")
+            logger.error(f"[TeamsBot] Failed to automate pre-join flow: {e}")
+            logger.error("[CopilotSession] State: FAILED - PREJOIN_FLOW_FAILED")
             try:
                 await page.screenshot(path=os.path.join(debug_dir, "teams_bot_join_failed.png"))
             except Exception:
                 pass
+            return
 
         # ── Wait for lobby admission ───────────────────────────────────────
-        logger.info("[TeamsBot] Waiting for lobby admission (up to 120s)...")
+        logger.info("[TeamsBot] Waiting for meeting admission (up to 180s)...")
         admitted = False
-        for _ in range(40):
+        selectors_to_check = [
+            "button[data-tid='microphone-button']",
+            "button[data-tid='camera-button']",
+            "button[data-tid='hangup-button']",
+            "button[id='hangup-button']",
+            "button[aria-label='Leave' i]",
+            "button[aria-label*='Leave' i]",
+            "button[aria-label*='Hang up' i]",
+            "button[aria-label*='Mute' i]",
+            "button[aria-label*='Unmute' i]",
+            "button[aria-label*='People' i]",
+            "button[aria-label*='Chat' i]",
+            "button[data-tid*='mic']",
+            "button[data-tid*='video']",
+            "[data-tid='call-controls']",
+            "[data-tid*='call-control']",
+            "[data-tid='calling-tile']",
+            "[data-tid='calling-stage']",
+            "[data-tid='roster-pane']"
+        ]
+
+        for i in range(60):
             try:
-                in_meeting_indicators = page.locator(
-                    "button[data-tid='microphone-button'], "
-                    "button[data-tid='camera-button'], "
-                    "button[aria-label='Leave' i], "
-                    "button[aria-label*='Leave meeting' i], "
-                    "[data-tid='call-controls']"
-                )
-                if await in_meeting_indicators.first.is_visible(timeout=2000):
-                    logger.info("[TeamsBot] Lobby admission confirmed — in-meeting controls visible.")
-                    admitted = True
+                all_frames = [page] + list(page.frames)
+                for frame_idx, frame in enumerate(all_frames):
+                    try:
+                        for sel in selectors_to_check:
+                            try:
+                                loc = frame.locator(sel).first
+                                if await loc.is_visible(timeout=500):
+                                    frame_name = getattr(frame, "name", "") or f"frame_{frame_idx}"
+                                    logger.info(f"[TeamsBot] IN_MEETING detected in '{frame_name}' using selector '{sel}'")
+                                    logger.info("[TeamsBot] Successfully entered meeting. Controls detected.")
+                                    admitted = True
+                                    break
+                            except Exception:
+                                pass
+                        if admitted:
+                            break
+                    except Exception:
+                        pass
+                if admitted:
                     break
             except Exception:
                 pass
+
+            if i % 5 == 0 and not admitted:
+                num_frames = len(page.frames) + 1 if not page.is_closed() else 1
+                logger.info(f"[TeamsBot] Still waiting for meeting admission across {num_frames} frames (lobby)...")
+                logger.info("[CopilotSession] Audio pipeline NOT started.")
             await asyncio.sleep(3.0)
 
         if not admitted:
-            logger.warning("[TeamsBot] Was not admitted within 120s. Starting audio capture anyway.")
+            logger.error("[TeamsBot] Still waiting for meeting admission (lobby). Meeting join timed out.")
+            logger.error("[CopilotSession] State: FAILED - MEETING_JOIN_TIMEOUT")
+            logger.warning("[CopilotSession] Audio pipeline NOT started.")
+            return
+
+        # ── Post-join activation: Audio pipeline starts ONLY AFTER admission ──────
+        logger.info("[CopilotSession] State: IN_MEETING")
 
         # Give WebRTC audio time to stabilize after admission
         logger.info("[TeamsBot] Waiting for Teams WebRTC audio to stabilize (3s)...")
         await asyncio.sleep(3.0)
 
-        # Verify PulseAudio is receiving Chromium audio before starting capture
+        logger.info("[CopilotSession] State: AUDIO_STARTING")
+
+        # Verify PulseAudio / VirtualSink availability
         try:
             import subprocess
             sink_result = subprocess.run(
@@ -588,12 +620,20 @@ async def run_bot(meeting_url: str, session_id: str):
         except Exception as ve:
             logger.warning(f"[TeamsBot] PulseAudio verification failed: {ve}")
 
-        logger.info("[TeamsBot] Starting PulseAudio monitor capture...")
-        streamer.start()
+        try:
+            logger.info("[AudioStreamer] Starting audio capture from VirtualSink.monitor...")
+            streamer.start()
+            logger.info("[AudioStreamer] Audio capture started.")
+        except Exception as ace:
+            logger.error(f"[AudioStreamer] Failed to start audio capture: {ace}")
+            logger.error("[CopilotSession] State: FAILED - AUDIO_STARTUP_FAILED")
+            return
 
+        logger.info("[CopilotWS] Connecting audio WebSocket...")
         streaming_task = asyncio.create_task(
             stream_audio_to_server(ws_url, streamer, stop_event)
         )
+        logger.info("[CopilotSession] State: RUNNING")
         logger.info("[TeamsBot] Audio streaming task started. Bot is now live.")
 
         # ── Keep alive: enforce mute/camera off ────────────────────────────

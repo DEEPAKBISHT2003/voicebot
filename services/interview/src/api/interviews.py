@@ -83,60 +83,6 @@ class StartSessionRequest(BaseModel):
     resume_base64: str = ""
     meeting_url: str = ""
 
-async def spawn_teams_bot(session_id: str, meeting_url: str):
-    logger.info(f"[TeamsBot] Spawning Teams Playwright Observer Bot for session {session_id} to meeting: {meeting_url}")
-
-    python_exe = os.path.abspath(sys.executable)
-    script_path = os.path.abspath(
-        os.path.join(os.path.dirname(os.path.dirname(__file__)), "pipeline", "teams_bot.py")
-    )
-    workspace_root = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
-    )
-
-    logger.info(f"[TeamsBot] python_exe  : {python_exe}")
-    logger.info(f"[TeamsBot] script_path : {script_path}")
-    logger.info(f"[TeamsBot] cwd         : {workspace_root}")
-
-    if not os.path.exists(script_path):
-        logger.error(f"[TeamsBot] Script not found at: {script_path}")
-        return
-
-    try:
-        import subprocess
-        # Use subprocess.Popen (not asyncio) — works on Windows ProactorEventLoop
-        process = subprocess.Popen(
-            [python_exe, script_path, meeting_url, session_id],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=workspace_root,
-        )
-        logger.info(f"[TeamsBot] Subprocess spawned successfully with PID: {process.pid}")
-
-        # Stream output in a background thread so we don't block the event loop
-        def _stream_logs():
-            try:
-                for line in process.stdout:
-                    decoded = line.decode("utf-8", errors="replace").strip()
-                    if decoded:
-                        logger.info(f"[TeamsBot-STDOUT] {decoded}")
-                for line in process.stderr:
-                    decoded = line.decode("utf-8", errors="replace").strip()
-                    if decoded:
-                        logger.info(f"[TeamsBot-STDERR] {decoded}")
-            except Exception as e:
-                logger.warning(f"[TeamsBot] Log streaming error: {e}")
-
-        import threading
-        t = threading.Thread(target=_stream_logs, daemon=True)
-        t.start()
-
-    except FileNotFoundError as e:
-        logger.error(f"[TeamsBot] Executable or script not found: {e}")
-    except PermissionError as e:
-        logger.error(f"[TeamsBot] Permission denied spawning subprocess: {e}")
-    except Exception as e:
-        logger.error(f"[TeamsBot] Failed to spawn Teams observer bot process: {type(e).__name__}: {e}")
 
 @router.post("/interviews/start")
 async def start_interview(
