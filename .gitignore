@@ -123,3 +123,14 @@ PROCESS.md
 docss/
 docs
 docss.zip
+
+
+scripts/check_audio_env.sh
+scripts/check_state.sh
+scripts/cleanup_procs.py
+scripts/full_diag.sh
+scripts/inspect_browser_cdp.py
+scripts/join_meeting.json
+scripts/preflight.sh
+scripts/run_full_diag.sh
+scripts/start_session.json

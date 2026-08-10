@@ -101,37 +101,35 @@ RECVONLY_JS = """
             return origAddTransceiver.apply(this, [trackOrKind, init]);
         };
     }
-
-    if (RTCPeerConnection.prototype.addTrack) {
-        const origAddTrack = RTCPeerConnection.prototype.addTrack;
-        RTCPeerConnection.prototype.addTrack = function(track, ...streams) {
-            if (track && track.kind === 'audio') {
-                track.enabled = false;
-                console.log("[TeamsBot] Muted outgoing audio track in addTrack.");
-            }
-            return origAddTrack.apply(this, [track, ...streams]);
-        };
-    }
 })();
 """
 
 
-# ── PulseAudio audio capture + WebSocket streaming ────────────────────────────
+# ── PulseAudio audio capture + WebSocket streaming + WAV recorder ────────────
 
 class AudioStreamer:
     """
-    Reads audio from PulseAudio VirtualSink.monitor in a background thread
+    Reads audio from PulseAudio VirtualSink.monitor in a background thread,
+    saves captured PCM audio into interviews/{session_id}/meeting_recording.wav,
     and pushes Int16 PCM chunks into an asyncio queue for WebSocket delivery.
     """
 
-    def __init__(self, loop: asyncio.AbstractEventLoop):
+    def __init__(self, loop: asyncio.AbstractEventLoop, session_id: str | None = None):
         self.loop = loop
+        self.session_id = session_id
         self.queue: asyncio.Queue = asyncio.Queue(maxsize=200)
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self.recording_path: str | None = None
 
     def start(self):
         self._stop_event.clear()
+        if self.session_id:
+            dir_path = os.path.join(os.getcwd(), "interviews", self.session_id)
+            os.makedirs(dir_path, exist_ok=True)
+            self.recording_path = os.path.join(dir_path, "meeting_recording.wav")
+            logger.info(f"[AudioStreamer] Recording meeting audio to: {self.recording_path}")
+
         self._thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._thread.start()
         logger.info(f"[AudioStreamer] Started capture from PulseAudio device: {PULSE_MONITOR_DEVICE}")
@@ -155,6 +153,16 @@ class AudioStreamer:
 
             logger.info(f"[AudioStreamer] Using device index {device_index}: {PULSE_MONITOR_DEVICE}")
 
+            wav_file = None
+            if self.recording_path:
+                try:
+                    wav_file = wave.open(self.recording_path, "wb")
+                    wav_file.setnchannels(CHANNELS)
+                    wav_file.setsampwidth(2)  # 16-bit PCM = 2 bytes
+                    wav_file.setframerate(SAMPLE_RATE)
+                except Exception as we:
+                    logger.error(f"[AudioStreamer] Could not open WAV recording file: {we}")
+
             with sd.RawInputStream(
                 samplerate=SAMPLE_RATE,
                 channels=CHANNELS,
@@ -162,27 +170,35 @@ class AudioStreamer:
                 device=device_index,
                 blocksize=CHUNK_SIZE,
             ) as stream:
-                logger.info("[AudioStreamer] PulseAudio stream opened. Streaming audio...")
+                logger.info("[AudioStreamer] PulseAudio stream opened. Streaming & recording audio...")
                 chunk_count = 0
                 while not self._stop_event.is_set():
                     raw_data, overflowed = stream.read(CHUNK_SIZE)
+                    raw_bytes = bytes(raw_data)
                     if overflowed:
                         logger.debug("[AudioStreamer] Buffer overflow.")
+
+                    if wav_file:
+                        try:
+                            wav_file.writeframes(raw_bytes)
+                        except Exception as werr:
+                            logger.error(f"[AudioStreamer] WAV write error: {werr}")
+
                     try:
                         self.loop.call_soon_threadsafe(
-                            self.queue.put_nowait, bytes(raw_data)
+                            self.queue.put_nowait, raw_bytes
                         )
                         chunk_count += 1
                         if chunk_count % 500 == 0:
                             # Check audio level to detect silence vs real audio
                             samples = np.frombuffer(raw_data, dtype=np.int16)
                             rms = np.sqrt(np.mean(samples.astype(float) ** 2))
-                            logger.info(f"[AudioStreamer] {chunk_count} chunks sent. RMS level: {rms:.1f}")
+                            logger.info(f"[AudioStreamer] {chunk_count} chunks captured. RMS level: {rms:.1f}")
                     except asyncio.QueueFull:
                         try:
                             self.queue.get_nowait()
                             self.loop.call_soon_threadsafe(
-                                self.queue.put_nowait, bytes(raw_data)
+                                self.queue.put_nowait, raw_bytes
                             )
                         except Exception:
                             pass
@@ -241,16 +257,38 @@ async def stream_audio_to_server(
     logger.info("[AudioStreamer] WebSocket streaming stopped.")
 
 
+UNMUTE_AUDIO_JS = """
+(() => {
+    try {
+        const mediaElems = document.querySelectorAll('audio, video');
+        mediaElems.forEach(el => {
+            if (el.muted) {
+                el.muted = false;
+                console.log("[TeamsBot] Unmuted media element.");
+            }
+            if (el.volume < 1.0) {
+                el.volume = 1.0;
+            }
+            if (el.paused) {
+                el.play().catch(() => {});
+            }
+        });
+    } catch(e) {}
+})();
+"""
+
 # ── Playwright periodic recvonly injector ─────────────────────────────────────
 
 async def periodic_injector(page):
-    """Re-injects recvonly JS periodically to handle Teams SPA navigations."""
+    """Re-injects recvonly JS and unmutes audio elements periodically across Teams SPA frames."""
     while True:
         try:
             await page.evaluate(RECVONLY_JS)
+            await page.evaluate(UNMUTE_AUDIO_JS)
             for frame in page.frames:
                 try:
                     await frame.evaluate(RECVONLY_JS)
+                    await frame.evaluate(UNMUTE_AUDIO_JS)
                 except Exception:
                     pass
         except Exception:
@@ -268,7 +306,7 @@ async def run_bot(meeting_url: str, session_id: str):
     logger.info(f"[TeamsBot] Will stream audio via Python WebSocket to: {ws_url}")
 
     loop = asyncio.get_running_loop()
-    streamer = AudioStreamer(loop=loop)
+    streamer = AudioStreamer(loop=loop, session_id=session_id)
     stop_event = asyncio.Event()
 
     async with async_playwright() as p:
@@ -304,7 +342,6 @@ async def run_bot(meeting_url: str, session_id: str):
                 "--alsa-input-device=pulse",
                 # Ensure audio renderer process is started (headless may skip it otherwise)
                 "--audio-output-channels=2",
-                "--disable-audio-output=false",
             ],
             env={
                 **os.environ,
@@ -545,12 +582,8 @@ async def run_bot(meeting_url: str, session_id: str):
             "button[aria-label='Leave' i]",
             "button[aria-label*='Leave' i]",
             "button[aria-label*='Hang up' i]",
-            "button[aria-label*='Mute' i]",
-            "button[aria-label*='Unmute' i]",
             "button[aria-label*='People' i]",
             "button[aria-label*='Chat' i]",
-            "button[data-tid*='mic']",
-            "button[data-tid*='video']",
             "[data-tid='call-controls']",
             "[data-tid*='call-control']",
             "[data-tid='calling-tile']",
@@ -558,7 +591,7 @@ async def run_bot(meeting_url: str, session_id: str):
             "[data-tid='roster-pane']"
         ]
 
-        for i in range(60):
+        for i in range(1200): # Wait up to 60 minutes for host admission
             try:
                 all_frames = [page] + list(page.frames)
                 for frame_idx, frame in enumerate(all_frames):
