@@ -139,6 +139,7 @@ export const useCopilotAudio = (sessionId: string | null) => {
   const updateState = (data: any) => {
     if (!data) return;
     if (data.transcript) {
+      console.log('[TRANSCRIPT_DEBUG] [Frontend] Updating transcript state:', data.transcript);
       setTranscript(data.transcript);
     }
     if (data.intelligence) {
@@ -173,6 +174,7 @@ export const useCopilotAudio = (sessionId: string | null) => {
 
     try {
       const wsUrl = getCopilotWebSocketUrl(sessionId);
+      console.log('[TRANSCRIPT_DEBUG] [Frontend] Connecting dashboard WebSocket to:', wsUrl);
       const ws = new WebSocket(wsUrl);
       socketRef.current = ws;
 
@@ -185,6 +187,7 @@ export const useCopilotAudio = (sessionId: string | null) => {
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
+          console.log('[TRANSCRIPT_DEBUG] [Frontend] WebSocket message received:', data.type, data);
           if (data.type === 'copilot_update') {
             console.log('[CopilotWS] Received structured state update:', data);
             updateState(data);

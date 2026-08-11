@@ -4,13 +4,14 @@ from loguru import logger
 from pipecat.frames.frames import (
     Frame,
     TranscriptionFrame,
+    InterimTranscriptionFrame,
     LLMTextFrame,
     LLMFullResponseStartFrame,
     LLMFullResponseEndFrame
 )
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 
-def extract_speaker_from_frame(frame: TranscriptionFrame) -> Optional[str]:
+def extract_speaker_from_frame(frame: Any) -> Optional[str]:
     """Extracts speaker identity from TranscriptionFrame or Deepgram word-level diarization response."""
     result = getattr(frame, "result", None)
     if result:
@@ -57,9 +58,11 @@ class TranscriptAccumulator(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         
-        # User speech transcript frame
-        if isinstance(frame, TranscriptionFrame):
-            text = frame.text.strip()
+        # User speech transcript frame (both final TranscriptionFrame and InterimTranscriptionFrame)
+        if isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)):
+            text = frame.text.strip() if hasattr(frame, "text") and frame.text else ""
+            frame_type = type(frame).__name__
+            logger.info(f"[TRANSCRIPT_DEBUG] [Accumulator] Intercepted {frame_type}: text='{text}'")
             if text:
                 speaker_val = extract_speaker_from_frame(frame)
                 entry = {"role": "user", "text": text}
@@ -69,6 +72,7 @@ class TranscriptAccumulator(FrameProcessor):
                 logger.info(f"[CopilotAccumulator] Transcript ({entry.get('speaker', 'user')}): {text}")
                 if self.callback:
                     try:
+                        logger.info(f"[TRANSCRIPT_DEBUG] [Accumulator] Invoking callback for: '{text}'")
                         if asyncio.iscoroutinefunction(self.callback):
                             await self.callback(entry)
                         else:

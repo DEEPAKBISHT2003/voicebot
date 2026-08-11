@@ -81,6 +81,7 @@ ehthumbs.db
 logs/
 temp/
 tmp/
+scripts/
 
 # ─── Playwright & Browser Automation ──────────────────────
 .playwright/

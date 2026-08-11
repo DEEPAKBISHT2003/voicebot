@@ -61,6 +61,7 @@ RUN playwright install chromium
 # PulseAudio configuration for headless Docker
 COPY pulse-daemon.conf /etc/pulse/daemon.conf
 COPY pulse-default.pa /etc/pulse/default.pa
+COPY asound.conf /etc/asound.conf
 
 # Create runtime directory for PulseAudio socket
 RUN mkdir -p /tmp/pulse && chmod 777 /tmp/pulse

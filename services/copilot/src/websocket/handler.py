@@ -104,9 +104,11 @@ async def websocket_endpoint(
         
         dead_sockets = set()
         dashboards = set(sess.get("dashboard_websockets", set()))
+        logger.info(f"[TRANSCRIPT_DEBUG] [CopilotWS] Broadcasting copilot_update to {len(dashboards)} active dashboard client(s): session={session_id}, total_transcript_entries={len(payload['transcript'])}")
         for dash_ws in dashboards:
             try:
                 await dash_ws.send_json(payload)
+                logger.info(f"[TRANSCRIPT_DEBUG] [CopilotWS] Successfully sent copilot_update payload over dashboard WebSocket")
             except Exception as ws_err:
                 logger.debug(f"[CopilotWS] Failed to broadcast update to dashboard client: {ws_err}")
                 dead_sockets.add(dash_ws)
@@ -121,6 +123,7 @@ async def websocket_endpoint(
         async def on_transcript_entry(entry: dict):
             raw_spk = entry.get("speaker")
             text_content = entry.get("text", "").strip()
+            logger.info(f"[TRANSCRIPT_DEBUG] [CopilotWS] on_transcript_entry invoked: raw_spk={raw_spk}, text='{text_content}'")
             if not text_content:
                 return
 
@@ -144,6 +147,7 @@ async def websocket_endpoint(
             if eng:
                 last_msg = await eng.add_message(speaker, text_content)
                 sess["transcript"] = eng.get_transcript()
+                logger.info(f"[TRANSCRIPT_DEBUG] [CopilotWS] Message added to engine, broadcasting update...")
                 await broadcast_update(last_msg)
 
         builder = CopilotPipelineBuilder()

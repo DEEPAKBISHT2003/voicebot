@@ -41,6 +41,11 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           secure: false,
         },
+        '/api/ws/copilot': {
+          target: copilotUrl.replace('http', 'ws'),
+          changeOrigin: true,
+          ws: true,
+        },
         '/ws/copilot': {
           target: copilotUrl.replace('http', 'ws'),
           changeOrigin: true,

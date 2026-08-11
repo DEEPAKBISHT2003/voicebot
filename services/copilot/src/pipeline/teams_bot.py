@@ -29,6 +29,7 @@ without replacing the real audio output pipeline.
 import asyncio
 import os
 import sys
+sys.stdout.reconfigure(line_buffering=True)
 import threading
 import numpy as np
 import sounddevice as sd
@@ -37,6 +38,9 @@ from playwright.async_api import async_playwright
 from loguru import logger
 
 # ── Configuration ──────────────────────────────────────────────────────────────
+os.environ["PULSE_SERVER"] = os.getenv("PULSE_SERVER", "unix:/tmp/pulse/native")
+os.environ["XDG_RUNTIME_DIR"] = os.getenv("XDG_RUNTIME_DIR", "/tmp/pulse")
+
 BACKEND_WS_BASE = os.getenv("COPILOT_WS_BASE", os.getenv("BACKEND_WS_BASE", "ws://localhost:8001"))
 
 # PulseAudio virtual sink — must match entrypoint.sh sink_name
@@ -84,11 +88,68 @@ CAMERA_BLOCK_JS = """
 })();
 """
 
-# ── WebRTC recvonly enforcer JS ────────────────────────────────────────────────
+# ── WebRTC recvonly enforcer & diagnostic logger JS ────────────────────────────
 RECVONLY_JS = """
 (() => {
-    if (window.__recvonly_injected__) return;
+    if (window.__recvonly_injected__) {
+        // Run diagnostic check on DOM audio/video elements & peer connections
+        try {
+            const els = Array.from(document.querySelectorAll('audio, video')).map(el => ({
+                tag: el.tagName,
+                src: el.src || '',
+                hasSrcObject: !!el.srcObject,
+                srcObjectId: el.srcObject ? el.srcObject.id : null,
+                audioTracks: el.srcObject && el.srcObject.getAudioTracks ? el.srcObject.getAudioTracks().map(t => ({ id: t.id, kind: t.kind, readyState: t.readyState, enabled: t.enabled, muted: t.muted })) : [],
+                paused: el.paused,
+                muted: el.muted,
+                volume: el.volume,
+                readyState: el.readyState
+            }));
+            if (els.length > 0) {
+                console.log("[DIAG_MEDIA_ELS]", JSON.stringify(els));
+            }
+            if (window.__active_pcs__) {
+                window.__active_pcs__.forEach(async (pc, idx) => {
+                    if (pc.signalingState === 'closed') return;
+                    const recvs = pc.getReceivers ? pc.getReceivers().map(r => ({
+                        kind: r.track ? r.track.kind : 'unknown',
+                        id: r.track ? r.track.id : null,
+                        readyState: r.track ? r.track.readyState : null,
+                        enabled: r.track ? r.track.enabled : null,
+                        muted: r.track ? r.track.muted : null
+                    })) : [];
+                    console.log("[DIAG_WEBRTC_PC]", idx, "Receivers:", JSON.stringify(recvs));
+                    try {
+                        const stats = await pc.getStats();
+                        stats.forEach(report => {
+                            if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+                                console.log("[DIAG_WEBRTC_STATS]", JSON.stringify({
+                                    packetsReceived: report.packetsReceived,
+                                    bytesReceived: report.bytesReceived,
+                                    audioLevel: report.audioLevel,
+                                    jitter: report.jitter,
+                                    packetsLost: report.packetsLost
+                                }));
+                            }
+                        });
+                    } catch(se) {}
+                });
+            }
+        } catch(e) {}
+        return;
+    }
     window.__recvonly_injected__ = true;
+    window.__active_pcs__ = window.__active_pcs__ || [];
+
+    // Intercept RTCPeerConnection constructor
+    const OrigPC = window.RTCPeerConnection;
+    window.RTCPeerConnection = function(...args) {
+        const pc = new OrigPC(...args);
+        window.__active_pcs__.push(pc);
+        console.log("[TeamsBot] Intercepted new RTCPeerConnection instance.");
+        return pc;
+    };
+    window.RTCPeerConnection.prototype = OrigPC.prototype;
 
     if (RTCPeerConnection.prototype.addTransceiver) {
         const origAddTransceiver = RTCPeerConnection.prototype.addTransceiver;
@@ -145,6 +206,8 @@ class AudioStreamer:
     def _capture_loop(self):
         """Blocking audio capture loop running in a dedicated thread."""
         try:
+            # Force PortAudio / PulseAudio ALSA plugin to capture from VirtualSink.monitor
+            os.environ["PULSE_SOURCE"] = "VirtualSink.monitor"
             device_index = self._find_pulse_monitor()
             if device_index is None:
                 logger.error(
@@ -153,7 +216,7 @@ class AudioStreamer:
                 )
                 return
 
-            logger.info(f"[AudioStreamer] Using device index {device_index}: {PULSE_MONITOR_DEVICE}")
+            logger.info(f"[AudioStreamer] device={device_index} ({PULSE_MONITOR_DEVICE}, PULSE_SOURCE=VirtualSink.monitor)")
 
             with sd.RawInputStream(
                 samplerate=SAMPLE_RATE,
@@ -162,7 +225,7 @@ class AudioStreamer:
                 device=device_index,
                 blocksize=CHUNK_SIZE,
             ) as stream:
-                logger.info("[AudioStreamer] PulseAudio stream opened. Streaming audio...")
+                logger.info("[AudioStreamer] PulseAudio stream opened on VirtualSink.monitor. Streaming audio...")
                 chunk_count = 0
                 while not self._stop_event.is_set():
                     raw_data, overflowed = stream.read(CHUNK_SIZE)
@@ -173,11 +236,10 @@ class AudioStreamer:
                             self.queue.put_nowait, bytes(raw_data)
                         )
                         chunk_count += 1
-                        if chunk_count % 500 == 0:
-                            # Check audio level to detect silence vs real audio
-                            samples = np.frombuffer(raw_data, dtype=np.int16)
-                            rms = np.sqrt(np.mean(samples.astype(float) ** 2))
-                            logger.info(f"[AudioStreamer] {chunk_count} chunks sent. RMS level: {rms:.1f}")
+                        samples = np.frombuffer(raw_data, dtype=np.int16)
+                        rms = np.sqrt(np.mean(samples.astype(float) ** 2)) if len(samples) > 0 else 0
+                        if chunk_count % 50 == 0 or rms > 500:
+                            logger.info(f"[AudioStreamer] device={device_index}, bytes={len(raw_data)}, RMS={rms:.4f}, total_chunks={chunk_count}")
                     except asyncio.QueueFull:
                         try:
                             self.queue.get_nowait()
@@ -285,6 +347,7 @@ async def run_bot(meeting_url: str, session_id: str):
                 # --use-fake-ui-for-media-stream: silently grants mic/camera permission
                 # prompts without showing a browser dialog.
                 "--use-fake-ui-for-media-stream",
+                "--use-fake-device-for-media-stream",
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
                 "--autoplay-policy=no-user-gesture-required",
@@ -300,11 +363,9 @@ async def run_bot(meeting_url: str, session_id: str):
                 # Route Chromium audio through PulseAudio
                 "--alsa-output-device=pulse",
                 "--alsa-input-device=pulse",
-                "--alsa-output-device=pulse",
-                "--alsa-input-device=pulse",
                 # Ensure audio renderer process is started (headless may skip it otherwise)
                 "--audio-output-channels=2",
-                "--disable-audio-output=false",
+                "--remote-debugging-port=9222",
             ],
             env={
                 **os.environ,
@@ -444,6 +505,25 @@ async def run_bot(meeting_url: str, session_id: str):
                         logger.info(f"[TeamsBot] Camera already OFF (label: '{label}').")
             except Exception as ce:
                 logger.warning(f"[TeamsBot] Could not verify/toggle camera: {ce}")
+
+            # Select "Computer audio" option explicitly if present
+            try:
+                computer_audio_btn = page.locator(
+                    "button:has-text('Computer audio'), "
+                    "[aria-label*='Computer audio' i], "
+                    "[data-tid*='computer-audio'], "
+                    "div[role='radio']:has-text('Computer audio'), "
+                    "label:has-text('Computer audio')"
+                ).first
+                if await computer_audio_btn.is_visible(timeout=3000):
+                    await computer_audio_btn.click(force=True)
+                    logger.info("[TeamsBot] Clicked 'Computer audio' pre-join option.")
+            except Exception as cae:
+                logger.warning(f"[TeamsBot] Computer audio button click skipped: {cae}")
+
+            logger.info("[TEAMS_AUDIO_DIAG] selected audio mode = Computer audio")
+            logger.info("[TEAMS_AUDIO_DIAG] microphone = muted")
+            logger.info("[TEAMS_AUDIO_DIAG] camera = disabled")
 
             # Toggle microphone OFF
             try:

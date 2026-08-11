@@ -160,7 +160,7 @@ export const CopilotSession: React.FC = () => {
   }, [id]);
 
   // Accordion open/close toggles for Live Interview view
-  const [isTranscriptExpanded, setIsTranscriptExpanded] = useState<boolean>(false);
+  const [isTranscriptExpanded, setIsTranscriptExpanded] = useState<boolean>(true);
   const [isJdCoverageExpanded, setIsJdCoverageExpanded] = useState<boolean>(false);
   const [isResumeCoverageExpanded, setIsResumeCoverageExpanded] = useState<boolean>(false);
 
