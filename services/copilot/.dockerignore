@@ -14,5 +14,8 @@ venv
 *.log
 *.wav
 *.mp3
+*.pcm
+scripts/
+storage/
 .dockerignore
 Dockerfile
