@@ -56,6 +56,11 @@ export const uploadSimulationAudio = async (sessionId: string, file: File): Prom
 };
 
 export const getCopilotWebSocketUrl = (sessionId: string): string => {
+  const wsCustom = import.meta.env.VITE_COPILOT_WS_URL || '';
+  if (wsCustom) {
+    return `${wsCustom.replace(/\/$/, '')}/api/ws/copilot/${sessionId}`;
+  }
+
   const base = import.meta.env.VITE_COPILOT_URL || '';
   if (base) {
     try {
@@ -63,7 +68,7 @@ export const getCopilotWebSocketUrl = (sessionId: string): string => {
       const wsProtocol = parsedUrl.protocol === 'https:' ? 'wss:' : 'ws:';
       return `${wsProtocol}//${parsedUrl.host}/api/ws/copilot/${sessionId}`;
     } catch (e) {
-      console.warn('[CopilotWS] Failed to parse VITE_COPILOT_URL, using port 8001 fallback', e);
+      console.warn('[CopilotWS] Failed to parse VITE_COPILOT_URL, using fallback', e);
     }
   }
 
@@ -73,6 +78,11 @@ export const getCopilotWebSocketUrl = (sessionId: string): string => {
 };
 
 export const getSimulationWebSocketUrl = (sessionId: string): string => {
+  const wsCustom = import.meta.env.VITE_COPILOT_WS_URL || '';
+  if (wsCustom) {
+    return `${wsCustom.replace(/\/$/, '')}/api/ws/copilot/${sessionId}/simulate`;
+  }
+
   const base = import.meta.env.VITE_COPILOT_URL || '';
   if (base) {
     try {
@@ -80,11 +90,11 @@ export const getSimulationWebSocketUrl = (sessionId: string): string => {
       const wsProtocol = parsedUrl.protocol === 'https:' ? 'wss:' : 'ws:';
       return `${wsProtocol}//${parsedUrl.host}/api/ws/copilot/${sessionId}/simulate`;
     } catch (e) {
-      console.warn('[SimulationWS] Failed to parse VITE_COPILOT_URL, using localhost:8001', e);
+      console.warn('[SimulationWS] Failed to parse VITE_COPILOT_URL, using fallback', e);
     }
   }
 
-  const host = window.location.host;
+  const hostname = window.location.hostname;
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${host}/api/ws/copilot/${sessionId}/simulate`;
+  return `${protocol}//${hostname}:8001/api/ws/copilot/${sessionId}/simulate`;
 };

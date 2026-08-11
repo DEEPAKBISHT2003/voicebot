@@ -37,21 +37,24 @@ class CopilotPipelineBuilder:
             return None
 
         try:
+            sample_rate = int(os.getenv("AUDIO_SAMPLE_RATE", "16000"))
+            endpointing_ms = int(os.getenv("STT_ENDPOINTING_MS", "400"))
+
             transport = FastAPIWebsocketTransport(
                 websocket=websocket,
                 params=FastAPIWebsocketParams(
                     audio_in_enabled=True,
-                    audio_in_sample_rate=16000,
+                    audio_in_sample_rate=sample_rate,
                     audio_out_enabled=False,
                     add_wav_header=False,
-                    serializer=RawPCMAudioSerializer(sample_rate=16000),
+                    serializer=RawPCMAudioSerializer(sample_rate=sample_rate),
                 )
             )
 
             stt = DeepgramSTTService(
                 api_key=self.deepgram_api_key,
                 settings=DeepgramSTTService.Settings(
-                    endpointing=400,
+                    endpointing=endpointing_ms,
                     diarize=True,
                     smart_format=True
                 )

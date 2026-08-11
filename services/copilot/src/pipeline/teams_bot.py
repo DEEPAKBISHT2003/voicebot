@@ -43,14 +43,17 @@ os.environ["XDG_RUNTIME_DIR"] = os.getenv("XDG_RUNTIME_DIR", "/tmp/pulse")
 
 BACKEND_WS_BASE = os.getenv("COPILOT_WS_BASE", os.getenv("BACKEND_WS_BASE", "ws://localhost:8001"))
 
-# PulseAudio virtual sink — must match entrypoint.sh sink_name
-PULSE_MONITOR_DEVICE = "VirtualSink.monitor"
+# PulseAudio virtual sink — configurable via environment variable
+PULSE_MONITOR_DEVICE = os.getenv("PULSE_MONITOR_DEVICE", "VirtualSink.monitor")
 
-# Audio capture settings — must match Deepgram STT expectations
-SAMPLE_RATE = 16000   # Hz — Deepgram expects 16kHz
-CHANNELS    = 1       # Mono
-CHUNK_SIZE  = 4096    # samples per chunk (~256ms at 16kHz)
-DTYPE       = "int16" # 16-bit signed PCM
+# DevTools CDP remote debugging port
+CHROMIUM_CDP_PORT = int(os.getenv("CHROMIUM_CDP_PORT", "9222"))
+
+# Audio capture settings — configurable via environment variables
+SAMPLE_RATE = int(os.getenv("AUDIO_SAMPLE_RATE", "16000"))   # Hz — Deepgram expects 16kHz
+CHANNELS    = int(os.getenv("AUDIO_CHANNELS", "1"))       # Mono
+CHUNK_SIZE  = int(os.getenv("AUDIO_CHUNK_SIZE", "4096"))    # samples per chunk (~256ms at 16kHz)
+DTYPE       = os.getenv("AUDIO_DTYPE", "int16") # 16-bit signed PCM
 
 # ── Camera block JS ────────────────────────────────────────────────────────────
 CAMERA_BLOCK_JS = """
@@ -365,7 +368,7 @@ async def run_bot(meeting_url: str, session_id: str):
                 "--alsa-input-device=pulse",
                 # Ensure audio renderer process is started (headless may skip it otherwise)
                 "--audio-output-channels=2",
-                "--remote-debugging-port=9222",
+                f"--remote-debugging-port={CHROMIUM_CDP_PORT}",
             ],
             env={
                 **os.environ,

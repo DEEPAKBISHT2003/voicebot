@@ -39,6 +39,11 @@ class Settings:
 
     # Deepgram
     DEEPGRAM_API_KEY: str = os.getenv("DEEPGRAM_API_KEY", "")
+    STT_ENDPOINTING_MS: int = int(os.getenv("STT_ENDPOINTING_MS", "400"))
+
+    # Audio & Chromium
+    PULSE_MONITOR_DEVICE: str = os.getenv("PULSE_MONITOR_DEVICE", "VirtualSink.monitor")
+    CHROMIUM_CDP_PORT: int = int(os.getenv("CHROMIUM_CDP_PORT", "9222"))
 
     @classmethod
     def validate(cls) -> None:
