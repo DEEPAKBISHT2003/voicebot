@@ -144,8 +144,13 @@ class CopilotSessionEngine:
         if self.transcript:
             last_entry = self.transcript[-1]
             if last_entry.get("speaker") == speaker:
+                last_text = last_entry.get("text", "").strip()
+                # If clean_text is identical or already present in last_text, skip duplicate merge
+                if last_text == clean_text or clean_text in last_text:
+                    logger.debug(f"[CopilotEngine] Duplicate or subset utterance skipped: '{clean_text}'")
+                    return last_entry
                 # Merge into existing message bubble
-                last_entry["text"] = (last_entry.get("text", "") + " " + clean_text).strip()
+                last_entry["text"] = (last_text + " " + clean_text).strip()
                 last_entry["timestamp"] = datetime.datetime.now().isoformat()
                 
                 # Retrieve last question if candidate

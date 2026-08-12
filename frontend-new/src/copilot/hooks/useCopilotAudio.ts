@@ -140,7 +140,14 @@ export const useCopilotAudio = (sessionId: string | null) => {
     if (!data) return;
     if (data.transcript) {
       console.log('[TRANSCRIPT_DEBUG] [Frontend] Updating transcript state:', data.transcript);
-      setTranscript(data.transcript);
+      const deduplicated = Array.isArray(data.transcript)
+        ? data.transcript.filter((item: CopilotTranscriptEntry, idx: number, arr: CopilotTranscriptEntry[]) => {
+            if (idx === 0) return true;
+            const prev = arr[idx - 1];
+            return !(prev.speaker === item.speaker && prev.text.trim() === item.text.trim());
+          })
+        : data.transcript;
+      setTranscript(deduplicated);
     }
     if (data.intelligence) {
       try {

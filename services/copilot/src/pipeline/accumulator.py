@@ -58,8 +58,8 @@ class TranscriptAccumulator(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         
-        # User speech transcript frame (both final TranscriptionFrame and InterimTranscriptionFrame)
-        if isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)):
+        # User speech transcript frame (only final TranscriptionFrame to prevent duplicate interim entries)
+        if isinstance(frame, TranscriptionFrame):
             text = frame.text.strip() if hasattr(frame, "text") and frame.text else ""
             frame_type = type(frame).__name__
             logger.info(f"[TRANSCRIPT_DEBUG] [Accumulator] Intercepted {frame_type}: text='{text}'")
