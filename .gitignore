@@ -123,3 +123,16 @@ PROCESS.md
 docss/
 docs
 docss.zip
+
+# ─── Scratch & Diagnostic Test Scripts ─────────────────
+scripts/capture_*
+scripts/check_*
+scripts/cleanup_*
+scripts/full_diag.sh
+scripts/inspect_*
+scripts/join_meeting.json
+scripts/live_*
+scripts/preflight.sh
+scripts/run_full_diag.sh
+scripts/start_session.json
+scripts/test_*
