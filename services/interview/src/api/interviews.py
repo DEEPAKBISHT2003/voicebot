@@ -372,6 +372,24 @@ async def stop_interview(
             await sess["worker"].cancel()
         except Exception as e:
             logger.warning(f"Failed to cancel pipeline worker: {e}")
+
+    # Terminate local bot process if present
+    bot_process = sess.get("bot_process")
+    if bot_process and bot_process.poll() is None:
+        try:
+            bot_process.terminate()
+        except Exception:
+            pass
+        sess["bot_process"] = None
+
+    # Notify Copilot service to stop session and terminate its bot process
+    try:
+        import httpx
+        copilot_url = os.getenv("COPILOT_URL", "http://localhost:8001")
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            await client.post(f"{copilot_url}/api/copilot/{session_id}/stop")
+    except Exception as e:
+        logger.debug(f"[TeamsBot] Stop notification to Copilot service skipped/error: {e}")
             
     await repo.save_session(
         session_id,

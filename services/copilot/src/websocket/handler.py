@@ -3,6 +3,8 @@ from loguru import logger
 from typing import Dict, Any, Set, Optional
 import json
 import asyncio
+import time
+import os
 
 from services.copilot.src.api.deps import get_copilot_sessions_ws, get_copilot_repo_ws
 from services.copilot.src.services.repository import CopilotRepository
@@ -117,12 +119,15 @@ async def websocket_endpoint(
     # Audio Producer Branch (Teams Bot / Raw Audio Stream)
     if is_audio_producer:
         sess["status"] = "Listening to audio stream..."
+        sess["last_speech_time"] = time.time()
         
         async def on_transcript_entry(entry: dict):
             raw_spk = entry.get("speaker")
             text_content = entry.get("text", "").strip()
             if not text_content:
                 return
+
+            sess["last_speech_time"] = time.time()
 
             if raw_spk is not None:
                 spk_key = str(raw_spk)
@@ -146,6 +151,43 @@ async def websocket_endpoint(
                 sess["transcript"] = eng.get_transcript()
                 await broadcast_update(last_msg)
 
+        # Inactivity timeout monitor (default 15 mins / 900 seconds)
+        timeout_sec = int(os.getenv("INACTIVITY_TIMEOUT_SECONDS", "900"))
+        
+        async def monitor_inactivity():
+            logger.info(f"[CopilotWS] Inactivity monitor active for session {session_id} (timeout={timeout_sec}s)")
+            while True:
+                await asyncio.sleep(15)
+                last_time = sess.get("last_speech_time", time.time())
+                idle_duration = time.time() - last_time
+                if idle_duration > timeout_sec:
+                    logger.warning(
+                        f"[CopilotWS] Inactivity timeout: No speech/audio received for {int(idle_duration)}s "
+                        f"(threshold={timeout_sec}s). Shutting down session {session_id} and terminating bot process..."
+                    )
+                    sess["is_active"] = False
+                    sess["status"] = "Terminated due to audio inactivity."
+                    
+                    bot_process = sess.get("bot_process")
+                    if bot_process and bot_process.poll() is None:
+                        logger.info(f"[TeamsBot] Terminating bot process PID {bot_process.pid} due to inactivity.")
+                        try:
+                            bot_process.terminate()
+                            try:
+                                bot_process.wait(timeout=3.0)
+                            except Exception:
+                                bot_process.kill()
+                        except Exception as pe:
+                            logger.warning(f"[TeamsBot] Error terminating bot process: {pe}")
+                    
+                    try:
+                        await websocket.close()
+                    except Exception:
+                        pass
+                    break
+
+        inactivity_task = asyncio.create_task(monitor_inactivity())
+
         builder = CopilotPipelineBuilder()
         pipeline_res = builder.build_observer_pipeline(websocket, session_id, on_transcript_entry)
 
@@ -164,6 +206,8 @@ async def websocket_endpoint(
                 logger.info(f"[CopilotWS] Audio producer disconnected: {session_id}")
             except Exception as err:
                 logger.error(f"[CopilotWS] Audio pipeline error: {err}")
+            finally:
+                inactivity_task.cancel()
         else:
             logger.warning(f"[CopilotWS] Could not build observer pipeline for audio producer. Falling back to byte echo.")
             try:
@@ -175,6 +219,8 @@ async def websocket_endpoint(
                         await websocket.send_bytes(msg["bytes"])
             except WebSocketDisconnect:
                 pass
+            finally:
+                inactivity_task.cancel()
 
     # Dashboard Subscriber Branch (Browser UI Window)
     else:

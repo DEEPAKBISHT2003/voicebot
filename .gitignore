@@ -1,8 +1,8 @@
 # =============================================================
-# AI Mock Interviewer Platform — .gitignore
+# Voicebot & AI Copilot Platform — .gitignore
 # =============================================================
 
-# ─── Credentials & Environment Files ───────────────────────
+# ─── Environment & Secrets ──────────────────────────────────
 .env
 .env.*
 !.env.example
@@ -20,7 +20,7 @@ ENV/
 env/
 .python-version
 
-# ─── Python Cache & Compiled Code ──────────────────────────
+# ─── Python Cache & Bytecode ───────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
@@ -31,18 +31,35 @@ __pycache__/
 .ipynb_checkpoints/
 *.egg-info/
 
-# ─── Runtime Data & Session Storage ────────────────────────
+# ─── Node.js & Web Frontend ────────────────────────────────
+node_modules/
+dist/
+build/
+frontend-new/node_modules/
+frontend-new/dist/
+frontend-new/build/
+.eslintcache
+yarn-error.log
+pnpm-debug.log
+
+# ─── Runtime Data, Session Storage & Screenshots ───────────
 interviews/
 storage/
-backend/storage/
 **/storage/
+logs/
+*.log
+temp/
+tmp/
 
 # ─── Audio & Media Files ───────────────────────────────────
 *.wav
 *.mp3
 *.pcm
+*.png
+*.jpg
+*.jpeg
 
-# ─── Database Files ────────────────────────────────────────
+# ─── Database & Docker Volumes ─────────────────────────────
 *.db
 *.sqlite
 *.sqlite3
@@ -91,7 +108,19 @@ test-results/
 .cache/
 teams_bot_profile/
 
-# ─── AI-DLC / Kiro Workspace ─────────────────────────────
+# ─── IDE, Editor & OS ──────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# ─── AI-DLC & Workspace Agent Runtime ──────────────────────
 .kiro/
 aidlc/
 AGENTS.md
@@ -107,6 +136,7 @@ docs/archive/
 
 # ─── Excluded Project Files ───────────────────────────────
 VAD.md
+PROCESS.md
 backend_api_docs.md
 docs/01-requirements/
 docs/02-technical/
@@ -136,3 +166,4 @@ scripts/preflight.sh
 scripts/run_full_diag.sh
 scripts/start_session.json
 scripts/test_*
+AGENTS.md

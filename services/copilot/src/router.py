@@ -59,6 +59,30 @@ async def stop_copilot(
         # Mark inactive
         active_sessions[session_id]["is_active"] = False
         active_sessions[session_id]["status"] = "Session stopped."
+        
+        # Terminate Playwright bot subprocess if active locally or via browser-service
+        browser_url = os.getenv("BROWSER_SERVICE_URL", os.getenv("BROWSER_URL", "http://browser-service:8002"))
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                await client.post(f"{browser_url}/stop-meeting", json={"session_id": session_id})
+        except Exception:
+            pass
+
+        bot_process = active_sessions[session_id].get("bot_process")
+        if bot_process and bot_process.poll() is None:
+            logger.info(f"[TeamsBot] Terminating local bot subprocess for session {session_id} (PID: {bot_process.pid})")
+            try:
+                bot_process.terminate()
+                try:
+                    bot_process.wait(timeout=3.0)
+                except Exception:
+                    logger.warning(f"[TeamsBot] Process {bot_process.pid} did not exit gracefully, killing...")
+                    bot_process.kill()
+            except Exception as pe:
+                logger.warning(f"[TeamsBot] Error terminating bot subprocess: {pe}")
+        active_sessions[session_id]["bot_process"] = None
+
         ws = active_sessions[session_id].get("websocket")
         if ws:
             try:
@@ -210,6 +234,15 @@ async def finalize_copilot_report(
     repo: CopilotRepository = Depends(get_copilot_repo)
 ):
     if session_id in active_sessions:
+        bot_process = active_sessions[session_id].get("bot_process")
+        if bot_process and bot_process.poll() is None:
+            logger.info(f"[TeamsBot] Terminating bot process for session {session_id} on finalize (PID: {bot_process.pid})")
+            try:
+                bot_process.terminate()
+            except Exception:
+                pass
+        active_sessions[session_id]["bot_process"] = None
+
         engine = active_sessions[session_id]["engine"]
         res = await engine.finalize_report()
         active_sessions[session_id]["is_active"] = False
@@ -239,6 +272,7 @@ class JoinMeetingRequest(BaseModel):
 async def join_meeting(
     session_id: str,
     req: JoinMeetingRequest,
+    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions)
 ):
     """
     Spawns the Playwright Teams Bot from the Copilot Service.
@@ -248,10 +282,24 @@ async def join_meeting(
     import sys
     import subprocess
     import threading
+    import httpx
+
+    browser_url = os.getenv("BROWSER_SERVICE_URL", os.getenv("BROWSER_URL", "http://browser-service:8002"))
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                f"{browser_url}/join-meeting",
+                json={"session_id": session_id, "meeting_url": req.meeting_url}
+            )
+            if resp.status_code == 200:
+                logger.info(f"[TeamsBot] Successfully delegated bot spawning to browser-service at {browser_url}")
+                return resp.json()
+    except Exception as err:
+        logger.warning(f"[TeamsBot] Could not contact browser-service at {browser_url} ({err}). Falling back to local subprocess...")
 
     python_exe = os.path.abspath(sys.executable)
     script_path = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "pipeline", "teams_bot.py")
+        os.path.join(os.path.dirname(__file__), "..", "..", "browser", "src", "pipeline", "teams_bot.py")
     )
     workspace_root = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "..", "..")
@@ -274,6 +322,15 @@ async def join_meeting(
             bufsize=1,  # Line-buffered
         )
         logger.info(f"[TeamsBot] Subprocess spawned with PID: {process.pid}")
+
+        if session_id in active_sessions:
+            existing_proc = active_sessions[session_id].get("bot_process")
+            if existing_proc and existing_proc.poll() is None:
+                try:
+                    existing_proc.terminate()
+                except Exception:
+                    pass
+            active_sessions[session_id]["bot_process"] = process
 
         def _stream_logs():
             """Stream bot logs line by line in real-time as they are produced."""

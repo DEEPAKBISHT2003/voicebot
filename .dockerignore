@@ -1,5 +1,24 @@
+# =============================================================
+# Voicebot & AI Copilot Platform — .dockerignore
+# =============================================================
+
+# ─── Git & Workspace Config ────────────────────────────────
+.git/
+.gitignore
+.github/
+
+# ─── Environment & Secrets ──────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ─── Python Virtual Environments & Cache ───────────────────
 .venv/
 venv/
+env/
+ENV/
 __pycache__/
 *.pyc
 *.pyo
@@ -14,3 +33,35 @@ interviews/
 scratch/
 frontend-new/node_modules/
 frontend-new/dist/
+
+# ─── Runtime Data, Session Storage & Media ─────────────────
+interviews/
+storage/
+logs/
+*.log
+*.png
+*.jpg
+*.jpeg
+*.wav
+*.mp3
+*.pcm
+temp/
+tmp/
+
+# ─── Database & Docker Volumes ─────────────────────────────
+*.db
+*.sqlite3*
+postgres_data/
+
+# ─── IDE & AI Agent Workspace Files ────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.kiro/
+aidlc/
+.gemini/
+scratch/
+docss/
+docss.zip
+AGENTS.md

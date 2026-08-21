@@ -1,15 +1,17 @@
-pipecat-ai[local,openai,groq,deepgram]
-pyaudio
-pypdf
+# Unified Requirements for Voicebot Services
 python-dotenv
 loguru
 fastapi
 python-multipart
 httpx
+pydantic
 tortoise-orm
 asyncpg
 uvicorn
+tzdata
+pyaudio
+pypdf
 openai
 groq
-playwright
-
+playwright==1.52.0
+pipecat-ai[local,openai,groq,deepgram]>=1.5.0
