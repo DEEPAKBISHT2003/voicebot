@@ -135,6 +135,7 @@ coverage.xml
 docs/archive/
 
 # ─── Excluded Project Files ───────────────────────────────
+ARCHITECTURE.md
 VAD.md
 PROCESS.md
 backend_api_docs.md

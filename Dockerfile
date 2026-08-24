@@ -7,7 +7,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Install system dependencies for audio processing, PyAudio, supervisor, and Chromium
+# Install system dependencies for audio processing & PyAudio
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     python3-dev \
@@ -17,46 +17,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     gnupg \
     curl \
-    supervisor \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy and install python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Chromium browser dependencies (Debian Trixie compatible)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libnss3 \
-    libnspr4 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libdrm2 \
-    libxkbcommon0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libxrandr2 \
-    libgbm1 \
-    libpango-1.0-0 \
-    libcairo2 \
-    libasound2t64 \
-    libatspi2.0-0 \
-    fonts-liberation \
-    fonts-noto-color-emoji \
-    fonts-unifont \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install ONLY Chromium browser binary
-RUN playwright install chromium
-
 # Create parent package init for Python import resolution
 RUN mkdir -p /app/services && touch /app/services/__init__.py
 
-# Copy supervisor config and application code
-COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+# Copy application code
 COPY . /app
 
-EXPOSE 8000 8001
+EXPOSE 8000
 
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+CMD ["uvicorn", "services.main:app", "--host", "0.0.0.0", "--port", "8000"]

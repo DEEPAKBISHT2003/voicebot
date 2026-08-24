@@ -5,9 +5,9 @@ from playwright.async_api import async_playwright
 from loguru import logger
 
 # Configuration defaults — points to Copilot Service WebSocket & Browser settings
-BACKEND_WS_BASE = os.getenv("COPILOT_WS_BASE", os.getenv("BACKEND_WS_BASE", "ws://localhost:9001"))
-LOCAL_AUDIO_WS_BASE = os.getenv("LOCAL_AUDIO_WS_BASE", "ws://localhost:9001")
-# Shared namespace experiment: when True, skip AudioProxy and connect directly to FastAPI via localhost
+BACKEND_WS_BASE = os.getenv("COPILOT_WS_BASE", os.getenv("BACKEND_WS_BASE", "ws://localhost:8000"))
+LOCAL_AUDIO_WS_BASE = os.getenv("LOCAL_AUDIO_WS_BASE", "ws://localhost:8000")
+# Shared namespace: when True, skip AudioProxy and connect directly to FastAPI via localhost:8000
 USE_SHARED_NAMESPACE = os.getenv("USE_SHARED_NAMESPACE", "true").lower() == "true"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "AI Copilot Teammate")
 BOT_HEADLESS = os.getenv("BOT_HEADLESS", "true").lower() == "true"
