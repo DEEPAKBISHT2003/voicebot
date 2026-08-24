@@ -5,8 +5,10 @@ from playwright.async_api import async_playwright
 from loguru import logger
 
 # Configuration defaults — points to Copilot Service WebSocket & Browser settings
-BACKEND_WS_BASE = os.getenv("COPILOT_WS_BASE", os.getenv("BACKEND_WS_BASE", "ws://localhost:8001"))
-LOCAL_AUDIO_WS_BASE = os.getenv("LOCAL_AUDIO_WS_BASE", "ws://localhost:8001")
+BACKEND_WS_BASE = os.getenv("COPILOT_WS_BASE", os.getenv("BACKEND_WS_BASE", "ws://localhost:9001"))
+LOCAL_AUDIO_WS_BASE = os.getenv("LOCAL_AUDIO_WS_BASE", "ws://localhost:9001")
+# Shared namespace experiment: when True, skip AudioProxy and connect directly to FastAPI via localhost
+USE_SHARED_NAMESPACE = os.getenv("USE_SHARED_NAMESPACE", "true").lower() == "true"
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "AI Copilot Teammate")
 BOT_HEADLESS = os.getenv("BOT_HEADLESS", "true").lower() == "true"
 BOT_PREJOIN_TIMEOUT_MS = int(os.getenv("BOT_PREJOIN_TIMEOUT_MS", "45000"))
@@ -344,10 +346,17 @@ async def start_localhost_proxy():
         return None
 
 async def run_bot(meeting_url: str, session_id: str):
-    await start_localhost_proxy()
+    # Shared namespace experiment: skip AudioProxy when containers share network namespace
+    if USE_SHARED_NAMESPACE:
+        logger.info("[TeamsBot] Shared namespace mode: AudioProxy BYPASSED — Chromium connects directly to FastAPI via localhost")
+    else:
+        logger.info("[TeamsBot] Legacy mode: Starting AudioProxy for CSP-compliant WebSocket relay")
+        await start_localhost_proxy()
     
-    # Target ws://localhost:8001 (or LOCAL_AUDIO_WS_BASE env) for in-browser JavaScript to match Teams CSP connect-src whitelist
+    # Target ws://localhost:9001 (or LOCAL_AUDIO_WS_BASE env) for in-browser JavaScript
+    # Teams CSP allows ws://localhost:* — with shared namespace, this reaches FastAPI directly
     browser_ws_url = f"{LOCAL_AUDIO_WS_BASE}/api/ws/copilot/{session_id}?mode=audio_stream"
+    logger.info(f"[AudioWS] target URL: {browser_ws_url}")
     logger.info(f"[TeamsBot] Connecting Playwright bot to meeting: {meeting_url}")
     logger.info(f"[TeamsBot] Streaming audio back via CSP-compliant WebSocket: {browser_ws_url}")
     

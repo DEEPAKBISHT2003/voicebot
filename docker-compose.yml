@@ -25,10 +25,11 @@ services:
     restart: always
     ports:
       - "${INTERVIEW_PORT:-8000}:8000"
-      - "${COPILOT_PORT:-8001}:8001"
+      - "${COPILOT_PORT:-9001}:9001"
+      - "${BROWSER_PORT:-8002}:8002"
     environment:
       - INTERVIEW_PORT=${INTERVIEW_PORT:-8000}
-      - COPILOT_PORT=${COPILOT_PORT:-8001}
+      - COPILOT_PORT=${COPILOT_PORT:-9001}
       - DATABASE_URL=${DATABASE_URL_DOCKER:-postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-1234}@db:5432/${POSTGRES_DB:-interview}}
       - DEEPGRAM_API_KEY=${DEEPGRAM_API_KEY}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
@@ -38,19 +39,19 @@ services:
       - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
       - GROQ_COPILOT_MODEL=${GROQ_COPILOT_MODEL:-llama-3.1-8b-instant}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-*}
-      - COPILOT_URL=http://localhost:${COPILOT_PORT:-8001}
-      - COPILOT_SERVICE_URL=http://localhost:${COPILOT_PORT:-8001}
-      - BROWSER_SERVICE_URL=http://browser-service:8002
-      - BROWSER_URL=http://browser-service:8002
-      - BACKEND_WS_BASE=${BACKEND_WS_BASE:-ws://localhost:${COPILOT_PORT:-8001}}
-      - COPILOT_WS_BASE=${COPILOT_WS_BASE:-ws://localhost:${COPILOT_PORT:-8001}}
+      - COPILOT_URL=http://localhost:${COPILOT_PORT:-9001}
+      - COPILOT_SERVICE_URL=http://localhost:${COPILOT_PORT:-9001}
+      - BROWSER_SERVICE_URL=http://localhost:8002
+      - BROWSER_URL=http://localhost:8002
+      - BACKEND_WS_BASE=${BACKEND_WS_BASE:-ws://localhost:${COPILOT_PORT:-9001}}
+      - COPILOT_WS_BASE=${COPILOT_WS_BASE:-ws://localhost:${COPILOT_PORT:-9001}}
     volumes:
       - ./interviews:/app/interviews
     depends_on:
       db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "python3 -c 'import os,urllib.request; urllib.request.urlopen(f\"http://localhost:{os.getenv(\"COPILOT_PORT\",\"8001\")}/health\")' || exit 1"]
+      test: ["CMD-SHELL", "python3 -c 'import os,urllib.request; urllib.request.urlopen(f\"http://localhost:{os.getenv(\"COPILOT_PORT\",\"9001\")}/health\")' || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -62,26 +63,22 @@ services:
       dockerfile: Dockerfile
     container_name: voicebot-browser-service
     restart: always
-    ports:
-      - "${BROWSER_PORT:-8002}:8002"
+    network_mode: "service:backend-services"
     environment:
       - BROWSER_PORT=${BROWSER_PORT:-8002}
       - BOT_DISPLAY_NAME=${BOT_DISPLAY_NAME:-AI Copilot Teammate}
       - BOT_HEADLESS=${BOT_HEADLESS:-true}
       - BOT_PREJOIN_TIMEOUT_MS=${BOT_PREJOIN_TIMEOUT_MS:-45000}
-      - BACKEND_WS_BASE=ws://backend-services:8001
-      - COPILOT_WS_BASE=ws://backend-services:8001
-      - LOCAL_AUDIO_WS_BASE=${LOCAL_AUDIO_WS_BASE:-ws://localhost:8001}
+      - LOCAL_AUDIO_WS_BASE=${LOCAL_AUDIO_WS_BASE:-ws://localhost:9001}
+      - COPILOT_PORT=${COPILOT_PORT:-9001}
     volumes:
       - ./interviews:/app/interviews
-    depends_on:
-      - backend-services
     healthcheck:
       test: ["CMD-SHELL", "python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8002/health\")' || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 10
-      start_period: 15s
+      start_period: 20s
 
   frontend:
     build:
@@ -97,7 +94,6 @@ services:
       - "${FRONTEND_PORT:-3000}:80"
     depends_on:
       - backend-services
-      - browser-service
 
 volumes:
   postgres_data:
