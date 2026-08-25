@@ -172,8 +172,7 @@ async def start_interview(
     async def _init_copilot_session():
         try:
             import httpx
-            internal_port = os.getenv("INTERVIEW_PORT", os.getenv("COPILOT_PORT", "8000"))
-            copilot_url = f"http://127.0.0.1:{internal_port}"
+            copilot_url = "http://127.0.0.1:8000"
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.post(
                     f"{copilot_url}/api/copilot/start",
@@ -196,8 +195,7 @@ async def start_interview(
         async def _spawn_teams_bot_via_copilot():
             try:
                 import httpx
-                internal_port = os.getenv("INTERVIEW_PORT", os.getenv("COPILOT_PORT", "8000"))
-                copilot_url = f"http://127.0.0.1:{internal_port}"
+                copilot_url = "http://127.0.0.1:8000"
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     resp = await client.post(
                         f"{copilot_url}/api/copilot/{session_id}/join-meeting",
@@ -387,8 +385,7 @@ async def stop_interview(
     # Notify Copilot service to stop session and terminate its bot process
     try:
         import httpx
-        internal_port = os.getenv("INTERVIEW_PORT", os.getenv("COPILOT_PORT", "8000"))
-        copilot_url = f"http://127.0.0.1:{internal_port}"
+        copilot_url = "http://127.0.0.1:8000"
         async with httpx.AsyncClient(timeout=3.0) as client:
             await client.post(f"{copilot_url}/api/copilot/{session_id}/stop")
     except Exception as e:
