@@ -14,58 +14,39 @@ AI-powered real-time voice screening platform for technical interviews.
 
 This is a **microservices monorepo** with two independent services:
 
-### Interview Service (Port 8000)
-- AI Mock Interviewer backend
-- Voice pipeline coordination
-- Interview session management
-
-### Copilot Service (Port 8001)
-- AI Copilot backend
-- Intelligence reports
-- Transcript analysis
+### Unified Backend Service (Port 8000)
+- AI Mock Interviewer & Copilot Unified backend
+- Voice pipeline coordination & transcript analysis
+- Real-time WebSockets for Interview & Copilot
 
 ## Quick Start
 
 ```bash
 # Install dependencies
-cd applications/frontend && npm install
+cd frontend-new && npm install
 
 # Start services with Docker
 docker-compose up --build
-
-# Run tests
-bash scripts/test.sh
 ```
 
 ## Structure
 
 ```
 demo/
-├── packages/          # Shared packages
-│   ├── domain-models/
-│   ├── adapters/
-│   ├── infrastructure/
-│   └── types/
-├── services/          # Backend services
-│   ├── interview/     # Interview API
-│   └── copilot/       # Copilot API
-├── applications/      # Frontend applications
-│   └── frontend/
-├── tests/             # Test suites
-│   └── integration/
-├── infrastructure/    # Infrastructure as Code
-├── scripts/           # Build and deployment scripts
-├── docs/              # Documentation
-├── .kiro/             # AI-DLC configuration
-└── migration-plan-phase*.md
+├── services/          # Unified backend services
+│   ├── main.py        # Single FastAPI app entrypoint (:8000)
+│   ├── interview/     # Interview API & pipeline
+│   ├── copilot/       # Copilot API & pipeline
+│   └── browser/       # Playwright meeting bot (:8002)
+├── frontend-new/      # React frontend (:3000)
 ```
 
 ## Services
 
 | Service | Port | Database | Description |
 |---------|------|----------|-------------|
-| Interview | 8000 | PostgreSQL:5432 | AI Interviewer API |
-| Copilot | 8001 | PostgreSQL:5433 | AI Copilot API |
+| Unified Backend | 8000 | PostgreSQL:5432 | AI Interviewer & Copilot API |
+| Browser Service | 8002 | - | Playwright Meeting Bot |
 | Frontend | 3000 | - | React Application |
 
 ## Development

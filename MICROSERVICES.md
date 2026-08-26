@@ -1,20 +1,18 @@
-# Microservices Architecture
+# Architecture Overview
 
-This project is structured as a microservices architecture with two independent services:
+This project uses a unified FastAPI backend architecture running on Port 8000 (`services/main.py`) paired with a Playwright browser worker on Port 8002 (`services/browser`).
 
 ## Services
 
-### 1. Interview Service (Port 8000)
-- Handles AI interview sessions
-- Manages transcript collection
-- Coordinates with voice pipeline
-- Stores interview data in dedicated database
+### 1. Unified Backend Service (Port 8000)
+- Handles AI interview sessions (`/api/interviews`, `/api/ws/interview/...`)
+- Handles copilot sessions (`/api/copilot`, `/api/ws/copilot/...`)
+- Coordinates voice pipelines & intelligence reports
+- Single PostgreSQL database (`interview`)
 
-### 2. Copilot Service (Port 8001)
-- Handles copilot sessions
-- Provides AI assistance during interviews
-- Generates intelligence reports
-- Stores copilot data in dedicated database
+### 2. Browser Service (Port 8002)
+- Playwright worker for joining Microsoft Teams & meeting calls
+- Intercepts WebRTC audio and relays to backend WebSockets
 
 ## Architecture Diagram
 
@@ -23,23 +21,18 @@ This project is structured as a microservices architecture with two independent 
 │                           Frontend (Port 3000)                      │
 └─────────────────────────────────────────────────────────────────────┘
                                    │
-                   ┌───────────────┴───────────────┐
-                   │                               │
-                   ▼                               ▼
+                                   ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                     Unified Backend Service (8000)                  │
+│                                                                     │
+│  - Interview API & Pipeline (/api/interviews, /ws/interview/...)   │
+│  - Copilot API & Pipeline (/api/copilot, /ws/copilot/...)          │
+└─────────────────────────────────────────────────────────────────────┘
+           │                                    │
+           ▼                                    ▼
 ┌─────────────────────────────────┐    ┌─────────────────────────────┐
-│   Interview Service (8000)      │    │   Copilot Service (8001)    │
-│                                 │    │                             │
-│  - Interview Sessions           │    │  - Copilot Sessions         │
-│  - Transcript Collection        │    │  - AI Assistance            │
-│  - Voice Pipeline               │    │  - Intelligence Reports     │
-│  - HTTP Client →                │    │  - HTTP Client ←            │
-│    Copilot Service              │    │    Interview Service        │
-└─────────────────────────────────┘    └─────────────────────────────┘
-          │                                    │
-          ▼                                    ▼
-┌─────────────────────────────────┐    ┌─────────────────────────────┐
-│   Database: interview           │    │   Database: copilot         │
-│   (PostgreSQL: 5432)            │    │   (PostgreSQL: 5433)        │
+│   Database: interview           │    │   Browser Service (8002)    │
+│   (PostgreSQL: 5432)            │    │   (Playwright Teams Bot)    │
 └─────────────────────────────────┘    └─────────────────────────────┘
 ```
 

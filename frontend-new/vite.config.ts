@@ -7,7 +7,7 @@ export default defineConfig(({ mode }) => {
   // Load environment variables from parent directory (root workspace folder)
   const env = loadEnv(mode, '../', '')
   const backendUrl = env.BACKEND_URL || 'http://localhost:8000'
-  const copilotUrl = env.COPILOT_URL || 'http://localhost:8001'
+  const copilotUrl = env.COPILOT_URL || 'http://localhost:8000'
   const frontendUrl = env.FRONTEND_URL || 'http://localhost:3000'
 
   // Extract port from FRONTEND_URL if it's a valid web URL (e.g. not "*")
@@ -35,7 +35,7 @@ export default defineConfig(({ mode }) => {
       host: '0.0.0.0',
       port: frontendPort,
       proxy: {
-        // Copilot service routes → port 8001
+        // Copilot service routes → port 8000
         '/api/copilot': {
           target: copilotUrl,
           changeOrigin: true,

@@ -56,7 +56,7 @@ export const uploadSimulationAudio = async (sessionId: string, file: File): Prom
 };
 
 export const getCopilotWebSocketUrl = (sessionId: string): string => {
-  // Always use port 8001 for copilot WebSocket
+  // Always use unified port 8000 for copilot WebSocket
   const base = import.meta.env.VITE_COPILOT_URL || '';
   if (base) {
     try {
@@ -64,7 +64,7 @@ export const getCopilotWebSocketUrl = (sessionId: string): string => {
       const wsProtocol = parsedUrl.protocol === 'https:' ? 'wss:' : 'ws:';
       return `${wsProtocol}//${parsedUrl.host}/api/ws/copilot/${sessionId}`;
     } catch (e) {
-      console.warn('[CopilotWS] Failed to parse VITE_COPILOT_URL, using localhost:8001', e);
+      console.warn('[CopilotWS] Failed to parse VITE_COPILOT_URL, using default backend port 8000', e);
     }
   }
 
@@ -81,7 +81,7 @@ export const getSimulationWebSocketUrl = (sessionId: string): string => {
       const wsProtocol = parsedUrl.protocol === 'https:' ? 'wss:' : 'ws:';
       return `${wsProtocol}//${parsedUrl.host}/api/ws/copilot/${sessionId}/simulate`;
     } catch (e) {
-      console.warn('[SimulationWS] Failed to parse VITE_COPILOT_URL, using localhost:8001', e);
+      console.warn('[SimulationWS] Failed to parse VITE_COPILOT_URL, using default backend port 8000', e);
     }
   }
 

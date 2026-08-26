@@ -256,9 +256,9 @@ async def periodic_injector(page, ws_url):
 
 async def start_localhost_proxy():
     host = "127.0.0.1"
-    port = 8001
+    port = 8000
     target_host = os.getenv("BACKEND_HOST", "backend-services")
-    target_port = int(os.getenv("COPILOT_PORT", "8001"))
+    target_port = int(os.getenv("COPILOT_PORT", "8000"))
     
     async def handle_client(client_reader, client_writer):
         frame_counter = 0
@@ -353,7 +353,7 @@ async def run_bot(meeting_url: str, session_id: str):
         logger.info("[TeamsBot] Legacy mode: Starting AudioProxy for CSP-compliant WebSocket relay")
         await start_localhost_proxy()
     
-    # Target ws://localhost:9001 (or LOCAL_AUDIO_WS_BASE env) for in-browser JavaScript
+    # Target ws://localhost:8000 (or LOCAL_AUDIO_WS_BASE env) for in-browser JavaScript
     # Teams CSP allows ws://localhost:* — with shared namespace, this reaches FastAPI directly
     browser_ws_url = f"{LOCAL_AUDIO_WS_BASE}/api/ws/copilot/{session_id}?mode=audio_stream"
     logger.info(f"[AudioWS] target URL: {browser_ws_url}")
