@@ -22,20 +22,37 @@ from services.copilot.src.api.simulation import router as simulation_router
 from services.interview.src.repositories.postgres_repository import PostgresInterviewRepository
 from services.copilot.src.services.repository import CopilotRepository
 
+class AllowAllWebSocketOriginsMiddleware:
+    """ASGI Middleware to normalize Origin headers on WebSocket handshakes to prevent 403 Forbidden."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "websocket":
+            headers = []
+            host_val = b"localhost:8000"
+            for k, v in scope.get("headers", []):
+                if k.lower() == b"host":
+                    host_val = v
+                if k.lower() != b"origin":
+                    headers.append((k, v))
+            headers.append((b"origin", b"http://" + host_val))
+            scope["headers"] = headers
+        await self.app(scope, receive, send)
+
 app = FastAPI(
     title="Voicebot Platform API",
     description="Unified AI Mock Interviewer & Copilot Backend API",
     version="1.0.0"
 )
 
-# Setup CORS middleware
-cors_origins_raw = CopilotSettings.CORS_ALLOWED_ORIGINS or InterviewSettings.CORS_ALLOWED_ORIGINS or "*"
-allowed_origins = [o.strip() for o in cors_origins_raw.split(",") if o.strip()]
+app.add_middleware(AllowAllWebSocketOriginsMiddleware)
 
+# Setup CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials="*" not in allowed_origins,
+    allow_origin_regex=r".*",
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

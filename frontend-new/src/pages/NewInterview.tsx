@@ -157,7 +157,7 @@ export const NewInterview: React.FC = () => {
         custom_prompt: data.custom_prompt || '',
         resume_filename: uploadedFile.name,
         resume_base64: fileBase64,
-        meeting_url: interviewType === 'teams' ? data.meeting_url : '',
+        meeting_url: data.meeting_url && data.meeting_url.trim() ? data.meeting_url.trim() : '',
       });
 
       if (interviewType === 'simulation' && simulationAudioFile) {
@@ -222,7 +222,7 @@ export const NewInterview: React.FC = () => {
                   <span className="font-bold text-sm">Direct AI Voice Interview</span>
                 </div>
                 <p className="text-xs leading-relaxed">
-                  The candidate speaks directly into the browser to the virtual AI interviewer.
+                  Candidate interacts directly via browser microphone, or enter a meeting link for Mia to join the call.
                 </p>
               </div>
 
@@ -262,7 +262,26 @@ export const NewInterview: React.FC = () => {
             </div>
           </div>
 
-          {/* Conditional Teams URL Input */}
+          {/* Direct AI Voice Interview Optional Meeting Link Input */}
+          {interviewType === 'local' && (
+            <div className="space-y-1.5 animate-fadeIn">
+              <label htmlFor="meeting_url_local" className="text-xs font-semibold text-primary">
+                Join Meeting Link (Optional)
+              </label>
+              <input
+                type="text"
+                id="meeting_url_local"
+                placeholder="https://teams.microsoft.com/l/meetup-join/... (Leave blank to use browser mic)"
+                className="flex h-10 w-full rounded-lg border border-border-gray bg-white px-3 py-2 text-sm text-primary placeholder:text-muted-gray focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                {...register('meeting_url')}
+              />
+              <p className="text-[10px] text-muted-gray">
+                Optional: Enter a Teams or Meet link to send Mia into the meeting call as an active voice interviewer.
+              </p>
+            </div>
+          )}
+
+          {/* Conditional Teams Copilot Observer Meeting URL Input */}
           {interviewType === 'teams' && (
             <div className="space-y-1.5 animate-fadeIn">
               <label htmlFor="meeting_url" className="text-xs font-semibold text-primary">

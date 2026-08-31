@@ -168,47 +168,30 @@ async def start_interview(
         "meeting_url": req.meeting_url
     }
 
-    # Pre-initialize the Copilot session in the Copilot Service via HTTP
-    async def _init_copilot_session():
-        try:
-            import httpx
-            copilot_url = "http://127.0.0.1:8000"
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.post(
-                    f"{copilot_url}/api/copilot/start",
-                    json={
-                        "session_id": session_id,
-                        "jd": req.jd,
-                        "resume": req.resume,
-                        "custom_prompt": req.custom_prompt or "",
-                    }
-                )
-                resp.raise_for_status()
-                logger.info(f"[CopilotObserver] Pre-initialized Copilot session via HTTP: {session_id}")
-        except Exception as e:
-            logger.warning(f"[CopilotObserver] Could not pre-initialize copilot session: {type(e).__name__}: {e}")
-
-    asyncio.create_task(_init_copilot_session())
-    
-    # If meeting URL is provided, delegate Teams bot spawning to Copilot Service
+    # If meeting URL is provided, launch Mia browser bot directly via Browser Service
     if req.meeting_url and req.meeting_url.strip():
-        async def _spawn_teams_bot_via_copilot():
+        async def _spawn_interview_browser_bot():
             try:
                 import httpx
-                copilot_url = "http://127.0.0.1:8000"
-                async with httpx.AsyncClient(timeout=10.0) as client:
+                browser_url = os.getenv("BROWSER_SERVICE_URL", os.getenv("BROWSER_URL", "http://127.0.0.1:8002"))
+                async with httpx.AsyncClient(timeout=60.0) as client:
                     resp = await client.post(
-                        f"{copilot_url}/api/copilot/{session_id}/join-meeting",
-                        json={"meeting_url": req.meeting_url}
+                        f"{browser_url}/join-meeting",
+                        json={
+                            "session_id": session_id,
+                            "meeting_url": req.meeting_url,
+                            "bot_role": "interviewer",
+                            "bot_name": "Mia - AI Interviewer"
+                        }
                     )
                     resp.raise_for_status()
                     data = resp.json()
-                    logger.info(f"[TeamsBot] Copilot service spawned bot: PID={data.get('pid')}")
+                    logger.info(f"[MiaBot] Browser service spawned Mia interviewer bot: PID={data.get('pid')}")
             except Exception as e:
-                logger.error(f"[TeamsBot] Failed to request copilot service to spawn bot: {type(e).__name__}: {e}")
+                logger.error(f"[MiaBot] Failed to request browser service to spawn bot: {type(e).__name__}: {e}")
 
-        asyncio.create_task(_spawn_teams_bot_via_copilot())
-        active_sessions[session_id]["status"] = "Teams Bot joining meeting... Check dashboard suggestions."
+        asyncio.create_task(_spawn_interview_browser_bot())
+        active_sessions[session_id]["status"] = "Mia joining meeting..."
 
     return {"session_id": session_id, "status": active_sessions[session_id]["status"]}
 
@@ -219,127 +202,129 @@ async def websocket_endpoint(
     repo=Depends(get_repo_ws),
     active_sessions=Depends(get_active_sessions_ws)
 ):
-    await websocket.accept()
-    logger.info(f"WebSocket client connected for session: {session_id}")
-    
-    if session_id not in active_sessions:
-        db_sess = await repo.get_session(session_id) or {}
-        active_sessions[session_id] = {
-            "status": "Initializing...",
-            "transcript": db_sess.get("transcript", []),
-            "timestamp": db_sess.get("timestamp", datetime.datetime.now().isoformat()),
-            "jd": db_sess.get("jd", ""),
-            "resume": db_sess.get("resume", ""),
-            "custom_prompt": db_sess.get("custom_prompt", ""),
-            "is_active": True,
-            "worker": None
-        }
-        
-    sess = active_sessions[session_id]
-    sess["is_active"] = True
-    sess["status"] = "Microphone online! Say 'Hello' to start."
-    
-    prompt_builder = InterviewPromptBuilder()
-    system_instruction = prompt_builder.build_system_instruction(
-        sess["jd"], 
-        sess["resume"], 
-        sess["custom_prompt"]
-    )
-
-
-    def make_transcript_callback(sid):
-        async def callback(entry):
-            if sid in active_sessions:
-                active_sessions[sid]["transcript"].append(entry)
-                await repo.save_session(
-                    sid,
-                    {
-                        "session_id": sid,
-                        "timestamp": active_sessions[sid]["timestamp"],
-                        "jd": active_sessions[sid]["jd"],
-                        "resume": active_sessions[sid]["resume"],
-                        "custom_prompt": active_sessions[sid]["custom_prompt"],
-                        "transcript": active_sessions[sid]["transcript"]
-                    }
-                )
-                
-                # Dynamic AI Copilot Observer Pipeline Integration
-                try:
-                    copilot_sessions = getattr(websocket.app.state, "copilot_sessions", None)
-                    if copilot_sessions and sid in copilot_sessions:
-                        copilot_sess = copilot_sessions[sid]
-                        engine = copilot_sess.get("engine")
-                        if engine:
-                            speaker_map = copilot_sess.setdefault("speaker_map", {})
-                            raw_spk = entry.get("speaker")
-                            text_content = entry.get("text", "")
-                            
-                            speaker = classify_speaker_role(text_content, raw_spk, speaker_map)
-                            logger.info(f"[CopilotObserver] Forwarding segment ({speaker}): {text_content}")
-                            
-                            copilot_ws = copilot_sess.get("websocket")
-                            
-                            # Add statement to active Copilot engine memory (returns INSTANTLY <5ms)
-                            last_msg = await engine.add_message(speaker, text_content, websocket=copilot_ws)
-                            
-                            # Broadcast instant transcript update frame to dashboard WS client (<5ms)
-                            if copilot_ws:
-                                try:
-                                    await copilot_ws.send_json({
-                                        "type": "copilot_update",
-                                        "session_id": sid,
-                                        "last_message": last_msg,
-                                        "transcript": engine.get_transcript(),
-                                        "intelligence": engine.get_intelligence(),
-                                        "assistance": engine.get_assistance()
-                                    })
-                                except Exception as ws_err:
-                                    logger.debug(f"Instant WS broadcast error: {ws_err}")
-                except Exception as e:
-                    logger.error(f"[CopilotObserver] Failed to forward segment to Copilot engine: {e}")
-        return callback
-        
-    mode = websocket.query_params.get("mode")
-    is_observer = (mode == "observer")
-    simulate = websocket.query_params.get("simulate")
-    is_simulation = (simulate == "true")
-    
-    pipeline_builder = LocalPipecatPipelineBuilder(Settings.DEEPGRAM_API_KEY, Settings.DEEPSEEK_API_KEY)
-    _, _, worker = pipeline_builder.build_pipeline(
-        system_instruction=system_instruction,
-        session_id=session_id,
-        transcript_callback=make_transcript_callback(session_id),
-        websocket=websocket,
-        is_observer=is_observer,
-        is_simulation=is_simulation
-    )
-    
-    sess["worker"] = worker
-    
-    runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
-    await runner.add_workers(worker)
-    if not is_observer:
-        await worker.queue_frames([LLMRunFrame()])
-    
-    simulation_task = None
-    if is_simulation:
-        simulation_task = asyncio.create_task(simulate_audio_playback(session_id, worker, websocket))
-    
     try:
+        await websocket.accept()
+        logger.info(f"[Mia][{session_id}] WebSocket connected.")
+        
+        if session_id not in active_sessions:
+            try:
+                db_sess = await repo.load_session(session_id)
+            except Exception:
+                db_sess = {}
+            active_sessions[session_id] = {
+                "status": "Initializing...",
+                "transcript": db_sess.get("transcript", []),
+                "timestamp": db_sess.get("timestamp", datetime.datetime.now().isoformat()),
+                "jd": db_sess.get("jd") or "Senior Python Developer\nRequirements:\nPython, FastAPI, REST APIs, PostgreSQL, Docker, Async programming",
+                "resume": db_sess.get("resume") or "Candidate has 3 years of Python backend development experience.",
+                "custom_prompt": db_sess.get("custom_prompt", ""),
+                "is_active": True,
+                "worker": None
+            }
+            
+        sess = active_sessions[session_id]
+        sess["is_active"] = True
+        sess["status"] = "Microphone online! Say 'Hello' to start."
+        
+        prompt_builder = InterviewPromptBuilder()
+        system_instruction = prompt_builder.build_system_instruction(
+            sess["jd"], 
+            sess["resume"], 
+            sess["custom_prompt"]
+        )
+
+        def make_transcript_callback(sid):
+            async def callback(entry):
+                if sid in active_sessions:
+                    active_sessions[sid]["transcript"].append(entry)
+                    await repo.save_session(
+                        sid,
+                        {
+                            "session_id": sid,
+                            "timestamp": active_sessions[sid]["timestamp"],
+                            "jd": active_sessions[sid]["jd"],
+                            "resume": active_sessions[sid]["resume"],
+                            "custom_prompt": active_sessions[sid]["custom_prompt"],
+                            "transcript": active_sessions[sid]["transcript"]
+                        }
+                    )
+                    
+                    # Dynamic AI Copilot Observer Pipeline Integration
+                    try:
+                        copilot_sessions = getattr(websocket.app.state, "copilot_sessions", None)
+                        if copilot_sessions and sid in copilot_sessions:
+                            copilot_sess = copilot_sessions[sid]
+                            engine = copilot_sess.get("engine")
+                            if engine:
+                                speaker_map = copilot_sess.setdefault("speaker_map", {})
+                                raw_spk = entry.get("speaker")
+                                text_content = entry.get("text", "")
+                                
+                                speaker = classify_speaker_role(text_content, raw_spk, speaker_map)
+                                logger.info(f"[CopilotObserver] Forwarding segment ({speaker}): {text_content}")
+                                
+                                copilot_ws = copilot_sess.get("websocket")
+                                
+                                # Add statement to active Copilot engine memory (returns INSTANTLY <5ms)
+                                last_msg = await engine.add_message(speaker, text_content, websocket=copilot_ws)
+                                
+                                # Broadcast instant transcript update frame to dashboard WS client (<5ms)
+                                if copilot_ws:
+                                    try:
+                                        await copilot_ws.send_json({
+                                            "type": "copilot_update",
+                                            "session_id": sid,
+                                            "last_message": last_msg,
+                                            "transcript": engine.get_transcript(),
+                                            "intelligence": engine.get_intelligence(),
+                                            "assistance": engine.get_assistance()
+                                        })
+                                    except Exception as ws_err:
+                                        logger.debug(f"Instant WS broadcast error: {ws_err}")
+                    except Exception as e:
+                        logger.error(f"[CopilotObserver] Failed to forward segment to Copilot engine: {e}")
+            return callback
+            
+        mode = websocket.query_params.get("mode")
+        is_observer = (mode == "observer")
+        simulate = websocket.query_params.get("simulate")
+        is_simulation = (simulate == "true")
+        
+        pipeline_builder = LocalPipecatPipelineBuilder(Settings.DEEPGRAM_API_KEY, Settings.DEEPSEEK_API_KEY)
+        _, _, worker = pipeline_builder.build_pipeline(
+            system_instruction=system_instruction,
+            session_id=session_id,
+            transcript_callback=make_transcript_callback(session_id),
+            websocket=websocket,
+            is_observer=is_observer,
+            is_simulation=is_simulation
+        )
+        
+        sess["worker"] = worker
+        
+        runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
+        await runner.add_workers(worker)
+        if not is_observer:
+            logger.info(f"[MIA GREETING] started for session {session_id}")
+            logger.info(f"[Mia][{session_id}] Triggering initial greeting: Queuing LLMRunFrame")
+            await worker.queue_frames([LLMRunFrame()])
+        
+        simulation_task = None
+        if is_simulation:
+            simulation_task = asyncio.create_task(simulate_audio_playback(session_id, worker, websocket))
+        
         if is_observer:
             sess["status"] = "Teams Observer Copilot connected and listening..."
         else:
             sess["status"] = "Interview started! Say hello to the interviewer."
         await runner.run()
     except WebSocketDisconnect:
-        logger.info(f"WebSocket client disconnected from session {session_id}.")
+        logger.info(f"[Mia][{session_id}] WebSocket client disconnected.")
     except Exception as e:
-        logger.error(f"Error in WebSocket voice session: {e}", exc_info=True)
-        sess["status"] = f"Error: {e}"
-    finally:
-        if simulation_task:
-            simulation_task.cancel()
-        sess["is_active"] = False
+        logger.error(f"[Mia][{session_id}] Error in WebSocket endpoint: {e}", exc_info=True)
+        if "sess" in locals() and sess:
+            sess["status"] = f"Error: {e}"
+            sess["is_active"] = False
         sess["status"] = "Mock Interview Stopped."
         await repo.save_session(
             session_id,
@@ -382,14 +367,14 @@ async def stop_interview(
             pass
         sess["bot_process"] = None
 
-    # Notify Copilot service to stop session and terminate its bot process
+    # Request Browser service to stop the meeting bot if running
     try:
         import httpx
-        copilot_url = "http://127.0.0.1:8000"
+        browser_url = os.getenv("BROWSER_SERVICE_URL", os.getenv("BROWSER_URL", "http://browser-service:8002"))
         async with httpx.AsyncClient(timeout=3.0) as client:
-            await client.post(f"{copilot_url}/api/copilot/{session_id}/stop")
+            await client.post(f"{browser_url}/stop-meeting", json={"session_id": session_id})
     except Exception as e:
-        logger.debug(f"[TeamsBot] Stop notification to Copilot service skipped/error: {e}")
+        logger.debug(f"[MiaBot] Stop notification to Browser service skipped/error: {e}")
             
     await repo.save_session(
         session_id,

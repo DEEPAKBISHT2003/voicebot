@@ -267,6 +267,8 @@ async def finalize_copilot_report(
 
 class JoinMeetingRequest(BaseModel):
     meeting_url: str
+    bot_role: str = "interviewer"
+    bot_name: str = "Mia - AI Interviewer"
 
 @router.post("/{session_id}/join-meeting")
 async def join_meeting(
@@ -289,7 +291,12 @@ async def join_meeting(
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(
                 f"{browser_url}/join-meeting",
-                json={"session_id": session_id, "meeting_url": req.meeting_url}
+                json={
+                    "session_id": session_id,
+                    "meeting_url": req.meeting_url,
+                    "bot_role": req.bot_role,
+                    "bot_name": req.bot_name
+                }
             )
             if resp.status_code == 200:
                 logger.info(f"[TeamsBot] Successfully delegated bot spawning to browser-service at {browser_url}")

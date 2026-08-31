@@ -5,103 +5,245 @@ from playwright.async_api import async_playwright
 from loguru import logger
 
 # Configuration defaults — points to Copilot Service WebSocket & Browser settings
-BACKEND_WS_BASE = os.getenv("COPILOT_WS_BASE", os.getenv("BACKEND_WS_BASE", "ws://localhost:8000"))
-LOCAL_AUDIO_WS_BASE = os.getenv("LOCAL_AUDIO_WS_BASE", "ws://localhost:8000")
+BACKEND_WS_BASE = os.getenv("COPILOT_WS_BASE", os.getenv("BACKEND_WS_BASE", "ws://127.0.0.1:8000"))
+LOCAL_AUDIO_WS_BASE = os.getenv("LOCAL_AUDIO_WS_BASE", "ws://127.0.0.1:8000")
 # Shared namespace: when True, skip AudioProxy and connect directly to FastAPI via localhost:8000
 USE_SHARED_NAMESPACE = os.getenv("USE_SHARED_NAMESPACE", "true").lower() == "true"
-BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "AI Copilot Teammate")
+BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Mia - AI Interviewer")
+BOT_ROLE = os.getenv("BOT_ROLE", "interviewer")
 BOT_HEADLESS = os.getenv("BOT_HEADLESS", "true").lower() == "true"
 BOT_PREJOIN_TIMEOUT_MS = int(os.getenv("BOT_PREJOIN_TIMEOUT_MS", "45000"))
+MIA_JOIN_ONLY = os.getenv("MIA_JOIN_ONLY", "false").lower() == "true"
 
-CAMERA_BLOCK_JS = """
+UNIFIED_BROWSER_AUDIO_JS = """
 (() => {
-    if (window.__camera_block_injected__) return;
-    window.__camera_block_injected__ = true;
-    console.log("[TeamsBot] Injecting media device video blocker and microphone silencer...");
-    try {
-        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-            const originalGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
-            navigator.mediaDevices.getUserMedia = async function(constraints) {
-                if (constraints && constraints.video) {
-                    console.log("[TeamsBot] Intercepted camera request.");
-                    if (!constraints.audio) {
-                        console.log("[TeamsBot] Video-only request: throwing NotAllowedError.");
-                        throw new DOMException("Permission denied", "NotAllowedError");
-                    } else {
-                        console.log("[TeamsBot] Audio + Video request: disabling video track.");
-                        constraints.video = false;
-                    }
-                }
-                const stream = await originalGetUserMedia(constraints);
-                // Protocol-level privacy guard: disable outgoing audio tracks so bot mic sends 100% silence
-                if (stream && stream.getAudioTracks) {
-                    stream.getAudioTracks().forEach(track => {
-                        track.enabled = false;
-                        console.log("[TeamsBot] Outgoing microphone track disabled for privacy.");
-                    });
-                }
-                return stream;
-            };
-        }
-    } catch (e) {
-        console.error("[TeamsBot] Failed to inject media device video blocker:", e);
+    // 1. Single Global Audio Context, Destination & Virtual Track initialized IMMEDIATELY at load time
+    if (!window.__audioCtx) {
+        const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+        window.__audioCtx = new AudioCtxClass({ sampleRate: 48000 });
+        window.__audioDestinationNode = window.__audioCtx.createMediaStreamDestination();
+        window.__virtualMicTrack = window.__audioDestinationNode.stream.getAudioTracks()[0];
+        
+        console.log(`[MIA-AUDIO] AudioContext initialized at ${window.__audioCtx.sampleRate}Hz. State: ${window.__audioCtx.state}`);
+        console.log(`[MIA-AUDIO] Virtual Track created: ID=${window.__virtualMicTrack.id}, readyState=${window.__virtualMicTrack.readyState}`);
     }
-})();
-"""
 
-INTERCEPT_JS = """
-(async () => {
-    // Re-evaluation guard to prevent multiple injections in the same frame context
-    if (window.__teams_audio_intercept_injected__) return;
-    window.__teams_audio_intercept_injected__ = true;
+    const audioCtx = window.__audioCtx;
+    const audioDestinationNode = window.__audioDestinationNode;
+    const virtualMicTrack = window.__virtualMicTrack;
 
-    console.log("[TeamsBot] Injecting WebRTC audio interceptor with shared mixer...");
-    const wsUrl = "%WS_URL%";
+    function ensureAudioContextRunning() {
+        if (audioCtx && audioCtx.state === 'suspended') {
+            audioCtx.resume().then(() => {
+                console.log("[MIA-AUDIO] AudioContext resumed successfully.");
+            }).catch(e => {});
+        }
+    }
+    ensureAudioContextRunning();
+
+    // Black Video Track Helper (matching proto)
+    function createBlackVideoTrack() {
+        try {
+            const canvas = document.createElement("canvas");
+            canvas.width = 640;
+            canvas.height = 480;
+            const ctx = canvas.getContext("2d");
+            ctx.fillStyle = "black";
+            ctx.fillRect(0, 0, 640, 480);
+            const blackStream = canvas.captureStream(1);
+            return blackStream.getVideoTracks()[0];
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // REQUIREMENT 4 — getUserMedia Interception (proto architecture)
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia && !navigator.mediaDevices.__miaPatched) {
+        const origGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+        navigator.mediaDevices.getUserMedia = async function(constraints) {
+            console.log("[MIA-GUM] getUserMedia requested with constraints:", JSON.stringify(constraints));
+            ensureAudioContextRunning();
+            const wantsAudio = constraints && constraints.audio;
+            const wantsVideo = constraints && constraints.video;
+
+            if (wantsAudio) {
+                let tracks = [virtualMicTrack];
+                if (wantsVideo) {
+                    const blackTrack = createBlackVideoTrack();
+                    if (blackTrack) tracks.push(blackTrack);
+                }
+                console.log(`[MIA-GUM] Returning Virtual Mic Track: ${virtualMicTrack.id}`);
+                return new MediaStream(tracks);
+            }
+
+            if (wantsVideo && !wantsAudio) {
+                const blackTrack = createBlackVideoTrack();
+                if (blackTrack) return new MediaStream([blackTrack]);
+            }
+
+            return origGetUserMedia(constraints);
+        };
+        navigator.mediaDevices.__miaPatched = true;
+    }
+
+    // REQUIREMENT 6 — replaceTrack Interception
+    if (window.RTCRtpSender && window.RTCRtpSender.prototype.replaceTrack && !window.RTCRtpSender.prototype.__miaPatched) {
+        const origReplaceTrack = window.RTCRtpSender.prototype.replaceTrack;
+        window.RTCRtpSender.prototype.replaceTrack = async function(newTrack) {
+            ensureAudioContextRunning();
+            if (newTrack && newTrack.kind === 'audio') {
+                console.log(`[MIA-WEBRTC] replaceTrack intercepted for audio! Supplying virtual track: ${virtualMicTrack.id}`);
+                return origReplaceTrack.call(this, virtualMicTrack);
+            }
+            if (newTrack && newTrack.kind === 'video') {
+                const blackTrack = createBlackVideoTrack();
+                return origReplaceTrack.call(this, blackTrack);
+            }
+            return origReplaceTrack.call(this, newTrack);
+        };
+        window.RTCRtpSender.prototype.__miaPatched = true;
+    }
+
+    // REQUIREMENT 5 — addTrack Interception (proto architecture)
+    if (window.RTCPeerConnection && !window.RTCPeerConnection.__miaPatched) {
+        const origPeerConnection = window.RTCPeerConnection;
+        window.__activePeerConnections = window.__activePeerConnections || [];
+
+        const PatchedPeerConnection = function(...args) {
+            const pc = new origPeerConnection(...args);
+            const pcId = window.__activePeerConnections.length + 1;
+            pc.__pcId = pcId;
+            window.__activePeerConnections.push(pc);
+            console.log(`[MIA-WEBRTC] RTCPeerConnection #${pcId} created.`);
+
+            const origAddTrack = pc.addTrack;
+            pc.addTrack = function(track, ...streamArgs) {
+                ensureAudioContextRunning();
+                if (track && track.kind === 'audio') {
+                    console.log(`[MIA-WEBRTC] PC #${pcId} addTrack intercepted for audio! Adding virtual track: ${virtualMicTrack.id}`);
+                    const sender = origAddTrack.call(this, virtualMicTrack, ...streamArgs);
+                    window.__miaAudioSender__ = sender;
+                    return sender;
+                }
+                if (track && track.kind === 'video') {
+                    const blackTrack = createBlackVideoTrack();
+                    if (blackTrack) {
+                        return origAddTrack.call(this, blackTrack, ...streamArgs);
+                    }
+                    return null;
+                }
+                return origAddTrack.call(this, track, ...streamArgs);
+            };
+
+            return pc;
+        };
+        PatchedPeerConnection.prototype = origPeerConnection.prototype;
+        PatchedPeerConnection.__miaPatched = true;
+        window.RTCPeerConnection = PatchedPeerConnection;
+        if (window.webkitRTCPeerConnection) window.webkitRTCPeerConnection = PatchedPeerConnection;
+    }
+
     let socket = null;
     let frameCounter = 0;
     const pendingFrames = [];
-    
-    // Initialize AudioContext at 16kHz for Deepgram-compatible output
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+    let sharedProcessor = null;
     const capturedTrackIds = new Set();
     const capturedStreams = new Set();
-    
-    // ── Shared Mixer: single ScriptProcessor that all audio sources connect to ──
-    let sharedProcessor = null;
-    
-    function connectAudioWS() {
+    window.__nextPlaybackTime = 0;
+    let receivedAudioFrames = 0;
+    let receivedAudioBytes = 0;
+
+    function connectAudioWS(wsUrl) {
+        const targetUrl = wsUrl || "%WS_URL%";
         if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
             return;
         }
-        
-        console.log("[AudioWS] creating connection to:", wsUrl);
-        console.log("[AudioWS] connecting");
+        console.log(`[MIA AudioWS] Connecting to WebSocket: ${targetUrl}`);
         try {
-            socket = new WebSocket(wsUrl);
-        } catch (wsErr) {
-            console.error("[AudioWS] error creating WebSocket:", wsErr);
-            return;
-        }
+            socket = new WebSocket(targetUrl);
+            socket.binaryType = "arraybuffer";
+            window.__miaSocket = socket;
 
-        socket.onopen = () => {
-            console.log("[AudioWS] open. Flushing pending frame buffer count:", pendingFrames.length);
-            while (pendingFrames.length > 0 && socket.readyState === WebSocket.OPEN) {
-                const item = pendingFrames.shift();
-                frameCounter++;
-                socket.send(item.buffer);
-                console.log(`[AudioWS] sending audio frame #${frameCounter}, bytes=${item.byteLength}, sampleRate=16000, channels=1, timestamp=${item.timestamp}, readyState=${socket.readyState}`);
-            }
-        };
+            socket.onopen = () => {
+                console.log("[MIA AudioWS] WebSocket connected successfully!");
+                ensureAudioContextRunning();
+                while (pendingFrames.length > 0 && socket.readyState === WebSocket.OPEN) {
+                    const f = pendingFrames.shift();
+                    socket.send(f.buffer);
+                }
+            };
 
-        socket.onclose = (e) => {
-            console.log(`[AudioWS] closed: code=${e.code}, reason=${e.reason || 'none'}`);
+            socket.onmessage = (event) => {
+                if (!(event.data instanceof ArrayBuffer)) {
+                    return;
+                }
+                ensureAudioContextRunning();
+
+                const rawBuffer = event.data;
+                const pcm16Data = new Int16Array(rawBuffer);
+                const numSamples = pcm16Data.length;
+                if (numSamples === 0) return;
+
+                receivedAudioFrames++;
+                receivedAudioBytes += rawBuffer.byteLength;
+
+                // Pipecat RawPCMAudioSerializer sends 16-bit PCM mono @ 16000 Hz
+                const pcmSampleRate = 16000;
+                const durationSec = numSamples / pcmSampleRate;
+
+                if (receivedAudioFrames <= 5 || receivedAudioFrames % 50 === 0) {
+                    console.log(`[MIA AudioWS IN] Binary audio frame #${receivedAudioFrames}: ${numSamples} samples (${durationSec.toFixed(3)}s @ ${pcmSampleRate}Hz), bytes=${rawBuffer.byteLength}, total_bytes=${receivedAudioBytes}`);
+                }
+
+                // 1. Create AudioBuffer with 1 channel and 16000Hz native sample rate
+                const audioBuffer = audioCtx.createBuffer(1, numSamples, pcmSampleRate);
+                const channelData = audioBuffer.getChannelData(0);
+
+                // 2. Convert Int16 (-32768 to 32767) to Float32 (-1.0 to 1.0)
+                for (let i = 0; i < numSamples; i++) {
+                    channelData[i] = pcm16Data[i] / 32768.0;
+                }
+
+                // 3. Create AudioBufferSourceNode
+                const sourceNode = audioCtx.createBufferSource();
+                sourceNode.buffer = audioBuffer;
+
+                // 4. Connect sourceNode to window.__audioDestinationNode
+                const destination = window.__audioAnalyser || audioDestinationNode;
+                sourceNode.connect(destination);
+
+                // 5. Sequential Browser-side AudioContext Scheduling (Zero gaps, zero overlap)
+                const currentTime = audioCtx.currentTime;
+                if (window.__nextPlaybackTime < currentTime) {
+                    window.__nextPlaybackTime = currentTime + 0.05; // 50ms buffer for initial scheduling
+                }
+
+                const scheduleTime = window.__nextPlaybackTime;
+                sourceNode.start(scheduleTime);
+                window.__nextPlaybackTime += audioBuffer.duration;
+
+                if (receivedAudioFrames <= 5 || receivedAudioFrames % 50 === 0) {
+                    console.log(`[MIA SPEAKING DIAG] Scheduled AudioBufferSourceNode #${receivedAudioFrames} at t=${scheduleTime.toFixed(3)}s (ctx.currentTime=${currentTime.toFixed(3)}s, duration=${audioBuffer.duration.toFixed(3)}s, next=${window.__nextPlaybackTime.toFixed(3)}s)`);
+                }
+            };
+
+            socket.onerror = (err) => {
+                console.error("[MIA AudioWS] WebSocket error:", err);
+            };
+
+            socket.onclose = (evt) => {
+                console.log(`[MIA AudioWS] WebSocket closed (code=${evt.code}, reason=${evt.reason}).`);
+                socket = null;
+            };
+        } catch (e) {
+            console.error("[MIA AudioWS] Failed to create WebSocket:", e);
             socket = null;
-        };
-
-        socket.onerror = (e) => {
-            console.error("[AudioWS] error:", e);
-        };
+        }
     }
+
+    window.__connectMiaWebSocket__ = function(url) {
+        connectAudioWS(url);
+    };
 
     function initSharedProcessor() {
         if (sharedProcessor) return;
@@ -122,10 +264,20 @@ INTERCEPT_JS = """
         sharedProcessor.onaudioprocess = (e) => {
             const inputData = e.inputBuffer.getChannelData(0);
             
-            // Convert Float32Array to Int16 PCM Mono bytes
-            const outputData = new Int16Array(inputData.length);
-            for (let i = 0; i < inputData.length; i++) {
-                const s = Math.max(-1, Math.min(1, inputData[i]));
+            // Real 48kHz -> 16kHz Linear Interpolation Downsampler
+            const inSampleRate = audioCtx.sampleRate || 48000;
+            const targetSampleRate = 16000;
+            const ratio = inSampleRate / targetSampleRate;
+            const resampledLength = Math.floor(inputData.length / ratio);
+            const outputData = new Int16Array(resampledLength);
+            
+            for (let i = 0; i < resampledLength; i++) {
+                const srcIdx = i * ratio;
+                const idx0 = Math.floor(srcIdx);
+                const idx1 = Math.min(idx0 + 1, inputData.length - 1);
+                const frac = srcIdx - idx0;
+                const sample = inputData[idx0] * (1 - frac) + inputData[idx1] * frac;
+                const s = Math.max(-1, Math.min(1, sample));
                 outputData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
             }
             
@@ -139,7 +291,7 @@ INTERCEPT_JS = """
                 frameCounter++;
                 socket.send(payload.buffer);
                 if (frameCounter <= 5 || frameCounter % 100 === 0) {
-                    console.log(`[AudioWS] sending audio frame #${frameCounter}, bytes=${payload.byteLength}, sampleRate=16000, channels=1, timestamp=${payload.timestamp}, readyState=${socket.readyState}`);
+                    console.log(`[AudioWS] [MIA INPUT AUDIO] sending frame #${frameCounter}, in_sampleRate=${inSampleRate}, out_sampleRate=16000, channels=1, in_samples=${inputData.length}, out_samples=${outputData.length}, bytes=${payload.byteLength}, timestamp=${payload.timestamp}`);
                 }
             } else if (socket && socket.readyState === WebSocket.CONNECTING) {
                 if (pendingFrames.length < 50) {
@@ -178,29 +330,8 @@ INTERCEPT_JS = """
         }
     }
 
-    // Intercept WebRTC Peer Connections and force recvonly for outgoing audio
-    if (RTCPeerConnection.prototype.addTransceiver) {
-        const origAddTransceiver = RTCPeerConnection.prototype.addTransceiver;
-        RTCPeerConnection.prototype.addTransceiver = function(trackOrKind, init) {
-            if (trackOrKind === 'audio' || (trackOrKind && trackOrKind.kind === 'audio')) {
-                init = init || {};
-                init.direction = 'recvonly';
-                console.log("[TeamsBot] Forced WebRTC audio transceiver to recvonly.");
-            }
-            return origAddTransceiver.apply(this, [trackOrKind, init]);
-        };
-    }
-
-    if (RTCPeerConnection.prototype.addTrack) {
-        const origAddTrack = RTCPeerConnection.prototype.addTrack;
-        RTCPeerConnection.prototype.addTrack = function(track, ...streams) {
-            if (track && track.kind === 'audio') {
-                track.enabled = false;
-                console.log("[TeamsBot] Muted outgoing audio track in addTrack.");
-            }
-            return origAddTrack.apply(this, [track, ...streams]);
-        };
-    }
+    // Defer WebSocket connection until host admits bot into meeting
+    console.log("[AudioWS] Script loaded; WebSocket connection deferred until host admission.");
 
     // Intercept incoming WebRTC Peer Connections for transcript capture
     const origSetRemoteDescription = RTCPeerConnection.prototype.setRemoteDescription;
@@ -237,7 +368,7 @@ INTERCEPT_JS = """
 """
 
 async def periodic_injector(page, ws_url):
-    formatted_js = INTERCEPT_JS.replace("%WS_URL%", ws_url)
+    formatted_js = UNIFIED_BROWSER_AUDIO_JS.replace("%WS_URL%", ws_url)
     logger.info("[TeamsBot] Started background periodic JS interceptor injector.")
     while True:
         try:
@@ -345,6 +476,100 @@ async def start_localhost_proxy():
         logger.info(f"[AudioProxy] Port {port} proxy note: {e}")
         return None
 
+async def is_really_in_meeting(page) -> tuple:
+    """
+    Authoritative state detector distinguishing:
+    PREJOIN, LOBBY, ADMITTING, IN_MEETING, DISCONNECTED
+    Returns: (is_meeting: bool, state_name: str, evidence: dict)
+    """
+    evidence = {
+        "prejoin_input": False,
+        "prejoin_join_btn": False,
+        "lobby_text": False,
+        "admitting_text": False,
+        "hangup_btn": False,
+        "toolbar_mic": False,
+        "roster_or_canvas": False,
+        "ended_screen": False
+    }
+
+    try:
+        all_frames = page.frames
+        for frame in all_frames:
+            try:
+                name_input = frame.locator("input[data-tid='prejoin-display-name-input'], input[placeholder*='Type your name' i]").first
+                if await name_input.is_visible(timeout=150) and await name_input.is_enabled():
+                    evidence["prejoin_input"] = True
+
+                prejoin_join_btn = frame.locator("button#prejoin-join-button, button[data-tid='prejoin-join-button']").first
+                if await prejoin_join_btn.is_visible(timeout=150) and await prejoin_join_btn.is_enabled():
+                    evidence["prejoin_join_btn"] = True
+
+                lobby_el = frame.locator("text='When the meeting starts', text='let people know you\\'re waiting', text='let you in soon', text='Waiting for someone', [data-tid*='lobby']").first
+                if await lobby_el.is_visible(timeout=150):
+                    evidence["lobby_text"] = True
+
+                admitting_el = frame.locator("text='Admitting...', text='Getting things ready', text='Joining...', [data-tid*='admitting']").first
+                if await admitting_el.is_visible(timeout=150):
+                    evidence["admitting_text"] = True
+
+                hangup_el = frame.locator(
+                    "button#hangup-button, "
+                    "button[id='hangup-button'], "
+                    "button[title='Leave'], "
+                    "button[title*='Leave' i], "
+                    "button[data-tid='hangup-button'], "
+                    "button[data-tid='leave-call-button'], "
+                    "button[aria-label*='Leave' i], "
+                    "button[aria-label*='Hang up' i]"
+                ).first
+                if await hangup_el.is_visible(timeout=150):
+                    evidence["hangup_btn"] = True
+
+                mic_el = frame.locator("button#aria-key-toolbar-microphone, button[data-tid='microphone-button'], button[aria-label*='microphone' i], button[title*='mic' i]").first
+                if await mic_el.is_visible(timeout=150):
+                    evidence["toolbar_mic"] = True
+
+                roster_canvas = frame.locator("button[data-tid='roster-button'], [data-tid='call-canvas'], .calling-screen, button[aria-label*='people' i], button[title*='people' i]").first
+                if await roster_canvas.is_visible(timeout=150):
+                    evidence["roster_or_canvas"] = True
+
+                ended_el = frame.locator("[data-tid='call-ended'], button[data-tid='rejoin-button'], div:has-text('You left the meeting')").first
+                if await ended_el.is_visible(timeout=150):
+                    evidence["ended_screen"] = True
+            except Exception:
+                pass
+    except Exception as e:
+        logger.debug(f"[MIA STATE DETECT ERROR] {e}")
+
+    # State Classification Logic
+    in_meeting_signals = sum([
+        evidence["hangup_btn"],
+        evidence["toolbar_mic"],
+        evidence["roster_or_canvas"]
+    ])
+
+    if evidence["ended_screen"]:
+        state = "DISCONNECTED"
+        is_in = False
+    elif evidence["hangup_btn"] or in_meeting_signals >= 2:
+        state = "IN_MEETING"
+        is_in = True
+    elif evidence["prejoin_input"] or evidence["prejoin_join_btn"]:
+        state = "PREJOIN"
+        is_in = False
+    elif evidence["lobby_text"]:
+        state = "LOBBY"
+        is_in = False
+    elif evidence["admitting_text"]:
+        state = "ADMITTING"
+        is_in = False
+    else:
+        state = "JOINING"
+        is_in = False
+
+    return is_in, state, evidence
+
 async def run_bot(meeting_url: str, session_id: str):
     # Shared namespace experiment: skip AudioProxy when containers share network namespace
     if USE_SHARED_NAMESPACE:
@@ -355,12 +580,17 @@ async def run_bot(meeting_url: str, session_id: str):
     
     # Target ws://localhost:8000 (or LOCAL_AUDIO_WS_BASE env) for in-browser JavaScript
     # Teams CSP allows ws://localhost:* — with shared namespace, this reaches FastAPI directly
-    browser_ws_url = f"{LOCAL_AUDIO_WS_BASE}/api/ws/copilot/{session_id}?mode=audio_stream"
-    logger.info(f"[AudioWS] target URL: {browser_ws_url}")
+    bot_role = os.getenv("BOT_ROLE", "interviewer")
+    if bot_role == "interviewer":
+        browser_ws_url = f"{LOCAL_AUDIO_WS_BASE}/api/ws/interview/{session_id}"
+    else:
+        browser_ws_url = f"{LOCAL_AUDIO_WS_BASE}/api/ws/copilot/{session_id}?mode=audio_stream"
+
+    logger.info(f"[AudioWS] target URL: {browser_ws_url} (bot_role={bot_role})")
     logger.info(f"[TeamsBot] Connecting Playwright bot to meeting: {meeting_url}")
     logger.info(f"[TeamsBot] Streaming audio back via CSP-compliant WebSocket: {browser_ws_url}")
     
-    formatted_intercept_js = INTERCEPT_JS.replace("%WS_URL%", browser_ws_url)
+    formatted_unified_js = UNIFIED_BROWSER_AUDIO_JS.replace("%WS_URL%", browser_ws_url)
 
     async with async_playwright() as p:
         # Launch Chromium with media stream bypass arguments
@@ -368,28 +598,39 @@ async def run_bot(meeting_url: str, session_id: str):
             headless=BOT_HEADLESS,
             args=[
                 "--use-fake-ui-for-media-stream",
-                "--use-fake-device-for-media-stream",
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
+                "--disable-blink-features=AutomationControlled",
                 "--autoplay-policy=no-user-gesture-required",
+                "--disable-popup-blocking",
+                "--disable-external-intent-requests",
+                "--allow-insecure-localhost",
                 "--disable-web-security",
                 "--allow-running-insecure-content",
                 "--ignore-certificate-errors",
                 f"--unsafely-treat-insecure-origin-as-secure={browser_ws_url}",
                 f"--unsafely-treat-insecure-origin-as-secure={BACKEND_WS_BASE}",
-                "--disable-features=BlockInsecurePrivateNetworkRequests,BlockInsecurePrivateNetworkRequestsFromPrivateNetwork"
+                "--disable-features=BlockInsecurePrivateNetworkRequests,BlockInsecurePrivateNetworkRequestsFromPrivateNetwork,ExternalProtocolHandler,PrivateNetworkAccessPermissionPrompt,LocalNetworkAccessChecks"
             ]
         )
         
-        # Open context granting microphone and camera permissions for WebRTC stack initialization
+        # Open context granting microphone and camera permissions with realistic User-Agent
         context = await browser.new_context(
             permissions=["microphone", "camera"],
-            bypass_csp=True
+            bypass_csp=True,
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
         
-        # Register init scripts on context BEFORE document navigation so every frame receives them
-        await context.add_init_script(CAMERA_BLOCK_JS)
-        await context.add_init_script(formatted_intercept_js)
+        # Suppress msteams:// and intent:// modal prompts
+        await context.route("**/*", lambda route: route.abort() if route.request.url.startswith(("msteams:", "intent:")) else route.continue_())
+        
+        # Override navigator.webdriver to false to prevent Teams "Suspected threat / Unverified" blocking
+        await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+        
+        if MIA_JOIN_ONLY:
+            logger.info("[TeamsBot] [MIA_JOIN_ONLY=true] Audio/WebRTC interceptor injection SKIPPED to isolate join/admission lifecycle.")
+        else:
+            await context.add_init_script(formatted_unified_js)
         
         page = await context.new_page()
         page.on("console", lambda msg: logger.info(f"[BrowserConsole] {msg.type}: {msg.text}"))
@@ -402,21 +643,25 @@ async def run_bot(meeting_url: str, session_id: str):
             logger.warning(f"[TeamsBot] Could not set CDP Page.setBypassCSP: {cdpe}")
 
         # Navigate to Teams Meeting Link
+        logger.info("[TeamsBot] Opening meeting URL...")
         await page.goto(meeting_url)
+        logger.info("[TeamsBot] Teams page loaded")
         
-        # Start background periodic JS interceptor injector
-        injector_task = asyncio.create_task(periodic_injector(page, browser_ws_url))
+        # Start background periodic JS interceptor injector only if not MIA_JOIN_ONLY
+        if not MIA_JOIN_ONLY:
+            injector_task = asyncio.create_task(periodic_injector(page, browser_ws_url))
         
         await asyncio.sleep(5.0) # Allow landing page to load fully
         
-        # Save landing page screenshot for diagnosis
+        # Stage 01: Teams page loaded screenshot
         debug_dir = os.path.join(os.getcwd(), "interviews", session_id)
         os.makedirs(debug_dir, exist_ok=True)
         try:
+            await page.screenshot(path=os.path.join(debug_dir, "01_teams_loaded.png"))
             await page.screenshot(path=os.path.join(debug_dir, "teams_bot_landing.png"))
-            logger.info(f"[TeamsBot] Saved landing page screenshot to session directory.")
+            logger.info("[TeamsBot] Saved 01_teams_loaded.png screenshot.")
         except Exception as se:
-            logger.warning(f"[TeamsBot] Failed to save landing screenshot: {se}")
+            logger.warning(f"[TeamsBot] Failed to save 01_teams_loaded screenshot: {se}")
         
         # Automate Teams UI Guest Selection Flow
         try:
@@ -432,14 +677,15 @@ async def run_bot(meeting_url: str, session_id: str):
             except Exception:
                 pass
 
-        # Injects WebRTC interception JS code into page initialization
-        formatted_js = INTERCEPT_JS.replace("%WS_URL%", browser_ws_url)
-        await page.add_init_script(formatted_js)
-        try:
-            await page.evaluate(formatted_js)
-            logger.info("[TeamsBot] WebRTC interceptor evaluated immediately on page context.")
-        except Exception as ee:
-            logger.warning(f"[TeamsBot] Direct evaluation of interceptor script skipped/failed: {ee}")
+        # Injects WebRTC interception JS code into page initialization only if not MIA_JOIN_ONLY
+        if not MIA_JOIN_ONLY:
+            formatted_js = UNIFIED_BROWSER_AUDIO_JS.replace("%WS_URL%", browser_ws_url)
+            await page.add_init_script(formatted_js)
+            try:
+                await page.evaluate(formatted_js)
+                logger.info("[TeamsBot] WebRTC interceptor evaluated immediately on page context.")
+            except Exception as ee:
+                logger.warning(f"[TeamsBot] Direct evaluation of interceptor script skipped/failed: {ee}")
         
         # Enter guest name in name field
         try:
@@ -474,6 +720,13 @@ async def run_bot(meeting_url: str, session_id: str):
             # Wait for name field to be loaded/visible
             target_name_input = name_input.first
             await target_name_input.wait_for(state="visible", timeout=BOT_PREJOIN_TIMEOUT_MS)
+            logger.info("[TeamsBot] Pre-join screen detected")
+            
+            # Stage 02: Pre-join screen screenshot
+            try:
+                await page.screenshot(path=os.path.join(debug_dir, "02_prejoin.png"))
+            except Exception:
+                pass
             
             # Ensure Video Camera is toggled OFF for privacy
             try:
@@ -489,7 +742,7 @@ async def run_bot(meeting_url: str, session_id: str):
             except Exception as ce:
                 logger.warning(f"[TeamsBot] Could not verify/toggle video camera button: {ce}")
 
-            # Ensure Microphone is toggled OFF (Muted) in UI for privacy using exact Fluent UI signatures
+            # Ensure Microphone is toggled ON (Unmuted) so Teams WebRTC receives Mia's audio
             try:
                 mic_switch = page.locator(
                     "input[data-cid*='toggle-mute'], "
@@ -503,19 +756,19 @@ async def run_bot(meeting_url: str, session_id: str):
                     title = (await mic_switch.get_attribute("title") or "").lower()
                     is_checked = await mic_switch.is_checked()
                     
-                    # Mic is ON if data-cid is toggle-mute-true, title contains "mute mic" (not unmute), or is_checked is True
-                    mic_is_on = "toggle-mute-true" in data_cid or ("mute mic" in title and "unmute" not in title) or is_checked
-                    if mic_is_on:
+                    # Mic is OFF (Muted) if data-cid is toggle-mute-false, title contains "unmute", or is_checked is False
+                    mic_is_off = "toggle-mute-false" in data_cid or ("unmute" in title) or not is_checked
+                    if mic_is_off:
                         await mic_switch.click(force=True)
-                        logger.info("[TeamsBot] Clicked Fluent UI mic switch OFF (Muted).")
+                        logger.info("[TeamsBot] Clicked Fluent UI mic switch ON (Unmuted).")
                     else:
-                        logger.info(f"[TeamsBot] Fluent UI mic switch already OFF (data-cid='{data_cid}', title='{title}').")
+                        logger.info(f"[TeamsBot] Fluent UI mic switch already ON (Unmuted).")
                 else:
                     # Fallback locator if explicit switch element is not found
                     fallback_mic = page.locator("[data-tid*='toggle-mute'], [data-tid*='mute']").first
                     if await fallback_mic.is_visible(timeout=2000):
                         await fallback_mic.click(force=True)
-                        logger.info("[TeamsBot] Microphone fallback button clicked.")
+                        logger.info("[TeamsBot] Microphone fallback button clicked ON.")
             except Exception as me:
                 logger.warning(f"[TeamsBot] Could not verify/toggle microphone button: {me}")
 
@@ -535,7 +788,37 @@ async def run_bot(meeting_url: str, session_id: str):
                 await target_name_input.dispatch_event("change")
             except Exception:
                 pass
-            logger.info("[TeamsBot] Filled guest display name input field.")
+            logger.info(f"[TeamsBot] Display name configured: {BOT_DISPLAY_NAME}")
+            
+            # Pre-join microphone switch check
+            for frame in page.frames:
+                try:
+                    mic_switch = frame.locator(
+                        "input[data-cid*='toggle-mute'], "
+                        "input[data-tid='toggle-mute'], "
+                        "input[title*='Mute mic' i], "
+                        "input[title*='Unmute mic' i], "
+                        "[role='switch'][data-tid*='toggle-mute']"
+                    ).first
+                    if await mic_switch.is_visible(timeout=300):
+                        data_cid = (await mic_switch.get_attribute("data-cid") or "").lower()
+                        title = (await mic_switch.get_attribute("title") or "").lower()
+                        label = (await mic_switch.get_attribute("aria-label") or "").lower()
+                        is_checked = await mic_switch.is_checked() if await mic_switch.evaluate("e => e.tagName === 'INPUT'") else False
+                        if "toggle-mute-false" in data_cid or "unmute" in title or "unmute" in label or not is_checked:
+                            await mic_switch.evaluate("el => el.click()")
+                            await mic_switch.click(force=True)
+                            logger.info("[TeamsBot] Clicked pre-join mic switch UNMUTED.")
+                            break
+                except Exception:
+                    pass
+            logger.info("[TeamsBot] Microphone configured")
+            
+            # Stage 03: Immediately before Join Now screenshot
+            try:
+                await page.screenshot(path=os.path.join(debug_dir, "03_before_join.png"))
+            except Exception:
+                pass
             
             # Click "Join Now" or "Join" button
             join_button = page.locator(
@@ -550,6 +833,8 @@ async def run_bot(meeting_url: str, session_id: str):
                 "button:has-text('Join')"
             )
             target_join_button = join_button.first
+            logger.info("[TeamsBot] Join button detected")
+            logger.info("[TeamsBot] Clicking Join Now")
             try:
                 await target_join_button.wait_for(state="visible", timeout=5000)
                 await target_join_button.click(timeout=5000, force=True)
@@ -563,10 +848,26 @@ async def run_bot(meeting_url: str, session_id: str):
                     await target_name_input.press("Enter")
                     logger.info("[TeamsBot] Join request submitted via Enter key press.")
 
-            logger.info("[TeamsBot] Waiting in lobby...")
+            # Stage 04: Immediately after Join Now screenshot
+            try:
+                await page.screenshot(path=os.path.join(debug_dir, "04_after_join.png"))
+            except Exception:
+                pass
+
+            # Stage 05: 5 seconds after Join screenshot
+            logger.info("[TeamsBot] Waiting for meeting connection...")
             await asyncio.sleep(5.0)
             try:
+                await page.screenshot(path=os.path.join(debug_dir, "05_after_join_5s.png"))
                 await page.screenshot(path=os.path.join(debug_dir, "teams_bot_lobby.png"))
+            except Exception:
+                pass
+
+            # Stage 06: Initial state assessment
+            is_in, current_state, state_evidence = await is_really_in_meeting(page)
+            logger.info(f"[MIA STATE] {current_state} | evidence={state_evidence}")
+            try:
+                await page.screenshot(path=os.path.join(debug_dir, "06_final_state.png"))
             except Exception:
                 pass
         except Exception as e:
@@ -577,99 +878,128 @@ async def run_bot(meeting_url: str, session_id: str):
             except Exception:
                 pass
             
-        # Keep connection open until script is cancelled
+        # Main Teams Meeting Lifecycle & Diagnostic Loop
         try:
-            in_meeting_muted = False
+            consecutive_in_meeting = 0
+            ws_triggered = False
             in_meeting_camera_off = False
+            
             while True:
-                await asyncio.sleep(3)
-                # Keep active check of the browser window health
-                if page.is_closed():
-                    logger.warning("[TeamsBot] Teams browser page closed. Exiting...")
-                    break
+                await asyncio.sleep(2.0)
+                is_in, current_state, evidence = await is_really_in_meeting(page)
+                logger.info(f"[MIA STATE] {current_state} | evidence={evidence}")
 
-                all_frames = [page] + list(page.frames)
+                if current_state == "IN_MEETING":
+                    consecutive_in_meeting += 1
+                else:
+                    consecutive_in_meeting = 0
 
-                # In-meeting top toolbar camera check across all frames
-                if not in_meeting_camera_off:
-                    for frame in all_frames:
+                # Synchronize browser window.__miaState
+                try:
+                    await page.evaluate(f"window.__miaState = '{current_state}'")
+                except Exception:
+                    pass
+
+                # Check if IN_MEETING has remained stable for >= 2 consecutive checks (~2-4 seconds)
+                if consecutive_in_meeting >= 2:
+                    if MIA_JOIN_ONLY:
+                        logger.info(f"[MIA JOIN ONLY PASS] Confirmed REAL IN_MEETING state! Audio pipeline isolated.")
+                    elif not ws_triggered:
+                        logger.info("[MIA WEBSOCKET GATE] Meeting admission confirmed & stable! Triggering WebSocket connection...")
                         try:
-                            in_meeting_camera = frame.locator("button[data-tid='camera-button'], button[aria-label*='camera' i], button[aria-label*='video' i]").first
-                            if await in_meeting_camera.is_visible(timeout=500):
-                                label = (await in_meeting_camera.get_attribute("aria-label") or "").lower()
-                                pressed = (await in_meeting_camera.get_attribute("aria-pressed") or "").lower()
-                                if pressed == "true" or ("turn camera off" in label) or ("camera on" in label and "turn camera on" not in label):
-                                    await in_meeting_camera.click()
-                                    in_meeting_camera_off = True
-                                    logger.info("[TeamsBot] In-meeting top toolbar camera clicked OFF.")
-                                    break
-                                elif "turn camera on" in label or pressed == "false":
-                                    in_meeting_camera_off = True
-                                    logger.info(f"[TeamsBot] In-meeting camera already OFF (label: '{label}').")
-                                    break
-                        except Exception:
-                            pass
+                            await page.evaluate("window.__connectMiaWebSocket__ && window.__connectMiaWebSocket__()")
+                            for frame in page.frames:
+                                try:
+                                    await frame.evaluate("window.__connectMiaWebSocket__ && window.__connectMiaWebSocket__()")
+                                except Exception:
+                                    pass
+                            ws_triggered = True
+                        except Exception as wse:
+                            logger.warning(f"[TeamsBot] WebSocket trigger skipped/failed: {wse}")
 
-                # In-meeting top toolbar microphone mute check across all frames
-                if not in_meeting_muted:
-                    for frame in all_frames:
-                        try:
-                            in_meeting_mic = frame.locator("button[data-tid='microphone-button'], button[aria-label*='Mute microphone' i], button[aria-label='Mute' i]").first
-                            if await in_meeting_mic.is_visible(timeout=500):
-                                label = (await in_meeting_mic.get_attribute("aria-label") or "").lower()
-                                pressed = (await in_meeting_mic.get_attribute("aria-pressed") or "").lower()
-                                if pressed == "true" or ("mute" in label and "unmute" not in label):
-                                    await in_meeting_mic.click()
-                                    in_meeting_muted = True
-                                    logger.info("[TeamsBot] In-meeting top toolbar microphone clicked OFF (Muted).")
-                                    break
-                                elif "unmute" in label or pressed == "false":
-                                    in_meeting_muted = True
-                                    logger.info(f"[TeamsBot] In-meeting microphone already muted (label: '{label}').")
-                                    break
-                        except Exception:
-                            pass
-
-                # Meeting Termination & Empty Room Detection (Autonomous Shutdown)
-                meeting_ended = False
-                for frame in all_frames:
+                # Capture screenshots for key state transitions
+                if current_state == "LOBBY":
                     try:
-                        # Detect Teams post-meeting / left meeting screen or rejoin button
-                        end_indicator = frame.locator(
-                            "[data-tid='call-ended'], "
-                            "button[data-tid='rejoin-button'], "
-                            "button:has-text('Rejoin'), "
-                            "[aria-label*='Rejoin' i], "
-                            "div:has-text('You left the meeting'), "
-                            "div:has-text('The meeting has ended'), "
-                            "h1:has-text('You left the meeting'), "
-                            "h2:has-text('You left the meeting')"
-                        ).first
-                        if await end_indicator.is_visible(timeout=200):
-                            logger.info("[TeamsBot] Teams meeting has ended / left meeting screen detected. Exiting browser...")
-                            meeting_ended = True
-                            break
-
-                        # Detect "You're the only one here" or empty room after joining
-                        only_one = frame.locator(
-                            "div:has-text('You’re the only one here'), "
-                            "div:has-text('You\\'re the only one here'), "
-                            "span:has-text('You’re the only one here'), "
-                            "span:has-text('You\\'re the only one here')"
-                        ).first
-                        if await only_one.is_visible(timeout=200):
-                            logger.info("[TeamsBot] All other participants left the meeting ('You\\'re the only one here'). Exiting browser...")
-                            meeting_ended = True
-                            break
+                        await page.screenshot(path=os.path.join(debug_dir, "07_lobby.png"))
+                    except Exception:
+                        pass
+                elif current_state == "ADMITTING":
+                    try:
+                        await page.screenshot(path=os.path.join(debug_dir, "08_admitting.png"))
+                    except Exception:
+                        pass
+                elif current_state == "IN_MEETING":
+                    try:
+                        await page.screenshot(path=os.path.join(debug_dir, "09_final_state.png"))
                     except Exception:
                         pass
 
-                if meeting_ended:
+                # Independent Mic & Camera State Diagnostics & Control
+                if current_state == "IN_MEETING":
+                    all_frames = page.frames
+                    
+                    # Log independent mic state components
+                    teams_muted = False
+                    track_enabled = True
+                    for frame in all_frames:
+                        try:
+                            in_meeting_mic = frame.locator(
+                                "button#aria-key-toolbar-microphone, "
+                                "button[data-tid='microphone-button'], "
+                                "button[aria-label*='microphone' i], "
+                                "button[aria-label*='mic' i], "
+                                "button[data-tid='toggle-mute']"
+                            ).first
+                            if await in_meeting_mic.is_visible(timeout=300):
+                                label = (await in_meeting_mic.get_attribute("aria-label") or "").lower()
+                                pressed = (await in_meeting_mic.get_attribute("aria-pressed") or "").lower()
+                                if "unmute" in label or pressed == "false":
+                                    teams_muted = True
+                                    logger.info(f"[MIA MIC DIAG] Teams mic MUTED in UI (label='{label}', pressed='{pressed}'). Unmuting...")
+                                    try:
+                                        await in_meeting_mic.evaluate("el => el.click()")
+                                        await in_meeting_mic.click(force=True)
+                                        await page.keyboard.press("Control+Shift+M")
+                                        logger.info("[TeamsBot] Triggered Teams mic UNMUTE via click + Ctrl+Shift+M shortcut.")
+                                    except Exception:
+                                        pass
+                                    break
+                                else:
+                                    teams_muted = False
+                                    break
+                        except Exception:
+                            pass
+
+                    logger.info(f"[MIA MIC] pipecat_enabled=true track_enabled={track_enabled} teams_muted={teams_muted}")
+
+                    # Ensure video camera is turned off in top toolbar
+                    if not in_meeting_camera_off:
+                        for frame in all_frames:
+                            try:
+                                in_meeting_camera = frame.locator("button[data-tid='camera-button'], button[aria-label*='camera' i]").first
+                                if await in_meeting_camera.is_visible(timeout=300):
+                                    label = (await in_meeting_camera.get_attribute("aria-label") or "").lower()
+                                    pressed = (await in_meeting_camera.get_attribute("aria-pressed") or "").lower()
+                                    if pressed == "true" or ("turn camera off" in label):
+                                        await in_meeting_camera.click()
+                                        in_meeting_camera_off = True
+                                        logger.info("[TeamsBot] In-meeting camera clicked OFF.")
+                                        break
+                                    elif "turn camera on" in label or pressed == "false":
+                                        in_meeting_camera_off = True
+                                        break
+                            except Exception:
+                                pass
+
+                # Autonomous Shutdown Detection
+                if current_state == "DISCONNECTED":
+                    logger.info("[TeamsBot] Teams meeting ended or disconnected. Exiting browser...")
                     break
         except asyncio.CancelledError:
             logger.info("[TeamsBot] Stopping Teams observer bot.")
         finally:
-            injector_task.cancel()
+            if injector_task:
+                injector_task.cancel()
             await context.close()
             await browser.close()
 

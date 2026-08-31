@@ -129,6 +129,18 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
                 )
             )
 
+            from loguru import logger
+
+            @tts.event_handler("on_tts_started")
+            async def on_tts_started(tts_service):
+                logger.info("[MIA TTS] started")
+                logger.info("[MIA GREETING] TTS started")
+
+            @tts.event_handler("on_tts_stopped")
+            async def on_tts_stopped(tts_service):
+                logger.info("[MIA TTS] stopped")
+                logger.info("[MIA GREETING] TTS finished")
+
             # Thread-safe aggregate pair for pipeline processing
             user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
                 context,
