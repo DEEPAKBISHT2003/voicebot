@@ -141,18 +141,11 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
                 logger.info("[MIA TTS] stopped")
                 logger.info("[MIA GREETING] TTS finished")
 
-            # Thread-safe aggregate pair for pipeline processing
+            # Thread-safe aggregate pair for pipeline processing (VAD disabled, relies on Deepgram STT endpointing)
             user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
                 context,
                 user_params=LLMUserAggregatorParams(
-                    vad_analyzer=SileroVADAnalyzer(
-                        params=VADParams(
-                            confidence=0.8,      # Standard confidence requirement (default 0.7)
-                            min_volume=0.20,     # Increased volume threshold to filter noise
-                            start_secs=0.3,      # Ignore brief clicks/pops
-                            stop_secs=0.4 if is_simulation else 1.0 # Faster turn detection for simulation
-                        )
-                    )
+                    vad_analyzer=None
                 ),
             )
 

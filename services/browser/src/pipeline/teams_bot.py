@@ -666,9 +666,47 @@ async def run_bot(meeting_url: str, session_id: str):
         # Automate Teams UI Guest Selection Flow
         try:
             logger.info("[TeamsBot] Selecting Web Join option...")
-            # Click "Join on the web instead" or "Continue on this browser" button
-            web_join_button = page.locator("button:has-text('Join on the web'), button:has-text('Continue on this browser'), button:has-text('Continue in this browser'), [aria-label*='Join on the web'], [data-tid='join-on-web']")
-            await web_join_button.first.click(timeout=10000)
+            # Click "Continue on this browser" / "Join on the web instead" button
+            clicked = False
+            for target in [page] + page.frames:
+                try:
+                    btn = target.locator(
+                        "button[data-tid='joinOnWeb'], "
+                        "[data-tid='joinOnWeb'], "
+                        "button[aria-label*='Join meeting from this browser' i], "
+                        "[aria-label*='Join meeting from this browser' i], "
+                        "button:has-text('Continue on this browser'), "
+                        "button:has-text('Join on the web'), "
+                        "button:has-text('Continue in this browser'), "
+                        "[aria-label*='Join on the web' i], "
+                        "[data-tid='join-on-web']"
+                    ).first
+                    if await btn.is_visible(timeout=2000):
+                        try:
+                            await btn.click(timeout=5000, force=True)
+                        except Exception:
+                            await btn.evaluate("el => el.click()")
+                        clicked = True
+                        logger.info("[TeamsBot] Clicked 'Continue on this browser' button successfully.")
+                        break
+                except Exception:
+                    pass
+
+            if not clicked:
+                # Fallback to direct locator wait & click
+                web_join_button = page.locator(
+                    "button[data-tid='joinOnWeb'], "
+                    "[data-tid='joinOnWeb'], "
+                    "button[aria-label*='Join meeting from this browser' i], "
+                    "[aria-label*='Join meeting from this browser' i], "
+                    "button:has-text('Continue on this browser'), "
+                    "button:has-text('Join on the web'), "
+                    "button:has-text('Continue in this browser'), "
+                    "[aria-label*='Join on the web' i], "
+                    "[data-tid='join-on-web']"
+                )
+                await web_join_button.first.click(timeout=10000, force=True)
+                logger.info("[TeamsBot] Clicked 'Continue on this browser' via fallback locator.")
             await asyncio.sleep(5.0) # Wait for prep room to load
         except Exception as e:
             logger.warning(f"[TeamsBot] Bypassing Web Join select step (already on lobby page or redirected): {e}")
