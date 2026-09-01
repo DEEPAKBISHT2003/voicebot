@@ -188,7 +188,7 @@ UNIFIED_BROWSER_AUDIO_JS = """
         // Create new singleton connection
         window.__miaConnectionId++;
         const connId = window.__miaConnectionId;
-        console.log(`[MIA WS] creating new connection (connection_id=${connId}) to ${targetUrl}`);
+        console.log(`[MIA WS] CREATED connection_id=${connId} to ${targetUrl}`);
 
         try {
             const newSocket = new WebSocket(targetUrl);
@@ -197,7 +197,7 @@ UNIFIED_BROWSER_AUDIO_JS = """
             window.__miaSocket = newSocket;
 
             newSocket.onopen = () => {
-                console.log(`[MIA WS] connected (connection_id=${connId})`);
+                console.log(`[MIA WS] OPEN connection_id=${connId}`);
                 ensureAudioContextRunning();
                 // Flush any pending frames
                 while (window.__miaPendingFrames.length > 0 && newSocket.readyState === WebSocket.OPEN) {
@@ -206,27 +206,48 @@ UNIFIED_BROWSER_AUDIO_JS = """
                 }
             };
 
+            // Stream tracking metrics
+            window.__miaCurrentStreamId = window.__miaCurrentStreamId || 0;
+            window.__miaStreamFrameCount = 0;
+            window.__miaLastRxTime = 0;
+            window.__miaRxGapCount = 0;
+            window.__miaRxUnderrunCount = 0;
+
             newSocket.onmessage = (event) => {
                 if (!(event.data instanceof ArrayBuffer)) {
                     return;
                 }
                 ensureAudioContextRunning();
 
+                const now = Date.now();
+                const dt = window.__miaLastRxTime > 0 ? (now - window.__miaLastRxTime) : 0;
+                window.__miaLastRxTime = now;
+
+                // Detect new stream boundary if gap is > 1.2s or initial stream
+                if (window.__miaStreamFrameCount === 0 || dt > 1200) {
+                    window.__miaCurrentStreamId++;
+                    window.__miaStreamFrameCount = 0;
+                    console.log(`[MIA AUDIO STREAM START] stream=${window.__miaCurrentStreamId} reason=${dt > 1200 ? 'gap_boundary' : 'initial_stream'} connection_id=${connId}`);
+                }
+
+                window.__miaStreamFrameCount++;
+                window.__miaReceivedAudioFrames++;
                 const rawBuffer = event.data;
                 const pcm16Data = new Int16Array(rawBuffer);
                 const numSamples = pcm16Data.length;
                 if (numSamples === 0) return;
 
-                window.__miaReceivedAudioFrames++;
                 window.__miaReceivedAudioBytes += rawBuffer.byteLength;
+
+                // Detect arrival timing gaps (>200ms)
+                if (dt > 200 && window.__miaStreamFrameCount > 1) {
+                    window.__miaRxGapCount++;
+                    console.warn(`[MIA WS RX GAP] stream=${window.__miaCurrentStreamId} frame=${window.__miaStreamFrameCount} dt=${dt}ms connection_id=${connId}`);
+                }
 
                 // Pipecat RawPCMAudioSerializer sends 16-bit PCM mono @ 16000 Hz
                 const pcmSampleRate = 16000;
                 const durationSec = numSamples / pcmSampleRate;
-
-                if (window.__miaReceivedAudioFrames <= 5 || window.__miaReceivedAudioFrames % 50 === 0) {
-                    console.log(`[MIA AudioWS IN] Binary audio frame #${window.__miaReceivedAudioFrames}: ${numSamples} samples (${durationSec.toFixed(3)}s @ ${pcmSampleRate}Hz), bytes=${rawBuffer.byteLength}, total_bytes=${window.__miaReceivedAudioBytes}, connection_id=${connId}`);
-                }
 
                 // 1. Create AudioBuffer with 1 channel and 16000Hz native sample rate
                 const audioBuffer = audioCtx.createBuffer(1, numSamples, pcmSampleRate);
@@ -245,18 +266,26 @@ UNIFIED_BROWSER_AUDIO_JS = """
                 const destination = window.__audioAnalyser || audioDestinationNode;
                 sourceNode.connect(destination);
 
-                // 5. Sequential Browser-side AudioContext Scheduling (Zero gaps, zero overlap)
+                // 5. Sequential Browser-side AudioContext Scheduling & Queue Headroom Tracking
                 const currentTime = audioCtx.currentTime;
+                let isUnderrun = false;
                 if (window.__nextPlaybackTime < currentTime) {
-                    window.__nextPlaybackTime = currentTime + 0.05; // 50ms buffer for initial scheduling
+                    isUnderrun = true;
+                    window.__miaRxUnderrunCount++;
+                    const lagMs = ((currentTime - window.__nextPlaybackTime) * 1000).toFixed(1);
+                    console.warn(`[MIA PLAYBACK UNDERRUN] stream=${window.__miaCurrentStreamId} frame=${window.__miaStreamFrameCount} lag=${lagMs}ms ctx_time=${currentTime.toFixed(3)}s next_was=${window.__nextPlaybackTime.toFixed(3)}s`);
+                    window.__nextPlaybackTime = currentTime + 0.05; // 50ms buffer for initial/resumed scheduling
                 }
 
                 const scheduleTime = window.__nextPlaybackTime;
                 sourceNode.start(scheduleTime);
                 window.__nextPlaybackTime += audioBuffer.duration;
+                const headroomMs = ((scheduleTime - currentTime) * 1000).toFixed(1);
 
-                if (window.__miaReceivedAudioFrames <= 5 || window.__miaReceivedAudioFrames % 50 === 0) {
-                    console.log(`[MIA SPEAKING DIAG] Scheduled AudioBufferSourceNode #${window.__miaReceivedAudioFrames} at t=${scheduleTime.toFixed(3)}s (ctx.currentTime=${currentTime.toFixed(3)}s, duration=${audioBuffer.duration.toFixed(3)}s, next=${window.__nextPlaybackTime.toFixed(3)}s)`);
+                // Boundary 3: Browser WS RX & Boundary 4: Browser Playback logs
+                if (window.__miaStreamFrameCount <= 5 || window.__miaStreamFrameCount % 50 === 0) {
+                    console.log(`[MIA WS RX] connection=${connId} stream=${window.__miaCurrentStreamId} frame=${window.__miaStreamFrameCount} bytes=${rawBuffer.byteLength} dt=${dt}ms total_rx_frames=${window.__miaReceivedAudioFrames}`);
+                    console.log(`[MIA PLAYBACK] stream=${window.__miaCurrentStreamId} frame=${window.__miaStreamFrameCount} scheduled_t=${scheduleTime.toFixed(3)}s ctx_t=${currentTime.toFixed(3)}s headroom=${headroomMs}ms underruns=${window.__miaRxUnderrunCount}`);
                 }
             };
 
@@ -265,7 +294,7 @@ UNIFIED_BROWSER_AUDIO_JS = """
             };
 
             newSocket.onclose = (evt) => {
-                console.log(`[MIA WS] closed (connection_id=${connId}, code=${evt.code}, reason=${evt.reason})`);
+                console.log(`[MIA WS] CLOSED connection_id=${connId} code=${evt.code} reason=${evt.reason}`);
                 // Only clear the reference if this is still the active socket
                 if (window.__miaSocket && window.__miaSocket.__connId === connId) {
                     window.__miaSocket = null;
@@ -330,12 +359,16 @@ UNIFIED_BROWSER_AUDIO_JS = """
                 timestamp: Date.now()
             };
 
+            const now = payload.timestamp;
+            const dt = window.__miaTxLastTime > 0 ? (now - window.__miaTxLastTime) : 0;
+            window.__miaTxLastTime = now;
+
             const sock = window.__miaSocket;
             if (sock && sock.readyState === WebSocket.OPEN) {
                 window.__miaFrameCounter++;
                 sock.send(payload.buffer);
                 if (window.__miaFrameCounter <= 5 || window.__miaFrameCounter % 100 === 0) {
-                    console.log(`[AudioWS] [MIA INPUT AUDIO] sending frame #${window.__miaFrameCounter}, in_sampleRate=${inSampleRate}, out_sampleRate=16000, channels=1, in_samples=${inputData.length}, out_samples=${outputData.length}, bytes=${payload.byteLength}, timestamp=${payload.timestamp}, connection_id=${sock.__connId}`);
+                    console.log(`[MIA AUDIO TX] seq=${window.__miaFrameCounter} frames=${window.__miaFrameCounter} bytes=${payload.byteLength} dt=${dt}ms in_samples=${inputData.length} out_samples=${outputData.length} conn=${sock.__connId}`);
                 }
             } else if (sock && sock.readyState === WebSocket.CONNECTING) {
                 if (window.__miaPendingFrames.length < 50) {

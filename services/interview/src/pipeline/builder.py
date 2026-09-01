@@ -55,7 +55,7 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
                     audio_out_enabled=True,
                     audio_out_sample_rate=16000,
                     add_wav_header=False,
-                    serializer=RawPCMAudioSerializer(sample_rate=16000),
+                    serializer=RawPCMAudioSerializer(sample_rate=16000, session_id=session_id or ""),
                 )
             )
         else:
