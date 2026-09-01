@@ -12,7 +12,7 @@ USE_SHARED_NAMESPACE = os.getenv("USE_SHARED_NAMESPACE", "true").lower() == "tru
 BOT_DISPLAY_NAME = os.getenv("BOT_DISPLAY_NAME", "Mia - AI Interviewer")
 BOT_ROLE = os.getenv("BOT_ROLE", "interviewer")
 BOT_HEADLESS = os.getenv("BOT_HEADLESS", "true").lower() == "true"
-BOT_PREJOIN_TIMEOUT_MS = int(os.getenv("BOT_PREJOIN_TIMEOUT_MS", "45000"))
+BOT_PREJOIN_TIMEOUT_MS = int(os.getenv("BOT_PREJOIN_TIMEOUT_MS", "75000"))
 MIA_JOIN_ONLY = os.getenv("MIA_JOIN_ONLY", "false").lower() == "true"
 
 UNIFIED_BROWSER_AUDIO_JS = """
@@ -142,38 +142,65 @@ UNIFIED_BROWSER_AUDIO_JS = """
         window.RTCPeerConnection = PatchedPeerConnection;
         if (window.webkitRTCPeerConnection) window.webkitRTCPeerConnection = PatchedPeerConnection;
     }
+    // ---- Phase 1: Singleton audio pipeline state on window globals ----
+    // All mutable audio state lives on window.* so repeated IIFE re-injection
+    // by periodic_injector reuses the same state instead of creating new closures.
+    if (window.__miaAudioPipelineInitialized) {
+        console.log("[MIA WS] processor already initialized — skip (re-injection)");
+        return; // Entire IIFE is a no-op on re-injection
+    }
 
-    let socket = null;
-    let frameCounter = 0;
-    const pendingFrames = [];
-    let sharedProcessor = null;
-    const capturedTrackIds = new Set();
-    const capturedStreams = new Set();
-    window.__nextPlaybackTime = 0;
-    let receivedAudioFrames = 0;
-    let receivedAudioBytes = 0;
+    // First-time initialization: claim the global flag
+    window.__miaAudioPipelineInitialized = true;
+    window.__miaSocket = null;
+    window.__miaFrameCounter = 0;
+    window.__miaPendingFrames = [];
+    window.__miaSharedProcessor = null;
+    window.__miaCapturedTrackIds = new Set();
+    window.__miaCapturedStreams = new Set();
+    window.__nextPlaybackTime = window.__nextPlaybackTime || 0;
+    window.__miaReceivedAudioFrames = 0;
+    window.__miaReceivedAudioBytes = 0;
+    window.__miaConnectionId = 0;
+
+    console.log("[MIA WS] initialize processor — first-time setup");
 
     function connectAudioWS(wsUrl) {
         const targetUrl = wsUrl || "%WS_URL%";
-        if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+        const sock = window.__miaSocket;
+
+        // Singleton guard: never create a second connection
+        if (sock && (sock.readyState === WebSocket.OPEN)) {
+            console.log(`[MIA WS] connection already OPEN (connection_id=${window.__miaConnectionId}) — skip`);
             return;
         }
-        console.log(`[MIA AudioWS] Connecting to WebSocket: ${targetUrl}`);
-        try {
-            socket = new WebSocket(targetUrl);
-            socket.binaryType = "arraybuffer";
-            window.__miaSocket = socket;
+        if (sock && (sock.readyState === WebSocket.CONNECTING)) {
+            console.log(`[MIA WS] connection already CONNECTING (connection_id=${window.__miaConnectionId}) — skip`);
+            return;
+        }
 
-            socket.onopen = () => {
-                console.log("[MIA AudioWS] WebSocket connected successfully!");
+        // Create new singleton connection
+        window.__miaConnectionId++;
+        const connId = window.__miaConnectionId;
+        console.log(`[MIA WS] creating new connection (connection_id=${connId}) to ${targetUrl}`);
+
+        try {
+            const newSocket = new WebSocket(targetUrl);
+            newSocket.binaryType = "arraybuffer";
+            newSocket.__connId = connId;
+            window.__miaSocket = newSocket;
+
+            newSocket.onopen = () => {
+                console.log(`[MIA WS] connected (connection_id=${connId})`);
                 ensureAudioContextRunning();
-                while (pendingFrames.length > 0 && socket.readyState === WebSocket.OPEN) {
-                    const f = pendingFrames.shift();
-                    socket.send(f.buffer);
+                // Flush any pending frames
+                while (window.__miaPendingFrames.length > 0 && newSocket.readyState === WebSocket.OPEN) {
+                    const f = window.__miaPendingFrames.shift();
+                    newSocket.send(f.buffer);
                 }
             };
 
-            socket.onmessage = (event) => {
+            newSocket.onmessage = (event) => {
                 if (!(event.data instanceof ArrayBuffer)) {
                     return;
                 }
@@ -184,15 +211,15 @@ UNIFIED_BROWSER_AUDIO_JS = """
                 const numSamples = pcm16Data.length;
                 if (numSamples === 0) return;
 
-                receivedAudioFrames++;
-                receivedAudioBytes += rawBuffer.byteLength;
+                window.__miaReceivedAudioFrames++;
+                window.__miaReceivedAudioBytes += rawBuffer.byteLength;
 
                 // Pipecat RawPCMAudioSerializer sends 16-bit PCM mono @ 16000 Hz
                 const pcmSampleRate = 16000;
                 const durationSec = numSamples / pcmSampleRate;
 
-                if (receivedAudioFrames <= 5 || receivedAudioFrames % 50 === 0) {
-                    console.log(`[MIA AudioWS IN] Binary audio frame #${receivedAudioFrames}: ${numSamples} samples (${durationSec.toFixed(3)}s @ ${pcmSampleRate}Hz), bytes=${rawBuffer.byteLength}, total_bytes=${receivedAudioBytes}`);
+                if (window.__miaReceivedAudioFrames <= 5 || window.__miaReceivedAudioFrames % 50 === 0) {
+                    console.log(`[MIA AudioWS IN] Binary audio frame #${window.__miaReceivedAudioFrames}: ${numSamples} samples (${durationSec.toFixed(3)}s @ ${pcmSampleRate}Hz), bytes=${rawBuffer.byteLength}, total_bytes=${window.__miaReceivedAudioBytes}, connection_id=${connId}`);
                 }
 
                 // 1. Create AudioBuffer with 1 channel and 16000Hz native sample rate
@@ -222,32 +249,40 @@ UNIFIED_BROWSER_AUDIO_JS = """
                 sourceNode.start(scheduleTime);
                 window.__nextPlaybackTime += audioBuffer.duration;
 
-                if (receivedAudioFrames <= 5 || receivedAudioFrames % 50 === 0) {
-                    console.log(`[MIA SPEAKING DIAG] Scheduled AudioBufferSourceNode #${receivedAudioFrames} at t=${scheduleTime.toFixed(3)}s (ctx.currentTime=${currentTime.toFixed(3)}s, duration=${audioBuffer.duration.toFixed(3)}s, next=${window.__nextPlaybackTime.toFixed(3)}s)`);
+                if (window.__miaReceivedAudioFrames <= 5 || window.__miaReceivedAudioFrames % 50 === 0) {
+                    console.log(`[MIA SPEAKING DIAG] Scheduled AudioBufferSourceNode #${window.__miaReceivedAudioFrames} at t=${scheduleTime.toFixed(3)}s (ctx.currentTime=${currentTime.toFixed(3)}s, duration=${audioBuffer.duration.toFixed(3)}s, next=${window.__nextPlaybackTime.toFixed(3)}s)`);
                 }
             };
 
-            socket.onerror = (err) => {
-                console.error("[MIA AudioWS] WebSocket error:", err);
+            newSocket.onerror = (err) => {
+                console.error(`[MIA WS] error (connection_id=${connId}):`, err);
             };
 
-            socket.onclose = (evt) => {
-                console.log(`[MIA AudioWS] WebSocket closed (code=${evt.code}, reason=${evt.reason}).`);
-                socket = null;
+            newSocket.onclose = (evt) => {
+                console.log(`[MIA WS] closed (connection_id=${connId}, code=${evt.code}, reason=${evt.reason})`);
+                // Only clear the reference if this is still the active socket
+                if (window.__miaSocket && window.__miaSocket.__connId === connId) {
+                    window.__miaSocket = null;
+                }
             };
         } catch (e) {
-            console.error("[MIA AudioWS] Failed to create WebSocket:", e);
-            socket = null;
+            console.error(`[MIA WS] failed to create WebSocket (connection_id=${window.__miaConnectionId}):`, e);
+            window.__miaSocket = null;
         }
     }
 
+    // Explicit gate function — the ONLY entry point for creating the WebSocket
     window.__connectMiaWebSocket__ = function(url) {
+        console.log(`[MIA WS] __connectMiaWebSocket__ called (current connection_id=${window.__miaConnectionId})`);
         connectAudioWS(url);
     };
 
     function initSharedProcessor() {
-        if (sharedProcessor) return;
-        
+        if (window.__miaSharedProcessor) {
+            // Already initialized — idempotent, no-op
+            return;
+        }
+
         if (audioCtx.state === 'suspended') {
             audioCtx.resume().then(() => {
                 console.log("[TeamsBot] AudioContext resumed successfully.");
@@ -255,22 +290,24 @@ UNIFIED_BROWSER_AUDIO_JS = """
                 console.error("[TeamsBot] Failed to resume AudioContext:", err);
             });
         }
-        
-        connectAudioWS();
-        
+
+        // NOTE: Do NOT call connectAudioWS() here.
+        // The WebSocket connection is deferred until the Python-side gate
+        // calls window.__connectMiaWebSocket__() after confirming IN_MEETING.
+
         // Create a single shared processor node for mixing
-        sharedProcessor = audioCtx.createScriptProcessor(4096, 1, 1);
-        
-        sharedProcessor.onaudioprocess = (e) => {
+        window.__miaSharedProcessor = audioCtx.createScriptProcessor(4096, 1, 1);
+
+        window.__miaSharedProcessor.onaudioprocess = (e) => {
             const inputData = e.inputBuffer.getChannelData(0);
-            
+
             // Real 48kHz -> 16kHz Linear Interpolation Downsampler
             const inSampleRate = audioCtx.sampleRate || 48000;
             const targetSampleRate = 16000;
             const ratio = inSampleRate / targetSampleRate;
             const resampledLength = Math.floor(inputData.length / ratio);
             const outputData = new Int16Array(resampledLength);
-            
+
             for (let i = 0; i < resampledLength; i++) {
                 const srcIdx = i * ratio;
                 const idx0 = Math.floor(srcIdx);
@@ -280,50 +317,50 @@ UNIFIED_BROWSER_AUDIO_JS = """
                 const s = Math.max(-1, Math.min(1, sample));
                 outputData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
             }
-            
+
             const payload = {
                 buffer: outputData.buffer,
                 byteLength: outputData.buffer.byteLength,
                 timestamp: Date.now()
             };
 
-            if (socket && socket.readyState === WebSocket.OPEN) {
-                frameCounter++;
-                socket.send(payload.buffer);
-                if (frameCounter <= 5 || frameCounter % 100 === 0) {
-                    console.log(`[AudioWS] [MIA INPUT AUDIO] sending frame #${frameCounter}, in_sampleRate=${inSampleRate}, out_sampleRate=16000, channels=1, in_samples=${inputData.length}, out_samples=${outputData.length}, bytes=${payload.byteLength}, timestamp=${payload.timestamp}`);
+            const sock = window.__miaSocket;
+            if (sock && sock.readyState === WebSocket.OPEN) {
+                window.__miaFrameCounter++;
+                sock.send(payload.buffer);
+                if (window.__miaFrameCounter <= 5 || window.__miaFrameCounter % 100 === 0) {
+                    console.log(`[AudioWS] [MIA INPUT AUDIO] sending frame #${window.__miaFrameCounter}, in_sampleRate=${inSampleRate}, out_sampleRate=16000, channels=1, in_samples=${inputData.length}, out_samples=${outputData.length}, bytes=${payload.byteLength}, timestamp=${payload.timestamp}, connection_id=${sock.__connId}`);
                 }
-            } else if (socket && socket.readyState === WebSocket.CONNECTING) {
-                if (pendingFrames.length < 50) {
-                    pendingFrames.push(payload);
+            } else if (sock && sock.readyState === WebSocket.CONNECTING) {
+                if (window.__miaPendingFrames.length < 50) {
+                    window.__miaPendingFrames.push(payload);
                 }
-            } else if (!socket || socket.readyState === WebSocket.CLOSED) {
-                connectAudioWS();
             }
+            // NOTE: Do NOT auto-reconnect here. The gate path handles connection creation.
         };
-        
+
         // Route through a silent GainNode to prevent host speaker echo
         const silentGain = audioCtx.createGain();
         silentGain.gain.value = 0.0;
-        sharedProcessor.connect(silentGain);
+        window.__miaSharedProcessor.connect(silentGain);
         silentGain.connect(audioCtx.destination);
-        
-        console.log("[TeamsBot] Shared audio mixer initialized (silent output).");
+
+        console.log("[MIA WS] Shared audio mixer initialized (silent output, WebSocket deferred).");
     }
-    
+
     function captureAudioStream(stream) {
         if (!stream || stream.getAudioTracks().length === 0) return;
-        if (capturedStreams.has(stream.id)) return;
-        capturedStreams.add(stream.id);
-        
+        if (window.__miaCapturedStreams.has(stream.id)) return;
+        window.__miaCapturedStreams.add(stream.id);
+
         console.log("[TeamsBot] Capturing WebRTC audio track from stream:", stream.id);
-        
-        // Ensure the shared mixer is ready
+
+        // Ensure the shared mixer is ready (idempotent)
         initSharedProcessor();
-        
+
         try {
             const source = audioCtx.createMediaStreamSource(stream);
-            source.connect(sharedProcessor);
+            source.connect(window.__miaSharedProcessor);
             console.log("[TeamsBot] Audio source connected to shared mixer:", stream.id);
         } catch (err) {
             console.error("[TeamsBot] Failed to bind AudioContext source:", err);
@@ -334,20 +371,23 @@ UNIFIED_BROWSER_AUDIO_JS = """
     console.log("[AudioWS] Script loaded; WebSocket connection deferred until host admission.");
 
     // Intercept incoming WebRTC Peer Connections for transcript capture
-    const origSetRemoteDescription = RTCPeerConnection.prototype.setRemoteDescription;
-    RTCPeerConnection.prototype.setRemoteDescription = function(desc) {
-        this.addEventListener('track', (e) => {
-            if (e.track && e.track.kind === 'audio') {
-                if (capturedTrackIds.has(e.track.id)) return;
-                capturedTrackIds.add(e.track.id);
-                
-                const stream = e.streams[0] || new MediaStream([e.track]);
-                captureAudioStream(stream);
-            }
-        });
-        return origSetRemoteDescription.apply(this, [desc]);
-    };
-    
+    if (!RTCPeerConnection.prototype.__miaSetRemoteDescPatched) {
+        const origSetRemoteDescription = RTCPeerConnection.prototype.setRemoteDescription;
+        RTCPeerConnection.prototype.setRemoteDescription = function(desc) {
+            this.addEventListener('track', (e) => {
+                if (e.track && e.track.kind === 'audio') {
+                    if (window.__miaCapturedTrackIds.has(e.track.id)) return;
+                    window.__miaCapturedTrackIds.add(e.track.id);
+
+                    const stream = e.streams[0] || new MediaStream([e.track]);
+                    captureAudioStream(stream);
+                }
+            });
+            return origSetRemoteDescription.apply(this, [desc]);
+        };
+        RTCPeerConnection.prototype.__miaSetRemoteDescPatched = true;
+    }
+
     // Periodically search for existing DOM audio elements as a fallback
     setInterval(() => {
         if (audioCtx && audioCtx.state === 'suspended') {
@@ -356,8 +396,8 @@ UNIFIED_BROWSER_AUDIO_JS = """
         document.querySelectorAll('audio, video').forEach(el => {
             if (el.srcObject) {
                 el.srcObject.getAudioTracks().forEach(track => {
-                    if (!capturedTrackIds.has(track.id)) {
-                        capturedTrackIds.add(track.id);
+                    if (!window.__miaCapturedTrackIds.has(track.id)) {
+                        window.__miaCapturedTrackIds.add(track.id);
                         captureAudioStream(el.srcObject);
                     }
                 });
@@ -727,37 +767,85 @@ async def run_bot(meeting_url: str, session_id: str):
         
         # Enter guest name in name field
         try:
-            logger.info("[TeamsBot] Waiting for credentials page to load (can take up to 30-45s)...")
+            logger.info("[TeamsBot] Waiting for credentials page to load (can take up to 45-60s)...")
             
-            # Check for Teams Meeting Passcode input field
-            try:
-                passcode_input = page.locator("input[data-tid='meeting-passcode'], input[placeholder*='passcode' i], input[placeholder*='password' i]")
-                if await passcode_input.count() > 0 and await passcode_input.first.is_visible(timeout=3000):
-                    import urllib.parse
-                    parsed = urllib.parse.urlparse(meeting_url)
-                    params = urllib.parse.parse_qs(parsed.query)
-                    passcode = params.get("p", [""])[0]
-                    if passcode:
-                        logger.info(f"[TeamsBot] Entering meeting passcode from URL: {passcode}")
-                        await passcode_input.first.fill(passcode)
-                        await passcode_input.first.press("Enter")
-                        await asyncio.sleep(4.0)
-            except Exception as pe:
-                logger.debug(f"[TeamsBot] Passcode check skipped/not required: {pe}")
+            target_name_input = None
+            start_wait = asyncio.get_event_loop().time()
+            max_wait_sec = BOT_PREJOIN_TIMEOUT_MS / 1000.0
+            last_reclick_time = 0
+            
+            while (asyncio.get_event_loop().time() - start_wait) < max_wait_sec:
+                # 1. Check for Teams Meeting Passcode input field across all frames
+                for target in [page] + page.frames:
+                    try:
+                        passcode_input = target.locator("input[data-tid='meeting-passcode'], input[placeholder*='passcode' i], input[placeholder*='password' i]")
+                        if await passcode_input.count() > 0 and await passcode_input.first.is_visible(timeout=300):
+                            import urllib.parse
+                            parsed = urllib.parse.urlparse(meeting_url)
+                            params = urllib.parse.parse_qs(parsed.query)
+                            passcode = params.get("p", [""])[0]
+                            if passcode:
+                                logger.info(f"[TeamsBot] Entering meeting passcode from URL: {passcode}")
+                                await passcode_input.first.fill(passcode)
+                                await passcode_input.first.press("Enter")
+                                await asyncio.sleep(2.0)
+                                break
+                    except Exception:
+                        pass
 
-            name_input = page.locator(
-                "input[data-tid='prejoin-display-name-input'], "
-                "input[placeholder='Type your name'], "
-                "input.fui-Input__input, "
-                "input[placeholder*='Type your name' i], "
-                "input[placeholder*='Enter name' i], "
-                "input[aria-label*='Type your name' i], "
-                "input[aria-label*='Enter name' i]"
-            )
-            
-            # Wait for name field to be loaded/visible
-            target_name_input = name_input.first
-            await target_name_input.wait_for(state="visible", timeout=BOT_PREJOIN_TIMEOUT_MS)
+                # 2. Check for Name Input field across all frames
+                for target in [page] + page.frames:
+                    try:
+                        name_locator = target.locator(
+                            "input[data-tid='prejoin-display-name-input'], "
+                            "input[placeholder='Type your name'], "
+                            "input.fui-Input__input, "
+                            "input[placeholder*='Type your name' i], "
+                            "input[placeholder*='Enter name' i], "
+                            "input[aria-label*='Type your name' i], "
+                            "input[aria-label*='Enter name' i]"
+                        )
+                        if await name_locator.count() > 0 and await name_locator.first.is_visible(timeout=300):
+                            target_name_input = name_locator.first
+                            break
+                    except Exception:
+                        pass
+                
+                if target_name_input:
+                    break
+
+                # 3. If landing button is still present after 5s, re-click it in case initial click was missed
+                now = asyncio.get_event_loop().time()
+                if (now - start_wait) > 5.0 and (now - last_reclick_time) > 8.0:
+                    for target in [page] + page.frames:
+                        try:
+                            web_btn = target.locator(
+                                "button[data-tid='joinOnWeb'], "
+                                "[data-tid='joinOnWeb'], "
+                                "button[aria-label*='Join meeting from this browser' i], "
+                                "[aria-label*='Join meeting from this browser' i], "
+                                "button:has-text('Continue on this browser'), "
+                                "button:has-text('Join on the web'), "
+                                "button:has-text('Continue in this browser'), "
+                                "[aria-label*='Join on the web' i], "
+                                "[data-tid='join-on-web']"
+                            ).first
+                            if await web_btn.is_visible(timeout=300):
+                                logger.info("[TeamsBot] 'Continue on this browser' still visible; re-clicking...")
+                                try:
+                                    await web_btn.click(timeout=2000, force=True)
+                                except Exception:
+                                    await web_btn.evaluate("el => el.click()")
+                                last_reclick_time = now
+                                break
+                        except Exception:
+                            pass
+
+                await asyncio.sleep(1.5)
+
+            if not target_name_input:
+                raise TimeoutError(f"Pre-join name input not found within {max_wait_sec}s timeout.")
+
             logger.info("[TeamsBot] Pre-join screen detected")
             
             # Stage 02: Pre-join screen screenshot
@@ -767,48 +855,46 @@ async def run_bot(meeting_url: str, session_id: str):
                 pass
             
             # Ensure Video Camera is toggled OFF for privacy
-            try:
-                camera_toggle = page.locator("[aria-label*='camera' i], [aria-label*='video' i], [data-tid*='video']").first
-                if await camera_toggle.is_visible(timeout=3000):
-                    label = (await camera_toggle.get_attribute("aria-label") or "").lower()
-                    camera_is_on = "turn camera off" in label or ("camera" in label and "turn camera on" not in label)
-                    if camera_is_on:
-                        await camera_toggle.click()
-                        logger.info("[TeamsBot] Video camera toggled OFF.")
-                    else:
-                        logger.info(f"[TeamsBot] Camera already OFF (label: '{label}').")
-            except Exception as ce:
-                logger.warning(f"[TeamsBot] Could not verify/toggle video camera button: {ce}")
+            for target in [page] + page.frames:
+                try:
+                    camera_toggle = target.locator("[aria-label*='camera' i], [aria-label*='video' i], [data-tid*='video']").first
+                    if await camera_toggle.is_visible(timeout=1000):
+                        label = (await camera_toggle.get_attribute("aria-label") or "").lower()
+                        camera_is_on = "turn camera off" in label or ("camera" in label and "turn camera on" not in label)
+                        if camera_is_on:
+                            await camera_toggle.click()
+                            logger.info("[TeamsBot] Video camera toggled OFF.")
+                        else:
+                            logger.info(f"[TeamsBot] Camera already OFF (label: '{label}').")
+                        break
+                except Exception:
+                    pass
 
             # Ensure Microphone is toggled ON (Unmuted) so Teams WebRTC receives Mia's audio
-            try:
-                mic_switch = page.locator(
-                    "input[data-cid*='toggle-mute'], "
-                    "input[data-tid='toggle-mute'], "
-                    "input[title*='Mute mic' i], "
-                    "input[title*='Unmute mic' i], "
-                    "[role='switch'][data-tid*='toggle-mute']"
-                ).first
-                if await mic_switch.is_visible(timeout=5000):
-                    data_cid = (await mic_switch.get_attribute("data-cid") or "").lower()
-                    title = (await mic_switch.get_attribute("title") or "").lower()
-                    is_checked = await mic_switch.is_checked()
-                    
-                    # Mic is OFF (Muted) if data-cid is toggle-mute-false, title contains "unmute", or is_checked is False
-                    mic_is_off = "toggle-mute-false" in data_cid or ("unmute" in title) or not is_checked
-                    if mic_is_off:
-                        await mic_switch.click(force=True)
-                        logger.info("[TeamsBot] Clicked Fluent UI mic switch ON (Unmuted).")
-                    else:
-                        logger.info(f"[TeamsBot] Fluent UI mic switch already ON (Unmuted).")
-                else:
-                    # Fallback locator if explicit switch element is not found
-                    fallback_mic = page.locator("[data-tid*='toggle-mute'], [data-tid*='mute']").first
-                    if await fallback_mic.is_visible(timeout=2000):
-                        await fallback_mic.click(force=True)
-                        logger.info("[TeamsBot] Microphone fallback button clicked ON.")
-            except Exception as me:
-                logger.warning(f"[TeamsBot] Could not verify/toggle microphone button: {me}")
+            for target in [page] + page.frames:
+                try:
+                    mic_switch = target.locator(
+                        "input[data-cid*='toggle-mute'], "
+                        "input[data-tid='toggle-mute'], "
+                        "input[title*='Mute mic' i], "
+                        "input[title*='Unmute mic' i], "
+                        "[role='switch'][data-tid*='toggle-mute']"
+                    ).first
+                    if await mic_switch.is_visible(timeout=1000):
+                        data_cid = (await mic_switch.get_attribute("data-cid") or "").lower()
+                        title = (await mic_switch.get_attribute("title") or "").lower()
+                        label = (await mic_switch.get_attribute("aria-label") or "").lower()
+                        is_checked = await mic_switch.is_checked() if await mic_switch.evaluate("e => e.tagName === 'INPUT'") else False
+                        
+                        mic_is_off = "toggle-mute-false" in data_cid or ("unmute" in title) or ("unmute" in label) or not is_checked
+                        if mic_is_off:
+                            await mic_switch.click(force=True)
+                            logger.info("[TeamsBot] Clicked Fluent UI mic switch ON (Unmuted).")
+                        else:
+                            logger.info("[TeamsBot] Fluent UI mic switch already ON (Unmuted).")
+                        break
+                except Exception:
+                    pass
 
             # Fill name input field with fallbacks
             try:
@@ -858,19 +944,30 @@ async def run_bot(meeting_url: str, session_id: str):
             except Exception:
                 pass
             
-            # Click "Join Now" or "Join" button
-            join_button = page.locator(
-                "button#prejoin-join-button, "
-                "button[data-tid='prejoin-join-button'], "
-                "[id='prejoin-join-button'], "
-                "[data-tid='prejoin-join-button'], "
-                "button[aria-label='Join now'], "
-                "button[aria-label*='Join now' i], "
-                "button:has-text('Join now'), "
-                "button:has-text('Join meeting'), "
-                "button:has-text('Join')"
-            )
-            target_join_button = join_button.first
+            # Click "Join Now" or "Join" button across all frames
+            target_join_button = None
+            for target in [page] + page.frames:
+                try:
+                    jb = target.locator(
+                        "button#prejoin-join-button, "
+                        "button[data-tid='prejoin-join-button'], "
+                        "[id='prejoin-join-button'], "
+                        "[data-tid='prejoin-join-button'], "
+                        "button[aria-label='Join now'], "
+                        "button[aria-label*='Join now' i], "
+                        "button:has-text('Join now'), "
+                        "button:has-text('Join meeting'), "
+                        "button:has-text('Join')"
+                    ).first
+                    if await jb.is_visible(timeout=500):
+                        target_join_button = jb
+                        break
+                except Exception:
+                    pass
+
+            if not target_join_button:
+                target_join_button = page.locator("button#prejoin-join-button, button[data-tid='prejoin-join-button']").first
+
             logger.info("[TeamsBot] Join button detected")
             logger.info("[TeamsBot] Clicking Join Now")
             try:
