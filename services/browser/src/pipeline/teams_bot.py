@@ -1,6 +1,12 @@
 import asyncio
 import os
 import sys
+import time
+from dotenv import load_dotenv
+
+# Load .env file with override so that .env values strictly take precedence over inherited shell variables
+load_dotenv(override=True)
+
 from playwright.async_api import async_playwright
 from loguru import logger
 
@@ -522,6 +528,9 @@ async def is_really_in_meeting(page) -> tuple:
     PREJOIN, LOBBY, ADMITTING, IN_MEETING, DISCONNECTED
     Returns: (is_meeting: bool, state_name: str, evidence: dict)
     """
+    logger.debug("[MIA STATE TIMING] is_really_in_meeting start")
+    t0 = time.monotonic()
+
     evidence = {
         "prejoin_input": False,
         "prejoin_join_btn": False,
@@ -534,49 +543,69 @@ async def is_really_in_meeting(page) -> tuple:
     }
 
     try:
-        all_frames = page.frames
-        for frame in all_frames:
+        # Order frames: main_frame first, then any sub-frames
+        main_f = page.main_frame
+        ordered_frames = [main_f] + [f for f in page.frames if f != main_f]
+
+        for frame in ordered_frames:
             try:
-                name_input = frame.locator("input[data-tid='prejoin-display-name-input'], input[placeholder*='Type your name' i]").first
-                if await name_input.is_visible(timeout=150) and await name_input.is_enabled():
-                    evidence["prejoin_input"] = True
+                # 1. In-meeting indicators (check first as they are most frequent during meetings)
+                if not evidence["hangup_btn"]:
+                    hangup_el = frame.locator(
+                        "button#hangup-button, "
+                        "button[id='hangup-button'], "
+                        "button[title='Leave'], "
+                        "button[title*='Leave' i], "
+                        "button[data-tid='hangup-button'], "
+                        "button[data-tid='leave-call-button'], "
+                        "button[aria-label*='Leave' i], "
+                        "button[aria-label*='Hang up' i]"
+                    ).first
+                    if await hangup_el.is_visible(timeout=50):
+                        evidence["hangup_btn"] = True
 
-                prejoin_join_btn = frame.locator("button#prejoin-join-button, button[data-tid='prejoin-join-button']").first
-                if await prejoin_join_btn.is_visible(timeout=150) and await prejoin_join_btn.is_enabled():
-                    evidence["prejoin_join_btn"] = True
+                if not evidence["toolbar_mic"]:
+                    mic_el = frame.locator("button#aria-key-toolbar-microphone, button[data-tid='microphone-button'], button[aria-label*='microphone' i], button[title*='mic' i]").first
+                    if await mic_el.is_visible(timeout=50):
+                        evidence["toolbar_mic"] = True
 
-                lobby_el = frame.locator("text='When the meeting starts', text='let people know you\\'re waiting', text='let you in soon', text='Waiting for someone', [data-tid*='lobby']").first
-                if await lobby_el.is_visible(timeout=150):
-                    evidence["lobby_text"] = True
+                if not evidence["roster_or_canvas"]:
+                    roster_canvas = frame.locator("button[data-tid='roster-button'], [data-tid='call-canvas'], .calling-screen, button[aria-label*='people' i], button[title*='people' i]").first
+                    if await roster_canvas.is_visible(timeout=50):
+                        evidence["roster_or_canvas"] = True
 
-                admitting_el = frame.locator("text='Admitting...', text='Getting things ready', text='Joining...', [data-tid*='admitting']").first
-                if await admitting_el.is_visible(timeout=150):
-                    evidence["admitting_text"] = True
+                # Early short-circuit: if we already have strong in-meeting evidence, skip remaining checks
+                if evidence["hangup_btn"] or (evidence["toolbar_mic"] and evidence["roster_or_canvas"]):
+                    break
 
-                hangup_el = frame.locator(
-                    "button#hangup-button, "
-                    "button[id='hangup-button'], "
-                    "button[title='Leave'], "
-                    "button[title*='Leave' i], "
-                    "button[data-tid='hangup-button'], "
-                    "button[data-tid='leave-call-button'], "
-                    "button[aria-label*='Leave' i], "
-                    "button[aria-label*='Hang up' i]"
-                ).first
-                if await hangup_el.is_visible(timeout=150):
-                    evidence["hangup_btn"] = True
+                # 2. Prejoin indicators
+                if not evidence["prejoin_input"]:
+                    name_input = frame.locator("input[data-tid='prejoin-display-name-input'], input[placeholder*='Type your name' i]").first
+                    if await name_input.is_visible(timeout=50) and await name_input.is_enabled():
+                        evidence["prejoin_input"] = True
 
-                mic_el = frame.locator("button#aria-key-toolbar-microphone, button[data-tid='microphone-button'], button[aria-label*='microphone' i], button[title*='mic' i]").first
-                if await mic_el.is_visible(timeout=150):
-                    evidence["toolbar_mic"] = True
+                if not evidence["prejoin_join_btn"]:
+                    prejoin_join_btn = frame.locator("button#prejoin-join-button, button[data-tid='prejoin-join-button']").first
+                    if await prejoin_join_btn.is_visible(timeout=50) and await prejoin_join_btn.is_enabled():
+                        evidence["prejoin_join_btn"] = True
 
-                roster_canvas = frame.locator("button[data-tid='roster-button'], [data-tid='call-canvas'], .calling-screen, button[aria-label*='people' i], button[title*='people' i]").first
-                if await roster_canvas.is_visible(timeout=150):
-                    evidence["roster_or_canvas"] = True
+                # 3. Lobby / Admitting indicators
+                if not evidence["lobby_text"]:
+                    lobby_el = frame.locator("text='When the meeting starts', text='let people know you\\'re waiting', text='let you in soon', text='Waiting for someone', [data-tid*='lobby']").first
+                    if await lobby_el.is_visible(timeout=50):
+                        evidence["lobby_text"] = True
 
-                ended_el = frame.locator("[data-tid='call-ended'], button[data-tid='rejoin-button'], div:has-text('You left the meeting')").first
-                if await ended_el.is_visible(timeout=150):
-                    evidence["ended_screen"] = True
+                if not evidence["admitting_text"]:
+                    admitting_el = frame.locator("text='Admitting...', text='Getting things ready', text='Joining...', [data-tid*='admitting']").first
+                    if await admitting_el.is_visible(timeout=50):
+                        evidence["admitting_text"] = True
+
+                # 4. Disconnected / ended screen
+                if not evidence["ended_screen"]:
+                    ended_el = frame.locator("[data-tid='call-ended'], button[data-tid='rejoin-button'], div:has-text('You left the meeting')").first
+                    if await ended_el.is_visible(timeout=50):
+                        evidence["ended_screen"] = True
+                        break
             except Exception:
                 pass
     except Exception as e:
@@ -608,7 +637,74 @@ async def is_really_in_meeting(page) -> tuple:
         state = "JOINING"
         is_in = False
 
+    duration = time.monotonic() - t0
+    logger.debug(f"[MIA STATE TIMING] is_really_in_meeting duration={duration:.2f}s")
     return is_in, state, evidence
+
+async def run_in_meeting_diagnostics(page):
+    """
+    Asynchronous, non-blocking diagnostics and control for in-meeting mic & camera.
+    Runs separately from the main lifecycle loop so state polling is never delayed.
+    """
+    logger.info("[MIA DIAGNOSTICS] started")
+    diag_start = time.monotonic()
+    try:
+        all_frames = page.frames
+        teams_muted = False
+        track_enabled = True
+
+        for frame in all_frames:
+            try:
+                in_meeting_mic = frame.locator(
+                    "button#aria-key-toolbar-microphone, "
+                    "button[data-tid='microphone-button'], "
+                    "button[aria-label*='microphone' i], "
+                    "button[aria-label*='mic' i], "
+                    "button[data-tid='toggle-mute']"
+                ).first
+                if await in_meeting_mic.is_visible(timeout=300):
+                    label = (await in_meeting_mic.get_attribute("aria-label") or "").lower()
+                    pressed = (await in_meeting_mic.get_attribute("aria-pressed") or "").lower()
+                    if "unmute" in label or pressed == "false":
+                        teams_muted = True
+                        logger.info(f"[MIA MIC DIAG] Teams mic MUTED in UI (label='{label}', pressed='{pressed}'). Unmuting...")
+                        try:
+                            await in_meeting_mic.evaluate("el => el.click()")
+                            await in_meeting_mic.click(force=True)
+                            await page.keyboard.press("Control+Shift+M")
+                            logger.info("[TeamsBot] Triggered Teams mic UNMUTE via click + Ctrl+Shift+M shortcut.")
+                        except Exception:
+                            pass
+                        break
+                    else:
+                        teams_muted = False
+                        break
+            except Exception:
+                pass
+
+        logger.info(f"[MIA MIC] pipecat_enabled=true track_enabled={track_enabled} teams_muted={teams_muted}")
+
+        # Ensure video camera is turned off in top toolbar
+        for frame in all_frames:
+            try:
+                in_meeting_camera = frame.locator("button[data-tid='camera-button'], button[aria-label*='camera' i]").first
+                if await in_meeting_camera.is_visible(timeout=300):
+                    label = (await in_meeting_camera.get_attribute("aria-label") or "").lower()
+                    pressed = (await in_meeting_camera.get_attribute("aria-pressed") or "").lower()
+                    if pressed == "true" or ("turn camera off" in label):
+                        await in_meeting_camera.click()
+                        logger.info("[TeamsBot] In-meeting camera clicked OFF.")
+                        break
+                    elif "turn camera on" in label or pressed == "false":
+                        break
+            except Exception:
+                pass
+
+    except Exception as de:
+        logger.warning(f"[MIA DIAGNOSTICS] Error during diagnostics: {de}")
+    finally:
+        diag_dur = time.monotonic() - diag_start
+        logger.info(f"[MIA DIAGNOSTICS] completed duration={diag_dur:.2f}s")
 
 async def run_bot(meeting_url: str, session_id: str):
     # Shared namespace experiment: skip AudioProxy when containers share network namespace
@@ -1013,21 +1109,23 @@ async def run_bot(meeting_url: str, session_id: str):
             except Exception:
                 pass
             
-        # Main Teams Meeting Lifecycle & Diagnostic Loop
+        # Main Teams Meeting Lifecycle & Polling Loop
         try:
             consecutive_in_meeting = 0
             ws_triggered = False
-            in_meeting_camera_off = False
+            diagnostics_launched = False
+            last_screenshot_state = None
             
             while True:
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(1.5)
                 is_in, current_state, evidence = await is_really_in_meeting(page)
-                logger.info(f"[MIA STATE] {current_state} | evidence={evidence}")
 
                 if current_state == "IN_MEETING":
                     consecutive_in_meeting += 1
                 else:
                     consecutive_in_meeting = 0
+
+                logger.info(f"[MIA STATE] {current_state} consecutive={consecutive_in_meeting} | evidence={evidence}")
 
                 # Synchronize browser window.__miaState
                 try:
@@ -1035,11 +1133,17 @@ async def run_bot(meeting_url: str, session_id: str):
                 except Exception:
                     pass
 
-                # Check if IN_MEETING has remained stable for >= 2 consecutive checks (~2-4 seconds)
+                # Launch non-blocking background diagnostics on entering meeting
+                if current_state == "IN_MEETING" and not diagnostics_launched:
+                    diagnostics_launched = True
+                    asyncio.create_task(run_in_meeting_diagnostics(page))
+
+                # Check if IN_MEETING has remained stable for >= 2 consecutive checks
                 if consecutive_in_meeting >= 2:
                     if MIA_JOIN_ONLY:
                         logger.info(f"[MIA JOIN ONLY PASS] Confirmed REAL IN_MEETING state! Audio pipeline isolated.")
                     elif not ws_triggered:
+                        logger.info("[MIA STATE] WebSocket gate condition satisfied")
                         logger.info("[MIA WEBSOCKET GATE] Meeting admission confirmed & stable! Triggering WebSocket connection...")
                         try:
                             await page.evaluate("window.__connectMiaWebSocket__ && window.__connectMiaWebSocket__()")
@@ -1052,79 +1156,24 @@ async def run_bot(meeting_url: str, session_id: str):
                         except Exception as wse:
                             logger.warning(f"[TeamsBot] WebSocket trigger skipped/failed: {wse}")
 
-                # Capture screenshots for key state transitions
-                if current_state == "LOBBY":
-                    try:
-                        await page.screenshot(path=os.path.join(debug_dir, "07_lobby.png"))
-                    except Exception:
-                        pass
-                elif current_state == "ADMITTING":
-                    try:
-                        await page.screenshot(path=os.path.join(debug_dir, "08_admitting.png"))
-                    except Exception:
-                        pass
-                elif current_state == "IN_MEETING":
-                    try:
-                        await page.screenshot(path=os.path.join(debug_dir, "09_final_state.png"))
-                    except Exception:
-                        pass
-
-                # Independent Mic & Camera State Diagnostics & Control
-                if current_state == "IN_MEETING":
-                    all_frames = page.frames
-                    
-                    # Log independent mic state components
-                    teams_muted = False
-                    track_enabled = True
-                    for frame in all_frames:
+                # Capture screenshots for key state transitions (once per state)
+                if current_state != last_screenshot_state:
+                    last_screenshot_state = current_state
+                    if current_state == "LOBBY":
                         try:
-                            in_meeting_mic = frame.locator(
-                                "button#aria-key-toolbar-microphone, "
-                                "button[data-tid='microphone-button'], "
-                                "button[aria-label*='microphone' i], "
-                                "button[aria-label*='mic' i], "
-                                "button[data-tid='toggle-mute']"
-                            ).first
-                            if await in_meeting_mic.is_visible(timeout=300):
-                                label = (await in_meeting_mic.get_attribute("aria-label") or "").lower()
-                                pressed = (await in_meeting_mic.get_attribute("aria-pressed") or "").lower()
-                                if "unmute" in label or pressed == "false":
-                                    teams_muted = True
-                                    logger.info(f"[MIA MIC DIAG] Teams mic MUTED in UI (label='{label}', pressed='{pressed}'). Unmuting...")
-                                    try:
-                                        await in_meeting_mic.evaluate("el => el.click()")
-                                        await in_meeting_mic.click(force=True)
-                                        await page.keyboard.press("Control+Shift+M")
-                                        logger.info("[TeamsBot] Triggered Teams mic UNMUTE via click + Ctrl+Shift+M shortcut.")
-                                    except Exception:
-                                        pass
-                                    break
-                                else:
-                                    teams_muted = False
-                                    break
+                            await page.screenshot(path=os.path.join(debug_dir, "07_lobby.png"))
                         except Exception:
                             pass
-
-                    logger.info(f"[MIA MIC] pipecat_enabled=true track_enabled={track_enabled} teams_muted={teams_muted}")
-
-                    # Ensure video camera is turned off in top toolbar
-                    if not in_meeting_camera_off:
-                        for frame in all_frames:
-                            try:
-                                in_meeting_camera = frame.locator("button[data-tid='camera-button'], button[aria-label*='camera' i]").first
-                                if await in_meeting_camera.is_visible(timeout=300):
-                                    label = (await in_meeting_camera.get_attribute("aria-label") or "").lower()
-                                    pressed = (await in_meeting_camera.get_attribute("aria-pressed") or "").lower()
-                                    if pressed == "true" or ("turn camera off" in label):
-                                        await in_meeting_camera.click()
-                                        in_meeting_camera_off = True
-                                        logger.info("[TeamsBot] In-meeting camera clicked OFF.")
-                                        break
-                                    elif "turn camera on" in label or pressed == "false":
-                                        in_meeting_camera_off = True
-                                        break
-                            except Exception:
-                                pass
+                    elif current_state == "ADMITTING":
+                        try:
+                            await page.screenshot(path=os.path.join(debug_dir, "08_admitting.png"))
+                        except Exception:
+                            pass
+                    elif current_state == "IN_MEETING":
+                        try:
+                            await page.screenshot(path=os.path.join(debug_dir, "09_final_state.png"))
+                        except Exception:
+                            pass
 
                 # Autonomous Shutdown Detection
                 if current_state == "DISCONNECTED":

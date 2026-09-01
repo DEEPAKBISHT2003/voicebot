@@ -1,6 +1,11 @@
 import os
 import sys
 import subprocess
+from dotenv import load_dotenv
+
+# Load .env file with override to ensure configuration takes precedence over terminal variables
+load_dotenv(override=True)
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from loguru import logger
