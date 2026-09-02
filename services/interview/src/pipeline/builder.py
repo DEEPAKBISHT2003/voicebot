@@ -27,6 +27,7 @@ from services.interview.src.core.config import Settings
 from services.interview.src.pipeline.accumulator import TranscriptAccumulator
 from services.interview.src.pipeline.playback_buffer import PlaybackBufferProcessor
 from services.interview.src.pipeline.mic_gate import MicGateProcessor, MicUnmuterProcessor
+from services.interview.src.pipeline.phrase_aggregator import StreamingPhraseTextAggregator
 
 class LocalPipecatPipelineBuilder(IPipelineBuilder):
     """Sets up local hardware audio transport and chains STT/DeepSeek LLM/TTS/Accumulator elements."""
@@ -118,6 +119,8 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
                 api_key=self.deepgram_api_key,
                 settings=DeepgramTTSService.Settings(voice="aura-2-amalthea-en")
             )
+            # Phase 6: Streaming Phrase/Clause Chunking for low-latency continuous speech
+            tts._text_aggregator = StreamingPhraseTextAggregator()
             
             # DeepSeek OpenAI-compatible LLM
             llm = OpenAILLMService(
@@ -141,6 +144,10 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
                 logger.info("[MIA TTS] stopped")
                 logger.info("[MIA GREETING] TTS finished")
 
+            @tts.event_handler("on_tts_request")
+            async def on_tts_request(tts_service, context_id, text):
+                logger.info(f"[MIA TTS REQUEST] context={context_id} text_len={len(text)} text=\"{text[:35]}...\"")
+
             # Thread-safe aggregate pair for pipeline processing (VAD disabled, relies on Deepgram STT endpointing)
             user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
                 context,
@@ -151,7 +158,7 @@ class LocalPipecatPipelineBuilder(IPipelineBuilder):
 
             assistant_accumulator = TranscriptAccumulator(transcript_callback)
 
-            playback_buffer = PlaybackBufferProcessor(buffer_size=5)
+            playback_buffer = PlaybackBufferProcessor(buffer_size=3)
             
             # Shared state for microphone gating (starts disabled)
             shared_state = {"mic_enabled": False}

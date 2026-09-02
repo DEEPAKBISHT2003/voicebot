@@ -1,3 +1,4 @@
+import time
 from typing import List
 from loguru import logger
 from pipecat.frames.frames import (
@@ -16,15 +17,17 @@ class PlaybackBufferProcessor(FrameProcessor):
         self.buffer_size = buffer_size
         self._buffer: List[OutputAudioRawFrame] = []
         self._buffering: bool = False
+        self._buffer_start_time: float = 0.0
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, TTSStartedFrame):
             # When the TTS starts generating an utterance, activate buffering
-            logger.debug(f"PlaybackBufferProcessor: TTS started. Activating buffer (size={self.buffer_size}).")
             self._buffering = True
+            self._buffer_start_time = time.monotonic()
             self._buffer.clear()
+            logger.info(f"[MIA BACKEND BUFFER] TTS started. Activating buffer (size={self.buffer_size})")
             await self.push_frame(frame, direction)
 
         elif isinstance(frame, OutputAudioRawFrame):
@@ -32,7 +35,8 @@ class PlaybackBufferProcessor(FrameProcessor):
                 self._buffer.append(frame)
                 # If we've collected enough frames, release the buffer and play
                 if len(self._buffer) >= self.buffer_size:
-                    logger.debug(f"PlaybackBufferProcessor: Buffer filled ({len(self._buffer)} frames). Releasing to playback.")
+                    buf_elapsed_ms = (time.monotonic() - self._buffer_start_time) * 1000.0
+                    logger.info(f"[MIA BACKEND BUFFER RELEASE] frames={len(self._buffer)} buffer_wait_ms={buf_elapsed_ms:.1f}ms")
                     for buffered_frame in self._buffer:
                         await self.push_frame(buffered_frame, direction)
                     self._buffer.clear()
@@ -44,7 +48,8 @@ class PlaybackBufferProcessor(FrameProcessor):
         elif isinstance(frame, (TTSStoppedFrame, LLMFullResponseEndFrame)):
             # If the utterance ends and there are still unplayed frames in the buffer, flush them
             if self._buffer:
-                logger.debug(f"PlaybackBufferProcessor: Session stopped. Flushing remaining {len(self._buffer)} frames.")
+                buf_elapsed_ms = (time.monotonic() - self._buffer_start_time) * 1000.0
+                logger.info(f"[MIA BACKEND BUFFER FLUSH] flushing={len(self._buffer)} frames buffer_wait_ms={buf_elapsed_ms:.1f}ms")
                 for buffered_frame in self._buffer:
                     await self.push_frame(buffered_frame, direction)
                 self._buffer.clear()

@@ -20,6 +20,8 @@ BOT_ROLE = os.getenv("BOT_ROLE", "interviewer")
 BOT_HEADLESS = os.getenv("BOT_HEADLESS", "true").lower() == "true"
 BOT_PREJOIN_TIMEOUT_MS = int(os.getenv("BOT_PREJOIN_TIMEOUT_MS", "75000"))
 MIA_JOIN_ONLY = os.getenv("MIA_JOIN_ONLY", "false").lower() == "true"
+MIA_INITIAL_BUFFER_MS = int(os.getenv("MIA_INITIAL_BUFFER_MS", "350"))
+MIA_RECOVERY_BUFFER_MS = int(os.getenv("MIA_RECOVERY_BUFFER_MS", "250"))
 
 UNIFIED_BROWSER_AUDIO_JS = """
 (() => {
@@ -206,12 +208,90 @@ UNIFIED_BROWSER_AUDIO_JS = """
                 }
             };
 
-            // Stream tracking metrics
+            // Jitter Buffer & Playback Scheduler Configuration
+            const INITIAL_BUFFER_MS = 350;
+            const RECOVERY_BUFFER_MS = 250;
+
+            // Stream and Queue tracking state
             window.__miaCurrentStreamId = window.__miaCurrentStreamId || 0;
             window.__miaStreamFrameCount = 0;
             window.__miaLastRxTime = 0;
             window.__miaRxGapCount = 0;
             window.__miaRxUnderrunCount = 0;
+            window.__miaRxRecoveryCount = 0;
+
+            window.__miaPlaybackQueue = [];
+            window.__miaQueuedDurationMs = 0;
+            window.__miaPlaybackState = "BUFFERING"; // "BUFFERING", "PLAYING", "STARVED"
+            window.__miaNextPlaybackTime = 0;
+
+            function drainPlaybackQueue() {
+                const currentTime = audioCtx.currentTime;
+                const destination = window.__audioAnalyser || audioDestinationNode;
+
+                // 1. Initial Buffering Gate: wait until queue accumulates INITIAL_BUFFER_MS
+                if (window.__miaPlaybackState === "BUFFERING") {
+                    if (window.__miaQueuedDurationMs < INITIAL_BUFFER_MS) {
+                        return; // Continue accumulating initial chunks
+                    }
+                    window.__miaPlaybackState = "PLAYING";
+                    window.__miaNextPlaybackTime = currentTime + 0.05;
+                    console.log(`[MIA PLAYBACK START] stream=${window.__miaCurrentStreamId} initial_buffer_ms=${window.__miaQueuedDurationMs.toFixed(1)} scheduled_start_t=${window.__miaNextPlaybackTime.toFixed(3)}s ctx_time=${currentTime.toFixed(3)}s connection_id=${connId}`);
+                }
+
+                // 2. Underrun Recovery Gate: wait until queue accumulates RECOVERY_BUFFER_MS
+                if (window.__miaPlaybackState === "STARVED") {
+                    if (window.__miaQueuedDurationMs < RECOVERY_BUFFER_MS) {
+                        return; // Continue accumulating recovery chunks
+                    }
+                    window.__miaPlaybackState = "PLAYING";
+                    window.__miaRxRecoveryCount++;
+                    window.__miaNextPlaybackTime = currentTime + 0.05;
+                    console.log(`[MIA PLAYBACK RECOVERED] stream=${window.__miaCurrentStreamId} recovery_buffer_ms=${window.__miaQueuedDurationMs.toFixed(1)} recovery_count=${window.__miaRxRecoveryCount} scheduled_t=${window.__miaNextPlaybackTime.toFixed(3)}s ctx_time=${currentTime.toFixed(3)}s connection_id=${connId}`);
+                }
+
+                // 3. Continuous WebAudio Playback Scheduling
+                while (window.__miaPlaybackQueue.length > 0 && window.__miaPlaybackState === "PLAYING") {
+                    const item = window.__miaPlaybackQueue[0];
+
+                    // Detect starvation / underrun if scheduled timeline has fallen behind current AudioContext time by >20ms
+                    if (window.__miaNextPlaybackTime < currentTime - 0.02) {
+                        window.__miaPlaybackState = "STARVED";
+                        window.__miaRxUnderrunCount++;
+                        const lagMs = ((currentTime - window.__miaNextPlaybackTime) * 1000).toFixed(1);
+                        console.warn(`[MIA PLAYBACK UNDERRUN] stream=${item.streamId} frame=${item.frameId} queue_ms=${window.__miaQueuedDurationMs.toFixed(1)} lag=${lagMs}ms context_time=${currentTime.toFixed(3)}s next_playback_time=${window.__miaNextPlaybackTime.toFixed(3)}s underruns=${window.__miaRxUnderrunCount}`);
+                        break; // Stop scheduling until recovery buffer refills
+                    }
+
+                    // Shift chunk from queue and schedule on continuous timeline
+                    window.__miaPlaybackQueue.shift();
+                    window.__miaQueuedDurationMs = Math.max(0, window.__miaQueuedDurationMs - item.durationSec * 1000);
+
+                    const sourceNode = audioCtx.createBufferSource();
+                    sourceNode.buffer = item.audioBuffer;
+                    sourceNode.connect(destination);
+
+                    const scheduleTime = window.__miaNextPlaybackTime;
+                    sourceNode.start(scheduleTime);
+                    window.__miaNextPlaybackTime += item.durationSec;
+
+                    const headroomMs = ((scheduleTime - currentTime) * 1000).toFixed(1);
+
+                    // Periodic telemetry
+                    if (item.frameId <= 5 || item.frameId % 50 === 0) {
+                        console.log(`[MIA PLAYBACK] stream=${item.streamId} frame=${item.frameId} scheduled_t=${scheduleTime.toFixed(3)}s ctx_t=${currentTime.toFixed(3)}s headroom=${headroomMs}ms queued_ms=${window.__miaQueuedDurationMs.toFixed(1)} underruns=${window.__miaRxUnderrunCount}`);
+                        console.log(`[MIA PLAYBACK BUFFER] stream=${item.streamId} queued_ms=${window.__miaQueuedDurationMs.toFixed(1)} scheduled_headroom_ms=${headroomMs} state=${window.__miaPlaybackState}`);
+                    }
+                }
+            }
+
+            // Periodic interval to ensure queue drains even if packets pause
+            if (window.__miaPlaybackDrainTimer) clearInterval(window.__miaPlaybackDrainTimer);
+            window.__miaPlaybackDrainTimer = setInterval(() => {
+                if (window.__miaPlaybackQueue && window.__miaPlaybackQueue.length > 0) {
+                    drainPlaybackQueue();
+                }
+            }, 40);
 
             newSocket.onmessage = (event) => {
                 if (!(event.data instanceof ArrayBuffer)) {
@@ -227,6 +307,10 @@ UNIFIED_BROWSER_AUDIO_JS = """
                 if (window.__miaStreamFrameCount === 0 || dt > 1200) {
                     window.__miaCurrentStreamId++;
                     window.__miaStreamFrameCount = 0;
+                    window.__miaPlaybackState = "BUFFERING";
+                    window.__miaPlaybackQueue = [];
+                    window.__miaQueuedDurationMs = 0;
+                    window.__miaNextPlaybackTime = 0;
                     console.log(`[MIA AUDIO STREAM START] stream=${window.__miaCurrentStreamId} reason=${dt > 1200 ? 'gap_boundary' : 'initial_stream'} connection_id=${connId}`);
                 }
 
@@ -245,6 +329,10 @@ UNIFIED_BROWSER_AUDIO_JS = """
                     console.warn(`[MIA WS RX GAP] stream=${window.__miaCurrentStreamId} frame=${window.__miaStreamFrameCount} dt=${dt}ms connection_id=${connId}`);
                 }
 
+                if (window.__miaStreamFrameCount <= 5 || window.__miaStreamFrameCount % 50 === 0) {
+                    console.log(`[MIA WS RX] connection=${connId} stream=${window.__miaCurrentStreamId} frame=${window.__miaStreamFrameCount} bytes=${rawBuffer.byteLength} dt=${dt}ms total_rx_frames=${window.__miaReceivedAudioFrames}`);
+                }
+
                 // Pipecat RawPCMAudioSerializer sends 16-bit PCM mono @ 16000 Hz
                 const pcmSampleRate = 16000;
                 const durationSec = numSamples / pcmSampleRate;
@@ -258,35 +346,17 @@ UNIFIED_BROWSER_AUDIO_JS = """
                     channelData[i] = pcm16Data[i] / 32768.0;
                 }
 
-                // 3. Create AudioBufferSourceNode
-                const sourceNode = audioCtx.createBufferSource();
-                sourceNode.buffer = audioBuffer;
+                // 3. Push to playback queue
+                window.__miaPlaybackQueue.push({
+                    audioBuffer: audioBuffer,
+                    durationSec: durationSec,
+                    streamId: window.__miaCurrentStreamId,
+                    frameId: window.__miaStreamFrameCount
+                });
+                window.__miaQueuedDurationMs += durationSec * 1000;
 
-                // 4. Connect sourceNode to window.__audioDestinationNode
-                const destination = window.__audioAnalyser || audioDestinationNode;
-                sourceNode.connect(destination);
-
-                // 5. Sequential Browser-side AudioContext Scheduling & Queue Headroom Tracking
-                const currentTime = audioCtx.currentTime;
-                let isUnderrun = false;
-                if (window.__nextPlaybackTime < currentTime) {
-                    isUnderrun = true;
-                    window.__miaRxUnderrunCount++;
-                    const lagMs = ((currentTime - window.__nextPlaybackTime) * 1000).toFixed(1);
-                    console.warn(`[MIA PLAYBACK UNDERRUN] stream=${window.__miaCurrentStreamId} frame=${window.__miaStreamFrameCount} lag=${lagMs}ms ctx_time=${currentTime.toFixed(3)}s next_was=${window.__nextPlaybackTime.toFixed(3)}s`);
-                    window.__nextPlaybackTime = currentTime + 0.05; // 50ms buffer for initial/resumed scheduling
-                }
-
-                const scheduleTime = window.__nextPlaybackTime;
-                sourceNode.start(scheduleTime);
-                window.__nextPlaybackTime += audioBuffer.duration;
-                const headroomMs = ((scheduleTime - currentTime) * 1000).toFixed(1);
-
-                // Boundary 3: Browser WS RX & Boundary 4: Browser Playback logs
-                if (window.__miaStreamFrameCount <= 5 || window.__miaStreamFrameCount % 50 === 0) {
-                    console.log(`[MIA WS RX] connection=${connId} stream=${window.__miaCurrentStreamId} frame=${window.__miaStreamFrameCount} bytes=${rawBuffer.byteLength} dt=${dt}ms total_rx_frames=${window.__miaReceivedAudioFrames}`);
-                    console.log(`[MIA PLAYBACK] stream=${window.__miaCurrentStreamId} frame=${window.__miaStreamFrameCount} scheduled_t=${scheduleTime.toFixed(3)}s ctx_t=${currentTime.toFixed(3)}s headroom=${headroomMs}ms underruns=${window.__miaRxUnderrunCount}`);
-                }
+                // 4. Drain queue & schedule WebAudio playback
+                drainPlaybackQueue();
             };
 
             newSocket.onerror = (err) => {
@@ -295,6 +365,9 @@ UNIFIED_BROWSER_AUDIO_JS = """
 
             newSocket.onclose = (evt) => {
                 console.log(`[MIA WS] CLOSED connection_id=${connId} code=${evt.code} reason=${evt.reason}`);
+                if (window.__miaPlaybackDrainTimer) {
+                    clearInterval(window.__miaPlaybackDrainTimer);
+                }
                 // Only clear the reference if this is still the active socket
                 if (window.__miaSocket && window.__miaSocket.__connId === connId) {
                     window.__miaSocket = null;
