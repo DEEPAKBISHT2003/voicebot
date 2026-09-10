@@ -8,7 +8,7 @@ import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { TextArea } from '../components/TextArea';
 import { startInterview, parseResumeFile } from '../api/interview';
-import { uploadSimulationAudio, startCopilot } from '../api/copilot';
+import { uploadSimulationAudio, startCopilot, joinCopilotMeeting } from '../api/copilot';
 
 const schema = zod.object({
   jd: zod.string().min(10, 'Job description must be at least 10 characters.'),
@@ -151,16 +151,33 @@ export const NewInterview: React.FC = () => {
     setIsSubmitting(true);
     setErrorMsg(null);
     try {
-      const response = await startInterview({
-        jd: data.jd,
-        resume: data.resume || '',
-        custom_prompt: data.custom_prompt || '',
-        resume_filename: uploadedFile.name,
-        resume_base64: fileBase64,
-        meeting_url: data.meeting_url && data.meeting_url.trim() ? data.meeting_url.trim() : '',
-      });
+      if (interviewType === 'teams') {
+        // Teams Copilot Observer flow: Use Copilot Service directly
+        const copilotResponse = await startCopilot({
+          jd: data.jd,
+          resume: data.resume || '',
+          custom_prompt: data.custom_prompt || DEFAULT_COPILOT_PROMPT,
+        });
 
-      if (interviewType === 'simulation' && simulationAudioFile) {
+        // Trigger the Teams observer bot to join the meeting
+        await joinCopilotMeeting(
+          copilotResponse.session_id,
+          data.meeting_url!.trim(),
+          'observer',
+          'Copilot - Meeting Observer'
+        );
+
+        // Redirect directly to Copilot Room
+        navigate(`/copilots/${copilotResponse.session_id}`);
+      } else if (interviewType === 'simulation' && simulationAudioFile) {
+        const response = await startInterview({
+          jd: data.jd,
+          resume: data.resume || '',
+          custom_prompt: data.custom_prompt || '',
+          resume_filename: uploadedFile.name,
+          resume_base64: fileBase64,
+          meeting_url: '',
+        });
         // Create copilot session using the same session_id as the interview
         await startCopilot({
           jd: data.jd,
@@ -172,11 +189,16 @@ export const NewInterview: React.FC = () => {
         await uploadSimulationAudio(response.session_id, simulationAudioFile);
         // Redirect to Copilot room with simulate query parameter!
         navigate(`/copilots/${response.session_id}?simulate=true`);
-      } else if (interviewType === 'teams') {
-        // Redirect directly to Copilot Room since the bot is joining
-        navigate(`/copilots/${response.session_id}`);
       } else {
-        // Direct local voice bot interview
+        // Direct voice bot interview (Active Interviewer / Mia)
+        const response = await startInterview({
+          jd: data.jd,
+          resume: data.resume || '',
+          custom_prompt: data.custom_prompt || '',
+          resume_filename: uploadedFile.name,
+          resume_base64: fileBase64,
+          meeting_url: data.meeting_url && data.meeting_url.trim() ? data.meeting_url.trim() : '',
+        });
         navigate(`/interviews/${response.session_id}`);
       }
     } catch (err: any) {

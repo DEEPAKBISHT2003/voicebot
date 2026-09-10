@@ -55,6 +55,34 @@ export const uploadSimulationAudio = async (sessionId: string, file: File): Prom
   return res.data;
 };
 
+export interface JoinCopilotMeetingRequest {
+  meeting_url: string;
+  bot_role?: string;
+  bot_name?: string;
+}
+
+export interface JoinCopilotMeetingResponse {
+  status: string;
+  session_id: string;
+  pid?: number;
+  bot_name?: string;
+  bot_role?: string;
+}
+
+export const joinCopilotMeeting = async (
+  sessionId: string,
+  meetingUrl: string,
+  botRole: string = 'observer',
+  botName: string = 'Copilot - Meeting Observer'
+): Promise<JoinCopilotMeetingResponse> => {
+  const res = await copilotApi.post<JoinCopilotMeetingResponse>(`/copilot/${sessionId}/join-meeting`, {
+    meeting_url: meetingUrl,
+    bot_role: botRole,
+    bot_name: botName,
+  });
+  return res.data;
+};
+
 export const getCopilotWebSocketUrl = (sessionId: string): string => {
   // Always use unified port 8000 for copilot WebSocket
   const base = import.meta.env.VITE_COPILOT_URL || '';

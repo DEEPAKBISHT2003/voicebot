@@ -4,8 +4,8 @@ import sys
 import time
 from dotenv import load_dotenv
 
-# Load .env file with override so that .env values strictly take precedence over inherited shell variables
-load_dotenv(override=True)
+# Load .env file with override=False so runtime environment variables passed by caller take precedence
+load_dotenv(override=False)
 
 from playwright.async_api import async_playwright
 from loguru import logger

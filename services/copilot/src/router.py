@@ -2,7 +2,7 @@ import datetime
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from loguru import logger
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Literal
 
 from services.copilot.src.api.deps import get_copilot_repo, get_copilot_sessions
 from services.copilot.src.services.repository import CopilotRepository
@@ -267,8 +267,8 @@ async def finalize_copilot_report(
 
 class JoinMeetingRequest(BaseModel):
     meeting_url: str
-    bot_role: str = "interviewer"
-    bot_name: str = "Mia - AI Interviewer"
+    bot_role: Literal["observer", "interviewer"] = "observer"
+    bot_name: str = "Copilot - Meeting Observer"
 
 @router.post("/{session_id}/join-meeting")
 async def join_meeting(
@@ -321,12 +321,17 @@ async def join_meeting(
         raise HTTPException(status_code=500, detail=f"teams_bot.py not found at {script_path}")
 
     try:
+        env = os.environ.copy()
+        env["BOT_ROLE"] = req.bot_role
+        env["BOT_DISPLAY_NAME"] = req.bot_name
+
         process = subprocess.Popen(
             [python_exe, script_path, req.meeting_url, session_id],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,  # Merge stderr into stdout for real-time interleaved logs
             cwd=workspace_root,
             bufsize=1,  # Line-buffered
+            env=env,
         )
         logger.info(f"[TeamsBot] Subprocess spawned with PID: {process.pid}")
 
