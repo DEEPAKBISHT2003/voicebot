@@ -116,6 +116,9 @@ async def websocket_endpoint(
         if dead_sockets:
             sess["dashboard_websockets"].difference_update(dead_sockets)
 
+    if sess.get("engine"):
+        sess["engine"].on_update_callback = broadcast_update
+
     # Audio Producer Branch (Teams Bot / Raw Audio Stream)
     if is_audio_producer:
         sess["status"] = "Listening to audio stream..."

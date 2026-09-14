@@ -236,6 +236,28 @@ class TeamsMeeting:
         self.debug_dir = os.path.join(os.getcwd(), "interviews", session_id)
         os.makedirs(self.debug_dir, exist_ok=True)
 
+    async def dismiss_media_prompt_if_present(self) -> bool:
+        """Detects and dismisses the 'Continue without audio or video' confirmation modal if shown by Teams."""
+        for target in [self.page] + self.page.frames:
+            try:
+                modal_btn = target.locator(
+                    "button:has-text('Continue without audio or video'), "
+                    "[data-tid='prejoin-dialog-continue-without-audio'], "
+                    "button[aria-label*='Continue without audio or video' i], "
+                    "[aria-label*='Continue without audio or video' i]"
+                ).first
+                if await modal_btn.is_visible(timeout=500):
+                    logger.info("[TeamsBot] Detected 'Continue without audio or video' popup; clicking to dismiss...")
+                    try:
+                        await modal_btn.click(timeout=2000, force=True)
+                    except Exception:
+                        await modal_btn.evaluate("el => el.click()")
+                    await asyncio.sleep(1.0)
+                    return True
+            except Exception:
+                pass
+        return False
+
     async def open_and_select_web(self) -> None:
         """Navigate to meeting URL, save landing screenshot, and select Web Join."""
         logger.info("[TeamsBot] Opening meeting URL...")
@@ -398,6 +420,7 @@ class TeamsMeeting:
                 raise TimeoutError(f"Pre-join name input not found within {max_wait_sec}s timeout.")
 
             logger.info("[TeamsBot] Pre-join screen detected")
+            await self.dismiss_media_prompt_if_present()
 
             # Stage 02: Pre-join screen screenshot
             try:
@@ -520,6 +543,7 @@ class TeamsMeeting:
                 target_join_button = self.page.locator("button#prejoin-join-button, button[data-tid='prejoin-join-button']").first
 
             logger.info("[TeamsBot] Join button detected")
+            await self.dismiss_media_prompt_if_present()
             logger.info("[TeamsBot] Clicking Join Now")
             try:
                 await target_join_button.wait_for(state="visible", timeout=5000)
@@ -533,6 +557,14 @@ class TeamsMeeting:
                 except Exception:
                     await target_name_input.press("Enter")
                     logger.info("[TeamsBot] Join request submitted via Enter key press.")
+
+            # If "Continue without audio or video" dialog popped up upon clicking Join, dismiss it and re-click Join
+            if await self.dismiss_media_prompt_if_present():
+                logger.info("[TeamsBot] Modal appeared after Join click; dismissed, re-submitting Join Now...")
+                try:
+                    await target_join_button.click(timeout=3000, force=True)
+                except Exception:
+                    await target_join_button.evaluate("el => el.click()")
 
             # Stage 04: Immediately after Join Now screenshot
             try:
@@ -581,6 +613,19 @@ class TeamsMeeting:
                 consecutive_in_meeting = 0
 
             logger.info(f"[MIA STATE] {current_state} consecutive={consecutive_in_meeting} | evidence={evidence}")
+
+            # If still stuck on PREJOIN due to a modal, dismiss it and re-trigger Join
+            if current_state == "PREJOIN":
+                if await self.dismiss_media_prompt_if_present():
+                    logger.info("[TeamsBot] Dismissed modal during lifecycle loop, re-clicking Join Now...")
+                    for target in [self.page] + self.page.frames:
+                        try:
+                            jb = target.locator("button#prejoin-join-button, button[data-tid='prejoin-join-button'], button:has-text('Join now'), button:has-text('Join')").first
+                            if await jb.is_visible(timeout=500):
+                                await jb.click(force=True)
+                                break
+                        except Exception:
+                            pass
 
             # Synchronize browser window.__miaState
             try:

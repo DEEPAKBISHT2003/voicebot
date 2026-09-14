@@ -41,6 +41,7 @@ class TeamsBrowser:
 
         launch_args = [
             "--use-fake-ui-for-media-stream",
+            "--use-fake-device-for-media-stream",
             "--no-sandbox",
             "--disable-setuid-sandbox",
             "--disable-blink-features=AutomationControlled",

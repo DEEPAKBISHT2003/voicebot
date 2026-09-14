@@ -44,7 +44,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-unifont \
     && rm -rf /var/lib/apt/lists/*
 
-# Install ONLY Chromium browser binary
+# Install ONLY Chromium browser binary (without --with-deps to avoid deprecated ttf-unifont package errors)
 RUN playwright install chromium
 
 # Create parent package init for Python import resolution

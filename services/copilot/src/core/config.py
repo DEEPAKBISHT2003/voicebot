@@ -29,7 +29,7 @@ class Settings:
 
     # DeepSeek / OpenAI
     DEEPSEEK_API_KEY: str = os.getenv("DEEPSEEK_API_KEY", os.getenv("GROQ_API_KEY", ""))
-    DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+    DEEPSEEK_MODEL: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro")
     DEEPSEEK_BASE_URL: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 
     # Groq

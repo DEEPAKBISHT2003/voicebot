@@ -176,25 +176,6 @@ export const CopilotSession: React.FC = () => {
     }
   }, [transcript, isTranscriptExpanded]);
 
-  // Helper to determine the status of the candidate's latest evaluated answer
-  const getLatestAnswerStatus = () => {
-    const candidateEvaluations = transcript.filter(m => m.speaker === 'Candidate' && m.evaluation);
-    if (candidateEvaluations.length === 0) return { label: 'No Answer Detected', color: 'text-muted-gray bg-gray-50 border-gray-200' };
-
-    const latest = candidateEvaluations[candidateEvaluations.length - 1];
-    const rating = latest.evaluation?.technical_accuracy?.rating;
-
-    if (rating === undefined) {
-      return { label: 'Evaluating...', color: 'text-amber-500 bg-amber-50 border-amber-200 animate-pulse font-bold' };
-    }
-    if (rating >= 80) {
-      return { label: 'Strong Answer', color: 'text-green-700 bg-green-50 border-green-200 font-bold' };
-    }
-    if (rating >= 50) {
-      return { label: 'Partial Answer', color: 'text-amber-700 bg-amber-50 border-amber-200 font-bold' };
-    }
-    return { label: 'Weak Answer', color: 'text-red-700 bg-red-50 border-red-200 font-bold' };
-  };
 
   // Poll backend status to auto-detect session closure
   useEffect(() => {

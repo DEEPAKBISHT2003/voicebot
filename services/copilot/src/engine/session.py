@@ -54,6 +54,7 @@ class CopilotSessionEngine:
         self.intelligence: Dict[str, Any] = self.intelligence_engine._get_empty_state()
         self.copilot_assistant = AICopilotEngine()
         self.assistance: Dict[str, Any] = self.copilot_assistant._get_empty_state()
+        self.on_update_callback: Any = None
 
     async def _update_all_background_llm_tasks(self, message: Dict[str, Any], last_question: str, websocket: Any = None):
         """Runs candidate evaluation, conversation intelligence, and copilot suggestions concurrently in the background."""
@@ -125,6 +126,13 @@ class CopilotSessionEngine:
                     })
                 except Exception as ws_err:
                     logger.debug(f"Could not push background update frame over WebSocket: {ws_err}")
+
+            # Notify dashboard subscribers via global on_update_callback if registered
+            if getattr(self, "on_update_callback", None):
+                try:
+                    await self.on_update_callback(message)
+                except Exception as cb_err:
+                    logger.debug(f"Could not invoke on_update_callback: {cb_err}")
 
         except Exception as e:
             logger.error(f"Error in background LLM task execution for session {self.session_id}: {e}")
