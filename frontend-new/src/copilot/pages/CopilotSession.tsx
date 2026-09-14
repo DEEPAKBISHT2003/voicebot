@@ -1,15 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { 
-  Mic, 
-  MessageSquare, 
-  Power, 
-  ArrowLeft, 
-  User, 
-  Activity, 
-  BookOpen, 
-  Briefcase, 
-  CheckCircle, 
+import {
+  Mic,
+  MessageSquare,
+  Power,
+  ArrowLeft,
+  User,
+  Activity,
+  BookOpen,
+  Briefcase,
+  CheckCircle,
   Compass,
   FileText,
   ChevronDown,
@@ -24,16 +24,16 @@ import { stopCopilot, getCopilotStatus, finalizeCopilotReport } from '../../api/
 export const CopilotSession: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  
-  const { 
-    status, 
-    error, 
-    transcript, 
-    intelligence, 
-    assistance, 
+
+  const {
+    status,
+    error,
+    transcript,
+    intelligence,
+    assistance,
     questions,
     togglePinQuestion,
-    startConnection, 
+    startConnection,
     stopConnection,
     updateState
   } = useCopilotAudio(id || null);
@@ -74,7 +74,7 @@ export const CopilotSession: React.FC = () => {
     if (simulate !== 'true') return;
 
     console.log('[Simulation] Initiating background simulation trigger connection...');
-    
+
     // Use copilot service simulation WebSocket via Nginx proxy
     const host = window.location.host;
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -148,13 +148,13 @@ export const CopilotSession: React.FC = () => {
     ws.onclose = () => {
       console.log('[SimulationWS] Simulation trigger WebSocket closed.');
       if (audioCtx) {
-        audioCtx.close().catch(() => {});
+        audioCtx.close().catch(() => { });
       }
     };
     return () => {
       ws.close();
       if (audioCtx) {
-        audioCtx.close().catch(() => {});
+        audioCtx.close().catch(() => { });
       }
     };
   }, [id]);
@@ -180,10 +180,10 @@ export const CopilotSession: React.FC = () => {
   const getLatestAnswerStatus = () => {
     const candidateEvaluations = transcript.filter(m => m.speaker === 'Candidate' && m.evaluation);
     if (candidateEvaluations.length === 0) return { label: 'No Answer Detected', color: 'text-muted-gray bg-gray-50 border-gray-200' };
-    
+
     const latest = candidateEvaluations[candidateEvaluations.length - 1];
     const rating = latest.evaluation?.technical_accuracy?.rating;
-    
+
     if (rating === undefined) {
       return { label: 'Evaluating...', color: 'text-amber-500 bg-amber-50 border-amber-200 animate-pulse font-bold' };
     }
@@ -236,7 +236,7 @@ export const CopilotSession: React.FC = () => {
   const getCandidateScore = () => {
     const candidateMessages = transcript.filter(m => m.speaker === 'Candidate' && m.evaluation);
     if (candidateMessages.length === 0) return 'N/A';
-    
+
     let totalAccuracy = 0;
     let count = 0;
     candidateMessages.forEach(m => {
@@ -254,7 +254,7 @@ export const CopilotSession: React.FC = () => {
   const getAverageMetric = (key: 'technical_accuracy' | 'confidence' | 'completeness' | 'practical_knowledge' | 'communication' | 'production_experience') => {
     const candidateMessages = transcript.filter(m => m.speaker === 'Candidate' && m.evaluation);
     if (candidateMessages.length === 0) return 0;
-    
+
     let total = 0;
     let count = 0;
     candidateMessages.forEach(m => {
@@ -373,11 +373,10 @@ export const CopilotSession: React.FC = () => {
                 }
               }}
               disabled={isGeneratingReport}
-              className={`flex items-center gap-2 px-4 py-2 text-white text-xs font-bold rounded-lg shadow-md transition-all cursor-pointer border ${
-                isSimulationFinished
+              className={`flex items-center gap-2 px-4 py-2 text-white text-xs font-bold rounded-lg shadow-md transition-all cursor-pointer border ${isSimulationFinished
                   ? 'bg-green-600 hover:bg-green-700 border-green-700 animate-bounce'
                   : 'bg-primary hover:bg-primary/90 border-primary'
-              }`}
+                }`}
             >
               {isGeneratingReport ? (
                 <>
@@ -394,10 +393,9 @@ export const CopilotSession: React.FC = () => {
 
             {/* Status Indicator */}
             <div className="flex items-center gap-2 px-3 py-1.5 bg-white rounded-lg border border-border-gray">
-              <span className={`h-2.5 w-2.5 rounded-full ${
-                status === 'connected' ? 'bg-green-500 animate-pulse' :
-                status === 'connecting' ? 'bg-amber-500 animate-pulse' : 'bg-muted-gray'
-              }`} />
+              <span className={`h-2.5 w-2.5 rounded-full ${status === 'connected' ? 'bg-green-500 animate-pulse' :
+                  status === 'connecting' ? 'bg-amber-500 animate-pulse' : 'bg-muted-gray'
+                }`} />
               <span className="text-xs font-bold capitalize text-primary">{status}</span>
             </div>
 
@@ -463,11 +461,10 @@ export const CopilotSession: React.FC = () => {
 
                 <button
                   onClick={() => setIsMuted(!isMuted)}
-                  className={`p-2 rounded-lg text-xs font-bold border transition-all flex items-center gap-1.5 ${
-                    isMuted
+                  className={`p-2 rounded-lg text-xs font-bold border transition-all flex items-center gap-1.5 ${isMuted
                       ? 'bg-red-50 text-red-600 border-red-200'
                       : 'bg-white text-primary border-border-gray hover:bg-secondary'
-                  }`}
+                    }`}
                 >
                   {isMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
                   {isMuted ? 'Muted' : 'Mute'}
@@ -477,18 +474,18 @@ export const CopilotSession: React.FC = () => {
           )}
 
           {/* HUD Cards Grid */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* Current Topic Card */}
-            <div className="bg-secondary rounded-xl p-4 border border-border-gray shadow-sm flex flex-col justify-between">
+          {/* <div className="grid grid-cols-1 md:grid-cols-3 gap-4"> */}
+          {/* Current Topic Card */}
+          {/* <div className="bg-secondary rounded-xl p-4 border border-border-gray shadow-sm flex flex-col justify-between">
               <span className="text-[10px] font-bold text-muted-gray uppercase tracking-wider block mb-1">Current Discussion Topic</span>
               <div className="flex items-center gap-2 text-sm font-bold text-primary py-1">
                 <Activity className="h-4 w-4 text-green-500 shrink-0" />
                 {intelligence.current_topic || 'No topic detected yet'}
               </div>
-            </div>
+            </div> */}
 
-            {/* Interview Decision Card */}
-            {(() => {
+          {/* Interview Decision Card */}
+          {/* {(() => {
               const statusObj = getLatestAnswerStatus();
               return (
                 <div className="bg-secondary rounded-xl p-4 border border-border-gray shadow-sm flex flex-col justify-between">
@@ -500,17 +497,17 @@ export const CopilotSession: React.FC = () => {
                   </div>
                 </div>
               );
-            })()}
+            })()} */}
 
-            {/* Recommended Next Topic Card */}
-            <div className="bg-secondary rounded-xl p-4 border border-border-gray shadow-sm flex flex-col justify-between">
+          {/* Recommended Next Topic Card */}
+          {/* <div className="bg-secondary rounded-xl p-4 border border-border-gray shadow-sm flex flex-col justify-between">
               <span className="text-[10px] font-bold text-muted-gray uppercase tracking-wider block mb-1 font-semibold">Recommended Next Topic</span>
               <div className="flex items-center gap-2 text-xs font-bold text-primary bg-primary/5 p-2 rounded-lg border border-primary/10 py-1">
                 <Compass className="h-4 w-4 text-primary shrink-0 animate-spin-slow" />
                 {assistance.recommended_next_topic || 'Determining next topic...'}
               </div>
             </div>
-          </div>
+          </div> */}
 
           {/* Pinned Questions Section (if any question is pinned) */}
           {(() => {
@@ -530,8 +527,8 @@ export const CopilotSession: React.FC = () => {
                       q.type === 'Follow-up'
                         ? 'bg-purple-50 text-purple-700 border-purple-200'
                         : q.type === 'Verification'
-                        ? 'bg-amber-50 text-amber-700 border-amber-200'
-                        : 'bg-blue-50 text-blue-700 border-blue-200';
+                          ? 'bg-amber-50 text-amber-700 border-amber-200'
+                          : 'bg-blue-50 text-blue-700 border-blue-200';
                     return (
                       <div
                         key={q.id}
@@ -585,9 +582,8 @@ export const CopilotSession: React.FC = () => {
                       list.map((q) => (
                         <div
                           key={q.id}
-                          className={`bg-white rounded-lg p-3 border text-xs text-primary shadow-sm leading-relaxed flex flex-col gap-2 transition-all ${
-                            q.isPinned ? 'border-amber-400 ring-1 ring-amber-300' : 'border-border-gray/80 hover:border-purple-300'
-                          }`}
+                          className={`bg-white rounded-lg p-3 border text-xs text-primary shadow-sm leading-relaxed flex flex-col gap-2 transition-all ${q.isPinned ? 'border-amber-400 ring-1 ring-amber-300' : 'border-border-gray/80 hover:border-purple-300'
+                            }`}
                         >
                           <div className="flex items-center justify-between gap-2">
                             <span className="px-1.5 py-0.5 rounded text-[9px] font-bold border bg-purple-50 text-purple-700 border-purple-200">
@@ -596,11 +592,10 @@ export const CopilotSession: React.FC = () => {
                             <button
                               onClick={() => togglePinQuestion(q.id)}
                               title={q.isPinned ? 'Unpin question' : 'Pin question'}
-                              className={`p-1 rounded transition-colors ${
-                                q.isPinned
+                              className={`p-1 rounded transition-colors ${q.isPinned
                                   ? 'text-amber-600 hover:text-amber-800 bg-amber-50'
                                   : 'text-gray-400 hover:text-amber-600 hover:bg-gray-100'
-                              }`}
+                                }`}
                             >
                               <Pin className={`h-3.5 w-3.5 ${q.isPinned ? 'fill-amber-500' : ''}`} />
                             </button>
@@ -639,9 +634,8 @@ export const CopilotSession: React.FC = () => {
                       list.map((q) => (
                         <div
                           key={q.id}
-                          className={`bg-white rounded-lg p-3 border text-xs text-primary shadow-sm leading-relaxed flex flex-col gap-2 transition-all ${
-                            q.isPinned ? 'border-amber-400 ring-1 ring-amber-300' : 'border-border-gray/80 hover:border-amber-300'
-                          }`}
+                          className={`bg-white rounded-lg p-3 border text-xs text-primary shadow-sm leading-relaxed flex flex-col gap-2 transition-all ${q.isPinned ? 'border-amber-400 ring-1 ring-amber-300' : 'border-border-gray/80 hover:border-amber-300'
+                            }`}
                         >
                           <div className="flex items-center justify-between gap-2">
                             <span className="px-1.5 py-0.5 rounded text-[9px] font-bold border bg-amber-50 text-amber-700 border-amber-200">
@@ -650,11 +644,10 @@ export const CopilotSession: React.FC = () => {
                             <button
                               onClick={() => togglePinQuestion(q.id)}
                               title={q.isPinned ? 'Unpin question' : 'Pin question'}
-                              className={`p-1 rounded transition-colors ${
-                                q.isPinned
+                              className={`p-1 rounded transition-colors ${q.isPinned
                                   ? 'text-amber-600 hover:text-amber-800 bg-amber-50'
                                   : 'text-gray-400 hover:text-amber-600 hover:bg-gray-100'
-                              }`}
+                                }`}
                             >
                               <Pin className={`h-3.5 w-3.5 ${q.isPinned ? 'fill-amber-500' : ''}`} />
                             </button>
@@ -693,9 +686,8 @@ export const CopilotSession: React.FC = () => {
                       list.map((q) => (
                         <div
                           key={q.id}
-                          className={`bg-white rounded-lg p-3 border text-xs text-primary shadow-sm leading-relaxed flex flex-col gap-2 transition-all ${
-                            q.isPinned ? 'border-amber-400 ring-1 ring-amber-300' : 'border-border-gray/80 hover:border-blue-300'
-                          }`}
+                          className={`bg-white rounded-lg p-3 border text-xs text-primary shadow-sm leading-relaxed flex flex-col gap-2 transition-all ${q.isPinned ? 'border-amber-400 ring-1 ring-amber-300' : 'border-border-gray/80 hover:border-blue-300'
+                            }`}
                         >
                           <div className="flex items-center justify-between gap-2">
                             <span className="px-1.5 py-0.5 rounded text-[9px] font-bold border bg-blue-50 text-blue-700 border-blue-200">
@@ -704,11 +696,10 @@ export const CopilotSession: React.FC = () => {
                             <button
                               onClick={() => togglePinQuestion(q.id)}
                               title={q.isPinned ? 'Unpin question' : 'Pin question'}
-                              className={`p-1 rounded transition-colors ${
-                                q.isPinned
+                              className={`p-1 rounded transition-colors ${q.isPinned
                                   ? 'text-amber-600 hover:text-amber-800 bg-amber-50'
                                   : 'text-gray-400 hover:text-amber-600 hover:bg-gray-100'
-                              }`}
+                                }`}
                             >
                               <Pin className={`h-3.5 w-3.5 ${q.isPinned ? 'fill-amber-500' : ''}`} />
                             </button>
@@ -725,7 +716,7 @@ export const CopilotSession: React.FC = () => {
 
           {/* Collapsible Accordion Sections */}
           <div className="space-y-4">
-            
+
             {/* Accordion 1: Live Transcript Log */}
             <div className="bg-secondary rounded-xl border border-border-gray shadow-sm overflow-hidden">
               <button
@@ -760,28 +751,25 @@ export const CopilotSession: React.FC = () => {
                       }
 
                       return (
-                        <div 
-                          key={index} 
+                        <div
+                          key={index}
                           className={`flex flex-col gap-1.5 ${isCandidate ? 'items-start' : 'items-end'}`}
                         >
-                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${
-                            isCandidate
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${isCandidate
                               ? 'bg-blue-50 text-blue-700 border-blue-200'
                               : isInterviewer
-                              ? 'bg-purple-50 text-purple-700 border-purple-200'
-                              : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                          }`}>
+                                ? 'bg-purple-50 text-purple-700 border-purple-200'
+                                : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            }`}>
                             {msg.speaker}
                           </span>
-                          <div className={`group relative rounded-xl p-3 max-w-[85%] border shadow-sm transition-all ${
-                            isCandidate 
-                              ? 'bg-white border-border-gray text-primary' 
+                          <div className={`group relative rounded-xl p-3 max-w-[85%] border shadow-sm transition-all ${isCandidate
+                              ? 'bg-white border-border-gray text-primary'
                               : 'bg-primary text-white border-primary/30'
-                          }`}>
-                            <p className="text-xs leading-relaxed">{msg.text}</p>
-                            <span className={`block text-[9px] mt-1.5 text-right ${
-                              isCandidate ? 'text-muted-gray' : 'text-primary-foreground/75'
                             }`}>
+                            <p className="text-xs leading-relaxed">{msg.text}</p>
+                            <span className={`block text-[9px] mt-1.5 text-right ${isCandidate ? 'text-muted-gray' : 'text-primary-foreground/75'
+                              }`}>
                               {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                             </span>
                           </div>
@@ -813,8 +801,8 @@ export const CopilotSession: React.FC = () => {
                     <span className="text-[10px] font-bold text-muted-gray uppercase block mb-1">JD Coverage Progress</span>
                     <div className="flex items-center gap-3">
                       <div className="flex-1 h-3 bg-white rounded-full overflow-hidden border border-border-gray p-0.5">
-                        <div 
-                          className="h-full bg-primary rounded-full transition-all duration-500" 
+                        <div
+                          className="h-full bg-primary rounded-full transition-all duration-500"
                           style={{ width: `${intelligence.interview_progress.percentage || 0}%` }}
                         />
                       </div>
@@ -954,8 +942,8 @@ export const CopilotSession: React.FC = () => {
               </div>
               <div className="space-y-2 mt-4">
                 <div className="w-full h-3 bg-white rounded-full overflow-hidden border border-border-gray p-0.5">
-                  <div 
-                    className="h-full bg-primary rounded-full transition-all duration-500" 
+                  <div
+                    className="h-full bg-primary rounded-full transition-all duration-500"
                     style={{ width: `${intelligence.interview_progress.percentage || 0}%` }}
                   />
                 </div>
@@ -985,10 +973,9 @@ export const CopilotSession: React.FC = () => {
                       <span className={scoreColor}>{score}%</span>
                     </div>
                     <div className="w-full h-1.5 bg-secondary rounded-full overflow-hidden border border-border-gray/50 p-0.5">
-                      <div 
-                        className={`h-full rounded-full ${
-                          score >= 80 ? 'bg-green-500' : score >= 50 ? 'bg-amber-500' : 'bg-red-500'
-                        }`} 
+                      <div
+                        className={`h-full rounded-full ${score >= 80 ? 'bg-green-500' : score >= 50 ? 'bg-amber-500' : 'bg-red-500'
+                          }`}
                         style={{ width: `${score}%` }}
                       />
                     </div>
@@ -1203,23 +1190,21 @@ export const CopilotSession: React.FC = () => {
                 }
 
                 return (
-                  <div 
-                    key={index} 
+                  <div
+                    key={index}
                     className={`flex flex-col gap-2 ${isCandidate ? 'items-start' : 'items-end'}`}
                   >
                     <span className="text-[10px] font-bold text-muted-gray px-1">
                       {msg.speaker}
                     </span>
 
-                    <div className={`group relative rounded-xl p-3.5 max-w-[90%] border shadow-sm transition-all ${
-                      isCandidate 
-                        ? 'bg-white border-border-gray text-primary' 
+                    <div className={`group relative rounded-xl p-3.5 max-w-[90%] border shadow-sm transition-all ${isCandidate
+                        ? 'bg-white border-border-gray text-primary'
                         : 'bg-primary text-white border-primary/30'
-                    }`}>
-                      <p className="text-xs leading-relaxed">{msg.text}</p>
-                      <span className={`block text-[9px] mt-1.5 text-right ${
-                        isCandidate ? 'text-muted-gray' : 'text-primary-foreground/75'
                       }`}>
+                      <p className="text-xs leading-relaxed">{msg.text}</p>
+                      <span className={`block text-[9px] mt-1.5 text-right ${isCandidate ? 'text-muted-gray' : 'text-primary-foreground/75'
+                        }`}>
                         {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                       </span>
                     </div>
@@ -1243,11 +1228,10 @@ export const CopilotSession: React.FC = () => {
                           {msg.evaluation.is_complete !== undefined && (
                             <div className="flex justify-between items-center text-[10px]">
                               <span className="text-muted-gray font-semibold">Answer Complete:</span>
-                              <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${
-                                msg.evaluation.is_complete 
-                                  ? 'text-green-600 bg-green-50 border-green-200' 
+                              <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${msg.evaluation.is_complete
+                                  ? 'text-green-600 bg-green-50 border-green-200'
                                   : 'text-amber-600 bg-amber-50 border-amber-200'
-                              }`}>
+                                }`}>
                                 {msg.evaluation.is_complete ? 'YES' : 'NO'}
                               </span>
                             </div>
@@ -1255,11 +1239,10 @@ export const CopilotSession: React.FC = () => {
                           {msg.evaluation.follow_up_required !== undefined && (
                             <div className="flex justify-between items-center text-[10px]">
                               <span className="text-muted-gray font-semibold">Follow-up Required:</span>
-                              <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${
-                                msg.evaluation.follow_up_required 
-                                  ? 'text-red-600 bg-red-50 border-red-200 animate-pulse' 
+                              <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${msg.evaluation.follow_up_required
+                                  ? 'text-red-600 bg-red-50 border-red-200 animate-pulse'
                                   : 'text-green-600 bg-green-50 border-green-200'
-                              }`}>
+                                }`}>
                                 {msg.evaluation.follow_up_required ? 'YES' : 'NO'}
                               </span>
                             </div>
