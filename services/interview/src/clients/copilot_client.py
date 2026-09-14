@@ -1,5 +1,6 @@
 """HTTP Client for Copilot Service Communication"""
 
+import os
 import httpx
 from typing import Optional, Dict, Any
 from loguru import logger
@@ -9,7 +10,7 @@ class CopilotClient:
     """Client for communicating with the Copilot service"""
     
     def __init__(self, base_url: Optional[str] = None):
-        self.base_url = base_url or "http://localhost:8000"
+        self.base_url = base_url or os.getenv("COPILOT_URL", os.getenv("BACKEND_URL", "http://localhost:8000"))
         self.client = httpx.AsyncClient(base_url=self.base_url, timeout=10.0)
     
     async def start_copilot_session(

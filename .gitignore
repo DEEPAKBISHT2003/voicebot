@@ -42,7 +42,7 @@ frontend-new/build/
 yarn-error.log
 pnpm-debug.log
 
-# ─── Runtime Data, Session Storage & Screenshots ───────────
+# ─── Runtime Data, Session Storage & Media ─────────────────
 interviews/
 storage/
 **/storage/
@@ -50,8 +50,6 @@ logs/
 *.log
 temp/
 tmp/
-
-# ─── Audio & Media Files ───────────────────────────────────
 *.wav
 *.mp3
 *.pcm
@@ -67,37 +65,7 @@ tmp/
 *.sqlite3-wal
 *.sqlite-journal
 db.sqlite3
-
-# ─── Node.js ──────────────────────────────────────────────
-node_modules/
-dist/
-build/
-.eslintcache
-yarn-error.log
-pnpm-debug.log
-
-# ─── Docker ───────────────────────────────────────────────
 postgres_data/
-
-# ─── IDE & Editor ─────────────────────────────────────────
-.vscode/
-.idea/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.swp
-
-# ─── OS-Specific ──────────────────────────────────────────
-.DS_Store
-Thumbs.db
-ehthumbs.db
-
-# ─── Logs & Temp Files ────────────────────────────────────
-*.log
-logs/
-temp/
-tmp/
 
 # ─── Playwright & Browser Automation ──────────────────────
 .playwright/
@@ -131,10 +99,8 @@ coverage.xml
 .coverage
 *.cover
 
-# ─── Archive (historical migration plans) ────────────────
+# ─── Archive & Excluded Project Files ────────────────────
 docs/archive/
-
-# ─── Excluded Project Files ───────────────────────────────
 ARCHITECTURE.md
 VAD.md
 PROCESS.md
@@ -150,12 +116,11 @@ migration-plan-phase3.md
 migration-plan-phase4.md
 migration-plan-phase5.md
 packages/
-PROCESS.md
 docss/
 docs
 docss.zip
 
-# ─── Scratch & Diagnostic Test Scripts ─────────────────
+# ─── Diagnostic Test Scripts ─────────────────────────────
 scripts/capture_*
 scripts/check_*
 scripts/cleanup_*
@@ -167,4 +132,3 @@ scripts/preflight.sh
 scripts/run_full_diag.sh
 scripts/start_session.json
 scripts/test_*
-AGENTS.md

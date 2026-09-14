@@ -46,6 +46,7 @@ export const CopilotSession: React.FC = () => {
 
   const [isSimulationFinished, setIsSimulationFinished] = useState<boolean>(false);
   const [isGeneratingReport, setIsGeneratingReport] = useState<boolean>(false);
+  const [isDisconnecting, setIsDisconnecting] = useState<boolean>(false);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [volume, setVolume] = useState<number>(1.0);
 
@@ -177,7 +178,8 @@ export const CopilotSession: React.FC = () => {
   }, [transcript, isTranscriptExpanded]);
 
   // Helper to determine the status of the candidate's latest evaluated answer
-  const getLatestAnswerStatus = () => {
+  /*
+  const _getLatestAnswerStatus = () => {
     const candidateEvaluations = transcript.filter(m => m.speaker === 'Candidate' && m.evaluation);
     if (candidateEvaluations.length === 0) return { label: 'No Answer Detected', color: 'text-muted-gray bg-gray-50 border-gray-200' };
 
@@ -195,6 +197,7 @@ export const CopilotSession: React.FC = () => {
     }
     return { label: 'Weak Answer', color: 'text-red-700 bg-red-50 border-red-200 font-bold' };
   };
+  */
 
   // Poll backend status to auto-detect session closure
   useEffect(() => {
@@ -219,6 +222,25 @@ export const CopilotSession: React.FC = () => {
     const interval = setInterval(checkStatus, 3000);
     return () => clearInterval(interval);
   }, [id]);
+
+  const handleDisconnectSession = async () => {
+    const confirmed = window.confirm("Are you sure you want to disconnect and end the meeting bot session?");
+    if (!confirmed) return;
+
+    setIsDisconnecting(true);
+    try {
+      if (id) {
+        await stopCopilot(id);
+      }
+      stopConnection();
+      setIsSimulationFinished(true);
+    } catch (e) {
+      console.error("Failed to stop copilot session on backend:", e);
+      stopConnection();
+    } finally {
+      setIsDisconnecting(false);
+    }
+  };
 
   const handleEndSession = async () => {
     stopConnection();
@@ -401,17 +423,28 @@ export const CopilotSession: React.FC = () => {
 
             {status === 'connected' ? (
               <button
-                onClick={stopConnection}
-                className="flex items-center gap-2 px-4 py-2 bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold rounded-lg border border-red-200 transition-colors"
+                onClick={handleDisconnectSession}
+                disabled={isDisconnecting}
+                className="flex items-center gap-2 px-4 py-2 bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold rounded-lg border border-red-200 transition-colors disabled:opacity-50 cursor-pointer"
+                title="Disconnect meeting bot and end session"
               >
-                <Power className="h-3.5 w-3.5" />
-                Disconnect
+                {isDisconnecting ? (
+                  <>
+                    <div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-red-600" />
+                    Disconnecting...
+                  </>
+                ) : (
+                  <>
+                    <Power className="h-3.5 w-3.5" />
+                    Disconnect
+                  </>
+                )}
               </button>
             ) : (
               <button
                 onClick={startConnection}
-                disabled={status === 'connecting'}
-                className="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/95 text-white text-xs font-bold rounded-lg disabled:opacity-50 transition-colors shadow-sm"
+                disabled={status === 'connecting' || isDisconnecting}
+                className="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/95 text-white text-xs font-bold rounded-lg disabled:opacity-50 transition-colors shadow-sm cursor-pointer"
               >
                 <Mic className="h-3.5 w-3.5" />
                 {status === 'connecting' ? 'Connecting...' : 'Connect Copilot'}

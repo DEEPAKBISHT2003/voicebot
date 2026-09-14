@@ -1,5 +1,5 @@
 # =============================================================
-# Voicebot & AI Copilot Platform — Root .dockerignore
+# Voicebot Browser Microservice — .dockerignore
 # =============================================================
 
 # ─── Git & Workspace Config ────────────────────────────────
@@ -26,14 +26,16 @@ __pycache__/
 *.pyd
 .pytest_cache/
 .mypy_cache/
-db.sqlite3*
-interviews/
-.env
-.git/
-.gemini/
-scratch/
-frontend-new/node_modules/
-frontend-new/dist/
+.ruff_cache/
+
+# ─── Playwright & Browser Testing Artifacts ────────────────
+.playwright/
+ms-playwright/
+playwright-report/
+blob-report/
+test-results/
+.cache/
+teams_bot_profile/
 
 # ─── Runtime Data, Session Storage & Media ─────────────────
 interviews/
@@ -49,21 +51,8 @@ logs/
 temp/
 tmp/
 
-# ─── Database & Docker Volumes ─────────────────────────────
-*.db
-*.sqlite*
-postgres_data/
-
-# ─── IDE & AI Agent Workspace Files ────────────────────────
+# ─── IDE & OS Files ────────────────────────────────────────
 .vscode/
 .idea/
 .DS_Store
 Thumbs.db
-.kiro/
-aidlc/
-.gemini/
-scratch/
-docss/
-docss.zip
-AGENTS.md
-docs/

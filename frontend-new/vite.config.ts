@@ -45,11 +45,18 @@ export default defineConfig(({ mode }) => {
           target: copilotUrl.replace('http', 'ws'),
           changeOrigin: true,
           ws: true,
-        },        // Interview service routes → port 8000
+        },        // WebSocket proxy for /api/ws
+        '/api/ws': {
+          target: backendUrl.replace('http', 'ws'),
+          changeOrigin: true,
+          ws: true,
+        },
+        // Interview service routes → port 8000
         '/api': {
           target: backendUrl,
           changeOrigin: true,
           secure: false,
+          ws: true,
         },
         '/ws': {
           target: backendUrl.replace('http', 'ws'),

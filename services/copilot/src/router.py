@@ -56,39 +56,82 @@ async def stop_copilot(
     active_sessions: Dict[str, Any] = Depends(get_copilot_sessions)
 ):
     if session_id in active_sessions:
+        sess = active_sessions[session_id]
         # Mark inactive
-        active_sessions[session_id]["is_active"] = False
-        active_sessions[session_id]["status"] = "Session stopped."
-        
-        # Terminate Playwright bot subprocess if active locally or via browser-service
-        browser_url = os.getenv("BROWSER_SERVICE_URL", os.getenv("BROWSER_URL", "http://browser-service:8002"))
-        try:
-            import httpx
-            async with httpx.AsyncClient(timeout=3.0) as client:
-                await client.post(f"{browser_url}/stop-meeting", json={"session_id": session_id})
-        except Exception:
-            pass
+        sess["is_active"] = False
+        sess["status"] = "Session stopped."
 
-        bot_process = active_sessions[session_id].get("bot_process")
+        # Broadcast termination frame to active dashboard subscribers
+        dashboards = list(sess.get("dashboard_websockets", []))
+        for dash_ws in dashboards:
+            try:
+                await dash_ws.send_json({
+                    "type": "copilot_update",
+                    "session_id": session_id,
+                    "is_active": False,
+                    "status": "Session stopped."
+                })
+            except Exception:
+                pass
+        
+        # Terminate Playwright bot subprocess if active via browser-service
+        browser_urls = [
+            os.getenv("BROWSER_SERVICE_URL"),
+            os.getenv("BROWSER_URL"),
+            "http://localhost:8002",
+            "http://127.0.0.1:8002",
+            "http://browser-service:8002"
+        ]
+        browser_urls = [u for u in browser_urls if u]
+        for b_url in browser_urls:
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=3.0) as client:
+                    resp = await client.post(f"{b_url}/stop-meeting", json={"session_id": session_id})
+                    if resp.status_code == 200:
+                        logger.info(f"[TeamsBot] Stopped meeting bot via browser-service at {b_url}")
+                        break
+            except Exception:
+                continue
+
+        # Terminate local bot process if present (using process-tree kill)
+        bot_process = sess.get("bot_process")
         if bot_process and bot_process.poll() is None:
             logger.info(f"[TeamsBot] Terminating local bot subprocess for session {session_id} (PID: {bot_process.pid})")
             try:
-                bot_process.terminate()
+                if sys.platform == "win32":
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(bot_process.pid)], capture_output=True)
+                else:
+                    try:
+                        import signal
+                        os.killpg(os.getpgid(bot_process.pid), signal.SIGTERM)
+                    except Exception:
+                        bot_process.terminate()
                 try:
                     bot_process.wait(timeout=3.0)
                 except Exception:
-                    logger.warning(f"[TeamsBot] Process {bot_process.pid} did not exit gracefully, killing...")
                     bot_process.kill()
             except Exception as pe:
                 logger.warning(f"[TeamsBot] Error terminating bot subprocess: {pe}")
-        active_sessions[session_id]["bot_process"] = None
+        sess["bot_process"] = None
 
-        ws = active_sessions[session_id].get("websocket")
+        # Stop Pipecat worker if active
+        worker = sess.get("worker")
+        if worker:
+            try:
+                if hasattr(worker, "cancel"):
+                    await worker.cancel()
+            except Exception as we:
+                logger.debug(f"[CopilotWS] Error cancelling worker on stop: {we}")
+
+        # Close producer websocket
+        ws = sess.get("websocket")
         if ws:
             try:
                 await ws.close()
             except Exception:
                 pass
+
         logger.info(f"Stopped AI Copilot Session: {session_id}")
         return {"status": "stopped"}
     else:
@@ -286,7 +329,7 @@ async def join_meeting(
     import threading
     import httpx
 
-    browser_url = os.getenv("BROWSER_SERVICE_URL", os.getenv("BROWSER_URL", "http://browser-service:8002"))
+    browser_url = os.getenv("BROWSER_SERVICE_URL", os.getenv("BROWSER_URL", "http://127.0.0.1:8002"))
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(

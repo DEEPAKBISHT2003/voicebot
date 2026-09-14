@@ -86,6 +86,8 @@ async def run_bot(meeting_url: str, session_id: str):
 
 
 if __name__ == "__main__":
+    import signal
+
     if len(sys.argv) < 3:
         print("Usage: python teams_bot.py <meeting_url> <session_id>")
         sys.exit(1)
@@ -93,4 +95,36 @@ if __name__ == "__main__":
     m_url = sys.argv[1]
     s_id = sys.argv[2]
 
-    asyncio.run(run_bot(m_url, s_id))
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    main_task = loop.create_task(run_bot(m_url, s_id))
+
+    def _shutdown(signum=None, frame=None):
+        logger.info(f"[TeamsBot] Received termination signal ({signum}), shutting down bot and closing browser context...")
+        if not main_task.done():
+            main_task.cancel()
+
+    if sys.platform != "win32":
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, _shutdown)
+            except Exception:
+                pass
+    else:
+        try:
+            signal.signal(signal.SIGINT, _shutdown)
+            if hasattr(signal, "SIGBREAK"):
+                signal.signal(signal.SIGBREAK, _shutdown)
+        except Exception:
+            pass
+
+    try:
+        loop.run_until_complete(main_task)
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        logger.info("[TeamsBot] Bot task cancelled. Playwright browser closed cleanly.")
+    finally:
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:
+            pass
+        loop.close()

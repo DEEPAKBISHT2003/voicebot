@@ -85,21 +85,64 @@ async def join_meeting(req: JoinMeetingRequest):
         logger.error(f"[BrowserService] Failed to spawn bot process: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to spawn bot: {str(e)}")
 
+def terminate_process_tree(pid: int):
+    """Forcefully terminates the process and all of its descendants across Windows and POSIX."""
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, timeout=5.0)
+        else:
+            import signal
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+            except Exception:
+                os.kill(pid, signal.SIGTERM)
+    except Exception as e:
+        logger.warning(f"[BrowserService] Error terminating process tree {pid}: {e}")
+
+
+def find_running_bot_pids(session_id: str) -> list[int]:
+    """Finds PIDs of any running teams_bot.py processes for this session (reload recovery)."""
+    pids = []
+    try:
+        if sys.platform == "win32":
+            cmd = f"Get-CimInstance Win32_Process | Where-Object {{ $_.CommandLine -like '*teams_bot.py*' -and $_.CommandLine -like '*{session_id}*' }} | Select-Object -ExpandProperty ProcessId"
+            out = subprocess.check_output(["powershell", "-NoProfile", "-Command", cmd], text=True, timeout=5.0)
+            for line in out.strip().splitlines():
+                line = line.strip()
+                if line.isdigit():
+                    pids.append(int(line))
+        else:
+            out = subprocess.check_output(["pgrep", "-f", f"teams_bot.py.*{session_id}"], text=True, timeout=5.0)
+            for line in out.strip().splitlines():
+                line = line.strip()
+                if line.isdigit():
+                    pids.append(int(line))
+    except Exception as e:
+        logger.debug(f"[BrowserService] Process scan for session {session_id}: {e}")
+    return pids
+
+
 @app.post("/stop-meeting")
 async def stop_meeting(req: StopMeetingRequest):
     session_id = req.session_id
+    stopped = False
+
+    # 1. Terminate tracked in-memory bot process tree
     if session_id in active_bots:
         bot_info = active_bots.pop(session_id)
         proc = bot_info.get("process")
-        if proc and proc.poll() is None:
-            logger.info(f"[BrowserService] Terminating bot process PID {proc.pid} for session {session_id}")
-            try:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=3.0)
-                except Exception:
-                    proc.kill()
-            except Exception as pe:
-                logger.warning(f"[BrowserService] Error terminating bot process: {pe}")
+        if proc:
+            logger.info(f"[BrowserService] Terminating bot process tree for PID {proc.pid} (session {session_id})")
+            terminate_process_tree(proc.pid)
+            stopped = True
+
+    # 2. Reload recovery: detect and terminate any orphaned bot process trees matching this session
+    recovered_pids = find_running_bot_pids(session_id)
+    for r_pid in recovered_pids:
+        logger.info(f"[BrowserService] Terminating recovered bot process PID {r_pid} for session {session_id}")
+        terminate_process_tree(r_pid)
+        stopped = True
+
+    if stopped:
         return {"status": "stopped", "session_id": session_id}
     return {"status": "not_found", "session_id": session_id}
