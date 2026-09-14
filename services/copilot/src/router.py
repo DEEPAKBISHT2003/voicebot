@@ -196,7 +196,7 @@ async def get_copilot_status(
             "session_id": session_id,
             "is_active": sess.get("is_active", True),
             "status": sess.get("status", "ready"),
-            "transcript": engine.get_transcript(),
+            "transcript": engine.get_ui_transcript(),
             "intelligence": engine.get_intelligence(),
             "assistance": engine.get_assistance(),
             "custom_prompt": sess.get("custom_prompt", "")

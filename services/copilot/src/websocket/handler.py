@@ -91,7 +91,7 @@ async def websocket_endpoint(
     speaker_map = sess.setdefault("speaker_map", {})
 
     # Helper function to broadcast updated session state to all connected dashboard clients
-    async def broadcast_update(last_message: Optional[dict] = None):
+    async def broadcast_update(last_message: Optional[dict] = None, is_interim: bool = False):
         eng = sess.get("engine")
         if not eng:
             return
@@ -99,9 +99,11 @@ async def websocket_endpoint(
             "type": "copilot_update",
             "session_id": session_id,
             "last_message": last_message,
-            "transcript": eng.get_transcript(),
+            "transcript": eng.get_ui_transcript() if is_interim else eng.get_transcript(),
             "intelligence": eng.get_intelligence(),
-            "assistance": eng.get_assistance()
+            "assistance": eng.get_assistance(),
+            "is_interim": is_interim,
+            "interim": eng.get_interim()
         }
         
         dead_sockets = set()
@@ -128,28 +130,40 @@ async def websocket_endpoint(
                 return
 
             sess["last_speech_time"] = time.time()
+            is_final = entry.get("is_final", True)
 
-            if raw_spk is not None:
-                spk_key = str(raw_spk)
-                if spk_key not in speaker_map:
-                    if len(speaker_map) == 0:
-                        speaker_map[spk_key] = "Candidate"
-                    elif len(speaker_map) == 1:
-                        speaker_map[spk_key] = "Interviewer"
-                    else:
-                        speaker_map[spk_key] = f"Speaker {len(speaker_map) + 1}"
-                speaker = speaker_map[spk_key]
+            if raw_spk:
+                spk_key = str(raw_spk).strip()
+                if spk_key:
+                    if spk_key not in speaker_map:
+                        if len(speaker_map) == 0:
+                            speaker_map[spk_key] = "Candidate"
+                        elif len(speaker_map) == 1:
+                            speaker_map[spk_key] = "Interviewer"
+                        else:
+                            speaker_map[spk_key] = f"Speaker {len(speaker_map) + 1}"
+                    speaker = speaker_map[spk_key]
+                    sess["last_active_speaker"] = speaker
+                else:
+                    speaker = sess.get("last_active_speaker") or ("Candidate" if entry.get("role", "user") == "user" else "Interviewer")
             else:
-                role_val = entry.get("role", "user")
-                speaker = "Candidate" if role_val == "user" else ("Interviewer" if role_val == "assistant" else "System")
-
-            logger.info(f"[CopilotWS] Audio STT segment ({speaker}): {text_content}")
+                speaker = sess.get("last_active_speaker") or ("Candidate" if entry.get("role", "user") == "user" else "Interviewer")
 
             eng = sess.get("engine")
-            if eng:
+            if not eng:
+                return
+
+            if not is_final:
+                # Real-time interim event: update ephemeral state & broadcast live frame (NO LLM, NO DB)
+                interim_msg = eng.update_interim(speaker, text_content)
+                sess["transcript"] = eng.get_ui_transcript()
+                await broadcast_update(interim_msg, is_interim=True)
+            else:
+                # Finalized utterance event: commit to permanent history, broadcast, and trigger background LLM
+                logger.info(f"[CopilotWS] Final Audio STT segment ({speaker}): {text_content}")
                 last_msg = await eng.add_message(speaker, text_content)
                 sess["transcript"] = eng.get_transcript()
-                await broadcast_update(last_msg)
+                await broadcast_update(last_msg, is_interim=False)
 
         # Inactivity timeout monitor (default 15 mins / 900 seconds)
         timeout_sec = int(os.getenv("INACTIVITY_TIMEOUT_SECONDS", "900"))

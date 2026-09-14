@@ -1,6 +1,7 @@
 import asyncio
 import datetime
-from typing import List, Dict, Any, Set
+import time
+from typing import List, Dict, Any, Set, Optional
 from loguru import logger
 from services.copilot.src.services.repository import CopilotRepository
 from services.copilot.src.services.evaluation import CandidateEvaluationService
@@ -23,20 +24,18 @@ class CopilotSessionEngine:
         self.jd = jd
         self.resume = resume
         self.custom_prompt = custom_prompt
+        self.transcript: List[Dict[str, Any]] = []
         self.detected_speakers: Set[str] = set()
         
-        # Normalize and map transcript entries for backward-compatibility with interview role keys
-        self.transcript: List[Dict[str, Any]] = []
-        raw_list = initial_transcript or []
-        for msg in raw_list:
-            speaker = msg.get("speaker")
-            if not speaker:
-                role = msg.get("role")
-                if role == "user":
+        # Load initial history if provided
+        for msg in (initial_transcript or []):
+            speaker = msg.get("speaker", "Candidate")
+            if speaker not in ("Candidate", "Interviewer", "System"):
+                if speaker.lower() in ("candidate", "user"):
                     speaker = "Candidate"
-                elif role == "assistant":
+                elif speaker.lower() in ("interviewer", "assistant"):
                     speaker = "Interviewer"
-                elif role == "system":
+                elif speaker.lower() == "system":
                     speaker = "System"
                 else:
                     speaker = "System"
@@ -54,6 +53,42 @@ class CopilotSessionEngine:
         self.intelligence: Dict[str, Any] = self.intelligence_engine._get_empty_state()
         self.copilot_assistant = AICopilotEngine()
         self.assistance: Dict[str, Any] = self.copilot_assistant._get_empty_state()
+        self.current_interim: Optional[Dict[str, Any]] = None
+
+        # Smart Time-Window Stitching: merge utterances from same speaker if within 2-3 seconds
+        self.stitch_window_seconds: float = 3.0
+        self._last_message_epoch: float = time.time() if self.transcript else 0.0
+
+    def update_interim(self, speaker: str, text: str) -> Dict[str, Any]:
+        """Updates the current ephemeral interim transcription segment for real-time display."""
+        clean_text = text.strip()
+        if not clean_text:
+            self.current_interim = None
+            return {}
+        self.current_interim = {
+            "speaker": speaker,
+            "text": clean_text,
+            "timestamp": datetime.datetime.now().isoformat(),
+            "is_interim": True
+        }
+        return self.current_interim
+
+    def clear_interim(self) -> None:
+        """Clears the current ephemeral interim transcription segment."""
+        self.current_interim = None
+
+    def get_interim(self) -> Optional[Dict[str, Any]]:
+        """Returns the current ephemeral interim transcription segment, if any."""
+        return self.current_interim
+
+    def get_ui_transcript(self) -> List[Dict[str, Any]]:
+        """
+        Returns the combined transcript for live UI rendering:
+        Permanent committed messages + the active temporary interim segment (if any).
+        """
+        if self.current_interim and self.current_interim.get("text"):
+            return self.transcript + [self.current_interim]
+        return self.transcript
 
     async def _update_all_background_llm_tasks(self, message: Dict[str, Any], last_question: str, websocket: Any = None):
         """Runs candidate evaluation, conversation intelligence, and copilot suggestions concurrently in the background."""
@@ -131,35 +166,19 @@ class CopilotSessionEngine:
 
     async def add_message(self, speaker: str, text: str, websocket: Any = None) -> Dict[str, Any]:
         """
-        Adds a new message to the session transcript and returns INSTANTLY (<5ms).
-        Stitches rapid same-speaker utterances into unified thoughts.
+        Adds a new finalized message to the permanent transcript history and returns INSTANTLY (<5ms).
+        Clears any active interim transcription state.
+        Each finalized utterance remains a distinct permanent message (no unconditional same-speaker overwriting).
+        Legitimate repeated speech (e.g. 'Yes.' followed by 'Yes.') is preserved as distinct utterances.
         All LLM processing (Evaluation, Intelligence, Assistance) runs asynchronously in parallel background task.
         """
+        self.clear_interim()
         self.detected_speakers.add(speaker)
         clean_text = text.strip()
         if not clean_text:
             return {}
 
-        # Same-Speaker Utterance Stitching Engine (Merges rapid consecutive chunks)
-        if self.transcript:
-            last_entry = self.transcript[-1]
-            if last_entry.get("speaker") == speaker:
-                # Merge into existing message bubble
-                last_entry["text"] = (last_entry.get("text", "") + " " + clean_text).strip()
-                last_entry["timestamp"] = datetime.datetime.now().isoformat()
-                
-                # Retrieve last question if candidate
-                last_q = ""
-                if speaker == "Candidate":
-                    for msg in reversed(self.transcript[:-1]):
-                        if msg.get("speaker") == "Interviewer":
-                            last_q = msg.get("text", "")
-                            break
-                            
-                asyncio.create_task(self._update_all_background_llm_tasks(last_entry, last_q, websocket))
-                return last_entry
-
-        # Retrieve the last interviewer question from transcript history
+        # Retrieve the last interviewer question from transcript history if speaker is candidate
         last_question = ""
         if speaker == "Candidate":
             for msg in reversed(self.transcript):

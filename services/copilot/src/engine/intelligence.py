@@ -1,4 +1,5 @@
 import json
+import re
 from openai import AsyncOpenAI
 from loguru import logger
 from typing import List, Dict, Any
@@ -6,16 +7,73 @@ from services.copilot.src.core.config import Settings
 
 
 def clean_json_loads(text: str) -> dict:
-    """Safely parse JSON responses that may be wrapped in markdown codeblocks."""
-    clean_text = text.strip()
-    if clean_text.startswith("```"):
-        lines = clean_text.splitlines()
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        clean_text = "\n".join(lines).strip()
-    return json.loads(clean_text)
+    """Safely parse JSON responses from LLMs handling code blocks, trailing commas, and extra text."""
+    if not text:
+        return {}
+    clean = text.strip()
+
+    # 1. Strip markdown code fence if wrapped
+    if "```" in clean:
+        match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', clean)
+        if match:
+            clean = match.group(1).strip()
+        else:
+            clean = re.sub(r'^```(?:json)?\s*', '', clean)
+            clean = re.sub(r'\s*```$', '', clean).strip()
+
+    # 2. Try standard json.loads directly
+    try:
+        return json.loads(clean)
+    except Exception:
+        pass
+
+    # 3. Locate the first '{' and try raw_decode to ignore trailing 'Extra data'
+    first_brace = clean.find('{')
+    if first_brace != -1:
+        snippet = clean[first_brace:]
+        try:
+            decoder = json.JSONDecoder()
+            obj, _ = decoder.raw_decode(snippet)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+
+    # 4. Fix common LLM syntax issues: trailing commas before } or ]
+    fixed = re.sub(r',\s*([\}\]])', r'\1', clean)
+    try:
+        return json.loads(fixed)
+    except Exception:
+        pass
+
+    # 5. Try raw_decode on the fixed string
+    first_brace = fixed.find('{')
+    if first_brace != -1:
+        snippet = fixed[first_brace:]
+        try:
+            decoder = json.JSONDecoder()
+            obj, _ = decoder.raw_decode(snippet)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+
+    # 6. If truncated mid-stream, balance open braces/brackets
+    if first_brace != -1:
+        candidate = fixed[first_brace:].strip()
+        candidate = re.sub(r',\s*$', '', candidate)
+        candidate = re.sub(r',\s*"[^"]*"\s*:\s*$', '', candidate)
+        open_curly = candidate.count('{') - candidate.count('}')
+        open_square = candidate.count('[') - candidate.count(']')
+        balanced = candidate + (']' * max(0, open_square)) + ('}' * max(0, open_curly))
+        try:
+            obj = json.loads(balanced)
+            if isinstance(obj, dict):
+                return obj
+        except Exception:
+            pass
+
+    return json.loads(clean)
 
 
 class ConversationIntelligenceEngine:

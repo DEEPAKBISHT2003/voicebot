@@ -29,7 +29,8 @@ class CopilotPipelineBuilder:
         self,
         websocket: Any,
         session_id: str,
-        transcript_callback: Optional[Callable[[dict], Any]] = None
+        transcript_callback: Optional[Callable[[dict], Any]] = None,
+        interim_callback: Optional[Callable[[dict], Any]] = None
     ) -> Optional[Tuple[Pipeline, PipelineWorker]]:
         """Constructs an STT audio processing pipeline using FastAPIWebsocketTransport."""
         if not self.deepgram_api_key:
@@ -51,13 +52,17 @@ class CopilotPipelineBuilder:
             stt = DeepgramSTTService(
                 api_key=self.deepgram_api_key,
                 settings=DeepgramSTTService.Settings(
-                    endpointing=400,
+                    endpointing=250,
+                    interim_results=True,
                     diarize=True,
                     smart_format=True
                 )
             )
 
-            accumulator = TranscriptAccumulator(callback=transcript_callback)
+            accumulator = TranscriptAccumulator(
+                callback=transcript_callback,
+                interim_callback=interim_callback
+            )
 
             # Audio buffer processor for recording audio
             audio_buffer = AudioBufferProcessor(
