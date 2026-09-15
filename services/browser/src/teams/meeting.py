@@ -187,21 +187,8 @@ async def run_in_meeting_diagnostics(page: Page) -> None:
 
         logger.info(f"[MIA MIC] pipecat_enabled=true track_enabled={track_enabled} teams_muted={teams_muted}")
 
-        # Ensure video camera is turned off in top toolbar
-        for frame in all_frames:
-            try:
-                in_meeting_camera = frame.locator("button[data-tid='camera-button'], button[aria-label*='camera' i]").first
-                if await in_meeting_camera.is_visible(timeout=300):
-                    label = (await in_meeting_camera.get_attribute("aria-label") or "").lower()
-                    pressed = (await in_meeting_camera.get_attribute("aria-pressed") or "").lower()
-                    if pressed == "true" or ("turn camera off" in label):
-                        await in_meeting_camera.click()
-                        logger.info("[TeamsBot] In-meeting camera clicked OFF.")
-                        break
-                    elif "turn camera on" in label or pressed == "false":
-                        break
-            except Exception:
-                pass
+        # In-meeting camera click disabled for Phase 5 (audio-only mode to prevent mid-call renegotiation)
+        logger.debug("[MIA DIAGNOSTICS] In-meeting camera click bypassed (audio-only mode).")
 
     except Exception as de:
         logger.warning(f"[MIA DIAGNOSTICS] Error during diagnostics: {de}")
@@ -599,6 +586,8 @@ class TeamsMeeting:
     async def run_lifecycle_loop(self) -> None:
         """Main Teams Meeting Lifecycle & Polling Loop."""
         consecutive_in_meeting = 0
+        consecutive_signals_lost = 0
+        has_been_admitted = False
         ws_triggered = False
         diagnostics_launched = False
         last_screenshot_state = None
@@ -609,10 +598,41 @@ class TeamsMeeting:
 
             if current_state == "IN_MEETING":
                 consecutive_in_meeting += 1
+                consecutive_signals_lost = 0
             else:
                 consecutive_in_meeting = 0
+                if has_been_admitted:
+                    consecutive_signals_lost += 1
 
-            logger.info(f"[MIA STATE] {current_state} consecutive={consecutive_in_meeting} | evidence={evidence}")
+            # Check if IN_MEETING has remained stable for >= 2 consecutive checks
+            if consecutive_in_meeting >= 2:
+                has_been_admitted = True
+                if self.mia_join_only:
+                    logger.info("[MIA JOIN ONLY PASS] Confirmed REAL IN_MEETING state! Audio pipeline isolated.")
+                elif not ws_triggered:
+                    logger.info("[MIA STATE] WebSocket gate condition satisfied")
+                    logger.info("[MIA WEBSOCKET GATE] Meeting admission confirmed & stable! Triggering WebSocket connection...")
+                    try:
+                        await self.page.evaluate("window.__connectMiaWebSocket__ && window.__connectMiaWebSocket__()")
+                        for frame in self.page.frames:
+                            try:
+                                await frame.evaluate("window.__connectMiaWebSocket__ && window.__connectMiaWebSocket__()")
+                            except Exception:
+                                pass
+                        ws_triggered = True
+                    except Exception as wse:
+                        logger.warning(f"[TeamsBot] WebSocket trigger skipped/failed: {wse}")
+
+            # Post-admission debounce: if bot was confirmed in meeting but signals stayed absent for >= 4 checks (~6s)
+            if has_been_admitted and consecutive_signals_lost >= 4:
+                if current_state != "DISCONNECTED":
+                    logger.warning(
+                        f"[TeamsBot] Post-admission in-meeting signals lost for {consecutive_signals_lost} consecutive checks "
+                        f"(~{consecutive_signals_lost * 1.5:.1f}s). Classifying as DISCONNECTED."
+                    )
+                    current_state = "DISCONNECTED"
+
+            logger.info(f"[MIA STATE] {current_state} consecutive={consecutive_in_meeting} (signals_lost={consecutive_signals_lost}, admitted={has_been_admitted}) | evidence={evidence}")
 
             # If still stuck on PREJOIN due to a modal, dismiss it and re-trigger Join
             if current_state == "PREJOIN":

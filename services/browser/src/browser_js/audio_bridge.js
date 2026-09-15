@@ -23,23 +23,19 @@
     }
     ensureAudioContextRunning();
 
-    // Black Video Track Helper (matching proto)
-    function createBlackVideoTrack() {
-        try {
-            const canvas = document.createElement("canvas");
-            canvas.width = 640;
-            canvas.height = 480;
-            const ctx = canvas.getContext("2d");
-            ctx.fillStyle = "black";
-            ctx.fillRect(0, 0, 640, 480);
-            const blackStream = canvas.captureStream(1);
-            return blackStream.getVideoTracks()[0];
-        } catch (e) {
-            return null;
-        }
+    // REQUIREMENT 4A — enumerateDevices Interception (Hide camera devices)
+    if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices && !navigator.mediaDevices.__miaEnumPatched) {
+        const origEnumerateDevices = navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);
+        navigator.mediaDevices.enumerateDevices = async function() {
+            const devices = await origEnumerateDevices();
+            // Filter out all videoinput devices so Teams sees only audio devices (audio-only mode)
+            const filtered = devices.filter(d => d.kind !== 'videoinput');
+            return filtered;
+        };
+        navigator.mediaDevices.__miaEnumPatched = true;
     }
 
-    // REQUIREMENT 4 — getUserMedia Interception (proto architecture)
+    // REQUIREMENT 4B — getUserMedia Interception (Audio-only, camera unavailable)
     if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia && !navigator.mediaDevices.__miaPatched) {
         const origGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
         navigator.mediaDevices.getUserMedia = async function(constraints) {
@@ -48,19 +44,19 @@
             const wantsAudio = constraints && constraints.audio;
             const wantsVideo = constraints && constraints.video;
 
-            if (wantsAudio) {
-                let tracks = [virtualMicTrack];
-                if (wantsVideo) {
-                    const blackTrack = createBlackVideoTrack();
-                    if (blackTrack) tracks.push(blackTrack);
-                }
+            if (wantsAudio && !wantsVideo) {
                 console.log(`[MIA-GUM] Returning Virtual Mic Track: ${virtualMicTrack.id}`);
-                return new MediaStream(tracks);
+                return new MediaStream([virtualMicTrack]);
+            }
+
+            if (wantsAudio && wantsVideo) {
+                console.log(`[MIA-GUM] Audio+Video requested but camera unavailable; returning audio-only track: ${virtualMicTrack.id}`);
+                return new MediaStream([virtualMicTrack]);
             }
 
             if (wantsVideo && !wantsAudio) {
-                const blackTrack = createBlackVideoTrack();
-                if (blackTrack) return new MediaStream([blackTrack]);
+                console.log("[MIA-GUM] Video-only requested but camera unavailable; rejecting with NotFoundError");
+                throw new DOMException("Requested device not found", "NotFoundError");
             }
 
             return origGetUserMedia(constraints);
@@ -68,7 +64,7 @@
         navigator.mediaDevices.__miaPatched = true;
     }
 
-    // REQUIREMENT 6 — replaceTrack Interception
+    // REQUIREMENT 6 — replaceTrack Interception (audio only)
     if (window.RTCRtpSender && window.RTCRtpSender.prototype.replaceTrack && !window.RTCRtpSender.prototype.__miaPatched) {
         const origReplaceTrack = window.RTCRtpSender.prototype.replaceTrack;
         window.RTCRtpSender.prototype.replaceTrack = async function(newTrack) {
@@ -77,16 +73,12 @@
                 console.log(`[MIA-WEBRTC] replaceTrack intercepted for audio! Supplying virtual track: ${virtualMicTrack.id}`);
                 return origReplaceTrack.call(this, virtualMicTrack);
             }
-            if (newTrack && newTrack.kind === 'video') {
-                const blackTrack = createBlackVideoTrack();
-                return origReplaceTrack.call(this, blackTrack);
-            }
             return origReplaceTrack.call(this, newTrack);
         };
         window.RTCRtpSender.prototype.__miaPatched = true;
     }
 
-    // REQUIREMENT 5 — addTrack Interception (proto architecture)
+    // REQUIREMENT 5 — addTrack Interception (audio only)
     if (window.RTCPeerConnection && !window.RTCPeerConnection.__miaPatched) {
         const origPeerConnection = window.RTCPeerConnection;
         window.__activePeerConnections = window.__activePeerConnections || [];
@@ -106,13 +98,6 @@
                     const sender = origAddTrack.call(this, virtualMicTrack, ...streamArgs);
                     window.__miaAudioSender__ = sender;
                     return sender;
-                }
-                if (track && track.kind === 'video') {
-                    const blackTrack = createBlackVideoTrack();
-                    if (blackTrack) {
-                        return origAddTrack.call(this, blackTrack, ...streamArgs);
-                    }
-                    return null;
                 }
                 return origAddTrack.call(this, track, ...streamArgs);
             };
