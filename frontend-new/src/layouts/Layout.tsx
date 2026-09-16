@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, PlusCircle, Mic, Sparkles } from 'lucide-react';
+import { LayoutDashboard, PlusCircle, Sparkles } from 'lucide-react';
 
 interface LayoutProps {
   children: React.ReactNode;

@@ -4,7 +4,6 @@ import {
   Mic,
   MessageSquare,
   Power,
-  Pause,
   ArrowLeft,
   User,
   Activity,
