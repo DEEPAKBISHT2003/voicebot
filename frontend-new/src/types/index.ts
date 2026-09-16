@@ -1,5 +1,6 @@
 export interface TranscriptEntry {
-  role: 'user' | 'assistant';
+  role?: 'user' | 'assistant';
+  speaker?: string;
   text: string;
 }
 

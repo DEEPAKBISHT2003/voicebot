@@ -274,7 +274,12 @@ export const InterviewsList: React.FC = () => {
               ) : (
                 <div className="space-y-3.5 max-h-[40vh] overflow-y-auto pr-2">
                   {selectedSession.transcript.map((entry, index) => {
-                    const isAI = entry.role === 'assistant';
+                    const isAI = entry.role === 'assistant' || entry.speaker === 'Interviewer';
+                    const speakerLabel = isAI
+                      ? '🤖 AI Interviewer'
+                      : entry.speaker
+                      ? `🗣️ ${entry.speaker}`
+                      : '🗣️ Candidate';
                     return (
                       <div
                         key={index}
@@ -285,7 +290,7 @@ export const InterviewsList: React.FC = () => {
                         }`}
                       >
                         <span className="block font-semibold text-xs text-primary mb-1">
-                          {isAI ? '🤖 AI Interviewer' : '🗣️ Candidate'}
+                          {speakerLabel}
                         </span>
                         <p className="text-primary leading-relaxed">{entry.text}</p>
                       </div>

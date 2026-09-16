@@ -54,9 +54,21 @@ class CopilotRepository:
             from loguru import logger
             logger.warning(f"save_session: invalid UUID '{session_id}', skipping.")
             return
-        await CopilotSessionModel.filter(session_id=sid_uuid).update(
-            transcript=data.get("transcript", [])
-        )
+
+        update_fields = {}
+        if "transcript" in data:
+            update_fields["transcript"] = data["transcript"]
+        if "final_report" in data:
+            update_fields["final_report"] = data["final_report"]
+        elif "intelligence" in data and "assistance" in data and data.get("is_finalized"):
+            update_fields["final_report"] = {
+                "transcript": data.get("transcript", []),
+                "intelligence": data.get("intelligence", {}),
+                "assistance": data.get("assistance", {})
+            }
+
+        if update_fields:
+            await CopilotSessionModel.filter(session_id=sid_uuid).update(**update_fields)
 
     async def load_session(self, session_id: str) -> dict:
         try:
@@ -74,6 +86,7 @@ class CopilotRepository:
             "resume": session.resume,
             "custom_prompt": session.custom_prompt,
             "transcript": session.transcript,
+            "final_report": session.final_report,
             "service_off": is_service_off
         }
 
@@ -87,7 +100,8 @@ class CopilotRepository:
                 "jd": s.jd,
                 "resume": s.resume,
                 "custom_prompt": s.custom_prompt,
-                "transcript": s.transcript
+                "transcript": s.transcript,
+                "final_report": s.final_report
             }
             for s in sessions
         ]

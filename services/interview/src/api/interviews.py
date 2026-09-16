@@ -453,12 +453,15 @@ async def get_session_status(
 
 @router.get("/interviews")
 async def list_interviews(
+    request: Request,
     repo=Depends(get_repo),
     active_sessions=Depends(get_active_sessions)
 ):
     try:
         session_ids = await repo.list_sessions()
         detailed_records = []
+        seen_ids = set()
+
         for sid in session_ids:
             try:
                 if sid in active_sessions:
@@ -474,9 +477,58 @@ async def list_interviews(
                 else:
                     rec = await repo.load_session(sid)
                     detailed_records.append(rec)
+                seen_ids.add(str(sid))
             except Exception:
                 pass
-        detailed_records.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+
+        # Retrieve and merge persisted Copilot sessions
+        copilot_repo = getattr(request.app.state, "copilot_repo", None)
+        if copilot_repo is None:
+            try:
+                from services.copilot.src.services.repository import CopilotRepository
+                copilot_repo = CopilotRepository()
+            except Exception as ce:
+                logger.warning(f"Could not load CopilotRepository: {ce}")
+
+        if copilot_repo:
+            try:
+                copilot_sessions = await copilot_repo.list_sessions()
+                copilot_active = getattr(request.app.state, "copilot_sessions", {})
+                for cs in copilot_sessions:
+                    cs_id = str(cs.get("session_id", ""))
+                    if not cs_id:
+                        continue
+
+                    # If active in memory, prefer freshest in-memory transcript & timestamp
+                    if cs_id in copilot_active:
+                        active_c = copilot_active[cs_id]
+                        engine = active_c.get("engine")
+                        live_transcript = engine.get_transcript() if engine else active_c.get("transcript", cs.get("transcript", []))
+                        cs["transcript"] = live_transcript
+                        if "timestamp" in active_c:
+                            cs["timestamp"] = active_c["timestamp"]
+
+                    if cs_id not in seen_ids:
+                        detailed_records.append({
+                            "session_id": cs_id,
+                            "timestamp": cs.get("timestamp"),
+                            "jd": cs.get("jd", ""),
+                            "resume": cs.get("resume", ""),
+                            "custom_prompt": cs.get("custom_prompt", ""),
+                            "transcript": cs.get("transcript", [])
+                        })
+                        seen_ids.add(cs_id)
+                    else:
+                        # If already seen, merge transcript if copilot has more data
+                        for existing_rec in detailed_records:
+                            if str(existing_rec.get("session_id")) == cs_id:
+                                if not existing_rec.get("transcript") and cs.get("transcript"):
+                                    existing_rec["transcript"] = cs.get("transcript")
+                                break
+            except Exception as c_err:
+                logger.warning(f"Failed to list copilot sessions for merge: {c_err}")
+
+        detailed_records.sort(key=lambda x: x.get("timestamp") or "", reverse=True)
         return detailed_records
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -484,6 +536,7 @@ async def list_interviews(
 @router.get("/interviews/{session_id}")
 async def get_interview(
     session_id: str,
+    request: Request,
     repo=Depends(get_repo),
     active_sessions=Depends(get_active_sessions)
 ):
@@ -500,15 +553,54 @@ async def get_interview(
     try:
         return await repo.load_session(session_id)
     except FileNotFoundError:
+        # Fallback to check copilot session repository
+        copilot_repo = getattr(request.app.state, "copilot_repo", None)
+        if copilot_repo is None:
+            try:
+                from services.copilot.src.services.repository import CopilotRepository
+                copilot_repo = CopilotRepository()
+            except Exception:
+                copilot_repo = None
+        if copilot_repo:
+            try:
+                copilot_active = getattr(request.app.state, "copilot_sessions", {})
+                if session_id in copilot_active:
+                    sess = copilot_active[session_id]
+                    engine = sess.get("engine")
+                    return {
+                        "session_id": session_id,
+                        "timestamp": sess.get("timestamp"),
+                        "jd": sess.get("jd", ""),
+                        "resume": sess.get("resume", ""),
+                        "custom_prompt": sess.get("custom_prompt", ""),
+                        "transcript": engine.get_transcript() if engine else sess.get("transcript", [])
+                    }
+                cs = await copilot_repo.load_session(session_id)
+                return {
+                    "session_id": session_id,
+                    "timestamp": cs.get("timestamp"),
+                    "jd": cs.get("jd", ""),
+                    "resume": cs.get("resume", ""),
+                    "custom_prompt": cs.get("custom_prompt", ""),
+                    "transcript": cs.get("transcript", [])
+                }
+            except FileNotFoundError:
+                pass
         raise HTTPException(status_code=404, detail="Session not found.")
 
 @router.get("/interviews/{session_id}/recording")
 def get_recording(session_id: str):
     directory = os.path.join(Settings.DEFAULT_STORAGE_DIR, session_id)
     recording_path = os.path.join(directory, "recording.wav")
-    if not os.path.exists(recording_path):
-        raise HTTPException(status_code=404, detail="Recording audio not found.")
-    return FileResponse(recording_path, media_type="audio/wav", filename="recording.wav")
+    if os.path.exists(recording_path):
+        return FileResponse(recording_path, media_type="audio/wav", filename="recording.wav")
+
+    # Fallback to Copilot directory if recording exists under copilots/
+    copilot_recording = os.path.join(Settings.DEFAULT_STORAGE_DIR, "copilots", session_id, "recording.wav")
+    if os.path.exists(copilot_recording):
+        return FileResponse(copilot_recording, media_type="audio/wav", filename="recording.wav")
+
+    raise HTTPException(status_code=404, detail="Recording audio not found.")
 
 @router.get("/interviews/{session_id}/resume")
 def get_resume(session_id: str):
@@ -520,6 +612,15 @@ def get_resume(session_id: str):
         return FileResponse(pdf_path, media_type="application/pdf", filename="resume.pdf")
     elif os.path.exists(txt_path):
         return FileResponse(txt_path, media_type="text/plain", filename="resume.txt")
+
+    # Fallback to Copilot resume storage: interviews/copilots/{session_id}/...
+    copilot_directory = os.path.join(Settings.DEFAULT_STORAGE_DIR, "copilots", session_id)
+    copilot_pdf = os.path.join(copilot_directory, "resume.pdf")
+    copilot_txt = os.path.join(copilot_directory, "resume.txt")
+    if os.path.exists(copilot_pdf):
+        return FileResponse(copilot_pdf, media_type="application/pdf", filename="resume.pdf")
+    elif os.path.exists(copilot_txt):
+        return FileResponse(copilot_txt, media_type="text/plain", filename="resume.txt")
     else:
         raise HTTPException(status_code=404, detail="Resume file not found.")
 

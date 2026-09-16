@@ -9,6 +9,7 @@ class CopilotSessionModel(Model):
     resume = fields.TextField()
     custom_prompt = fields.TextField(null=True)
     transcript = fields.JSONField(default=list)
+    final_report = fields.JSONField(null=True)
 
     class Meta:
         table = "copilot_sessions"

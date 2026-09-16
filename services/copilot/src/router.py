@@ -310,6 +310,7 @@ async def get_copilot_status(
             "transcript": engine.get_transcript(),
             "intelligence": engine.get_intelligence(),
             "assistance": engine.get_assistance(),
+            "final_report": sess.get("final_report"),
             "custom_prompt": sess.get("custom_prompt", "")
         }
     else:
@@ -317,14 +318,26 @@ async def get_copilot_status(
         try:
             db_session = await repo.load_session(session_id)
             is_service_off = db_session.get("service_off", False)
+            final_report = db_session.get("final_report")
+
+            intelligence = {}
+            assistance = {}
+            if isinstance(final_report, dict):
+                intelligence = final_report.get("intelligence", {})
+                assistance = final_report.get("assistance", {})
+            elif db_session.get("intelligence"):
+                intelligence = db_session.get("intelligence", {})
+                assistance = db_session.get("assistance", {})
+
             return {
                 "session_id": session_id,
                 "is_active": False,
                 "service_off": is_service_off,
                 "status": "Service Off" if is_service_off else "Session completed.",
                 "transcript": db_session.get("transcript", []),
-                "intelligence": db_session.get("intelligence", {}),
-                "assistance": db_session.get("assistance", {}),
+                "intelligence": intelligence,
+                "assistance": assistance,
+                "final_report": final_report,
                 "custom_prompt": db_session.get("custom_prompt", "")
             }
         except FileNotFoundError:
@@ -337,6 +350,7 @@ async def get_copilot_status(
                 "transcript": [],
                 "intelligence": {},
                 "assistance": {},
+                "final_report": None,
                 "custom_prompt": ""
             }
 
@@ -356,13 +370,25 @@ async def finalize_copilot_report(
                 pass
         active_sessions[session_id]["bot_process"] = None
 
+        # Idempotency check: if report already finalized for active session, return it
+        if active_sessions[session_id].get("final_report"):
+            logger.info(f"Returning already finalized report for active session {session_id}")
+            active_sessions[session_id]["is_active"] = False
+            return active_sessions[session_id]["final_report"]
+
         engine = active_sessions[session_id]["engine"]
         res = await engine.finalize_report()
         active_sessions[session_id]["is_active"] = False
+        active_sessions[session_id]["final_report"] = res
         return res
     else:
         try:
             db_session = await repo.load_session(session_id)
+            # Idempotency check: if report already exists in database, return it
+            if db_session.get("final_report"):
+                logger.info(f"Returning already finalized report from DB for session {session_id}")
+                return db_session["final_report"]
+
             engine = CopilotSessionEngine(
                 session_id,
                 repo,

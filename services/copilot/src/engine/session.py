@@ -214,8 +214,14 @@ class CopilotSessionEngine:
                 resume=self.resume,
                 custom_prompt=self.custom_prompt
             )
+            report_data = {
+                "transcript": self.transcript,
+                "intelligence": self.intelligence,
+                "assistance": self.assistance
+            }
             await self.repo.save_session(self.session_id, {
                 "transcript": self.transcript,
+                "final_report": report_data,
                 "intelligence": self.intelligence,
                 "assistance": self.assistance,
                 "is_finalized": True

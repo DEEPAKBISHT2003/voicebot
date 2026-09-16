@@ -364,7 +364,10 @@ export const CopilotSession: React.FC = () => {
                 if (!id) return;
                 setIsGeneratingReport(true);
                 try {
-                  await finalizeCopilotReport(id);
+                  const finalRes = await finalizeCopilotReport(id);
+                  if (finalRes) {
+                    updateState(finalRes);
+                  }
                   setUiMode('report');
                 } catch (err) {
                   console.error('Failed to compile final report:', err);

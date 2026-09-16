@@ -75,7 +75,7 @@ Analyze the conversation and output a structured JSON object with EXACTLY these 
 3. "remaining_skills": list of strings - Skills from JD not yet covered or evaluated.
 4. "resume_projects_covered": list of strings - Projects from candidate resume already discussed.
 5. "resume_projects_remaining": list of strings - Key resume projects not yet explored.
-6. "conversation_timeline": list of objects [{"topic": str, "timestamp": str}] tracking topic switches.
+6. "conversation_timeline": list of objects [{{"topic": str, "timestamp": str}}] tracking topic switches.
 7. "interview_progress": object {{"total_skills": int, "covered_count": int, "percentage": int}} overall evaluation progress.
 
 Respond ONLY with valid JSON.

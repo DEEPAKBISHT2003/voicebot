@@ -92,6 +92,16 @@ register_tortoise(
     add_exception_handlers=True,
 )
 
+@app.on_event("startup")
+async def ensure_copilot_schema():
+    try:
+        from tortoise import Tortoise
+        conn = Tortoise.get_connection("default")
+        await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS final_report JSONB;")
+        logger.info("[DB] Verified copilot_sessions schema (final_report column present)")
+    except Exception as e:
+        logger.warning(f"[DB] Schema migration check notice: {e}")
+
 
 @app.get("/health")
 async def health_check():
