@@ -199,7 +199,7 @@ export const InterviewSession: React.FC = () => {
                   : 'Start Interview Session'}
               </p>
               <p className="text-xs text-muted-gray max-w-[200px] mx-auto leading-relaxed">
-                {statusData?.status || 'Prepare to talk. The AI interviewer will start the screening greeting.'}
+                {statusData?.status || 'Prepare to talk. The Appz Interviewer will start the screening greeting.'}
               </p>
             </div>
 
@@ -288,7 +288,7 @@ export const InterviewSession: React.FC = () => {
                       <span className={`text-[10px] font-bold text-muted-gray mb-1 px-1 ${
                         isAI ? 'self-start' : 'self-end'
                       }`}>
-                        {isAI ? '🤖 AI INTERVIEWER' : '🗣️ YOU (CANDIDATE)'}
+                        {isAI ? '🤖 Appz Interviewer' : '🗣️ YOU (CANDIDATE)'}
                       </span>
                       <div
                         className={`p-3.5 rounded-lg text-sm leading-relaxed border ${

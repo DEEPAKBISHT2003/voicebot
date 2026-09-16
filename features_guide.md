@@ -7,7 +7,7 @@ This guide outlines every capability, evaluation metric, real-time intelligence 
 ## 🗺️ Architectural Separation
 
 The platform is designed with complete isolation between two primary operating modes:
-1. **AI Interviewer Mode**: The candidate-facing system. Streams live voice via WebSockets, transcribes speech with STT (Deepgram), passes context to a prompt-engineered interviewer LLM (Miaa), synthesizes audio with TTS (Deepgram), and plays the voice interviewer response back.
+1. **Appz Interviewer Mode**: The candidate-facing system. Streams live voice via WebSockets, transcribes speech with STT (Deepgram), passes context to a prompt-engineered interviewer LLM (Miaa), synthesizes audio with TTS (Deepgram), and plays the voice interviewer response back.
 2. **AI Copilot Mode**: The interviewer-facing dashboard. It runs in the background as an **active observer** attached to the voice session. It listens for finalized transcripts from the interview pipeline, runs incremental AI evaluation engines, and pushes structured JSON payloads via WebSocket to the live panel. **The Copilot never speaks or sends audio; it is entirely visual.**
 
 ---

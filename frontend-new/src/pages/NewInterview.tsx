@@ -34,13 +34,13 @@ Voice output rules:
 - Spell out all numbers (say "three" not "3").
 - Avoid special characters.`;
 
-export const DEFAULT_COPILOT_PROMPT = `You are an expert technical co-pilot. Your job is to assist the INTERVIEWER in real-time. You must NEVER speak to the candidate directly.
+export const DEFAULT_COPILOT_PROMPT = `You are an expert technical assistant.
 
 Real-Time Guidance Rules:
 1. Evaluate candidate technical accuracy, confidence, and practical depth.
-2. Recommend 2-3 follow-up questions tailored to missing concepts or partial answers.
-3. Provide scenario-based architecture and coding questions for deep technical verification.
-4. Generate verification questions to verify candidate resume claims.
+2. Recommend 2 follow-up questions tailored to missing concepts or partial answers.
+3. Provide 2 scenario-based architecture and coding questions for deep technical verification.
+4. Generate 2 verification questions to verify candidate resume claims.
 5. Suggest the recommended next topic for the interviewer.`;
 
 export const NewInterview: React.FC = () => {
@@ -164,7 +164,7 @@ export const NewInterview: React.FC = () => {
           copilotResponse.session_id,
           data.meeting_url!.trim(),
           'observer',
-          'Copilot - Meeting Observer'
+          'Appzlogic Moderator'
         );
 
         // Redirect directly to Copilot Room
@@ -258,7 +258,7 @@ export const NewInterview: React.FC = () => {
               >
                 <div className="flex items-center gap-2">
                   <Video className="h-5 w-5 shrink-0 animate-pulse" />
-                  <span className="font-bold text-sm">Teams Copilot Observer</span>
+                  <span className="font-bold text-sm">Appz Meeting Observer</span>
                 </div>
                 <p className="text-xs leading-relaxed">
                   AI acts as a silent observer in your Teams call, transcribing and guiding you on the dashboard.

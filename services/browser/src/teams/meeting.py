@@ -205,7 +205,7 @@ class TeamsMeeting:
         page: Page,
         meeting_url: str,
         session_id: str,
-        bot_display_name: str = "Mia - AI Interviewer",
+        bot_display_name: str = "Mia - Appz Interviewer",
         prejoin_timeout_ms: int = 75000,
         mia_join_only: bool = False,
         browser_ws_url: str = "",

@@ -4,6 +4,7 @@ import {
   Mic,
   MessageSquare,
   Power,
+  Pause,
   ArrowLeft,
   User,
   Activity,
@@ -348,7 +349,7 @@ export const CopilotSession: React.FC = () => {
               ) : (
                 <>
                   <Mic className="h-5 w-5 text-primary" />
-                  AI Copilot Console
+                  Appz Moderator Console
                 </>
               )}
             </h2>
@@ -396,18 +397,18 @@ export const CopilotSession: React.FC = () => {
             {isServiceOff ? (
               <div className="flex items-center gap-2 px-3 py-1.5 bg-red-50 rounded-lg border border-red-200 shadow-sm">
                 <span className="h-2.5 w-2.5 rounded-full bg-red-600" />
-                <span className="text-xs font-black uppercase text-red-700 tracking-wider">SERVICE OFF</span>
+                <span className="text-xs font-black text-red-700 tracking-wider">Service Disconnected</span>
               </div>
             ) : (
               <div className="flex items-center gap-2 px-3 py-1.5 bg-white rounded-lg border border-border-gray">
                 <span className={`h-2.5 w-2.5 rounded-full ${status === 'connected' ? 'bg-green-500 animate-pulse' :
                     status === 'connecting' ? 'bg-amber-500 animate-pulse' : 'bg-muted-gray'
                   }`} />
-                <span className="text-xs font-bold capitalize text-primary">{status}</span>
+                <span className="text-xs font-bold capitalize text-primary">{status === 'disconnected' ? 'On Hold' : status}</span>
               </div>
             )}
 
-            {isServiceOff ? (
+            {/* {isServiceOff ? (
               <button
                 disabled
                 className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-400 text-xs font-bold rounded-lg border border-gray-200 cursor-not-allowed"
@@ -419,10 +420,10 @@ export const CopilotSession: React.FC = () => {
             ) : status === 'connected' ? (
               <button
                 onClick={stopConnection}
-                className="flex items-center gap-2 px-4 py-2 bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold rounded-lg border border-red-200 transition-colors"
+                className="flex items-center gap-2 px-4 py-2 bg-yellow-50 hover:bg-yellow-100 text-yellow-600 text-xs font-bold rounded-lg border border-yellow-200 transition-colors"
               >
-                <Power className="h-3.5 w-3.5" />
-                Disconnect
+                <Pause className="h-3.5 w-3.5" />
+                Pause Service
               </button>
             ) : (
               <button
@@ -433,22 +434,24 @@ export const CopilotSession: React.FC = () => {
                 <Mic className="h-3.5 w-3.5" />
                 {status === 'connecting' ? 'Connecting...' : 'Connect Copilot'}
               </button>
-            )}
+            )} */}
 
             {/* Dedicated SERVICE OFF Button */}
-            <button
-              onClick={handleServiceOff}
-              disabled={isServiceOff || isServiceOffLoading}
-              className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg shadow-sm transition-all border ${
-                isServiceOff
-                  ? 'bg-red-100 text-red-700 border-red-200 cursor-not-allowed opacity-90'
-                  : 'bg-red-600 hover:bg-red-700 text-white border-red-700 active:scale-95 disabled:opacity-50'
-              }`}
-              title={isServiceOff ? "Session is permanently Service Off" : "Instruct Teams bot to leave and permanently shut down this session"}
-            >
-              <Power className="h-3.5 w-3.5" />
-              {isServiceOff ? 'SERVICE OFF' : isServiceOffLoading ? 'Stopping...' : 'SERVICE OFF'}
-            </button>
+            {!isServiceOff && (
+              <button
+                onClick={handleServiceOff}
+                disabled={isServiceOff || isServiceOffLoading}
+                className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg shadow-sm transition-all border ${
+                  isServiceOff
+                    ? 'bg-red-100 text-red-700 border-red-200 cursor-not-allowed opacity-90'
+                    : 'bg-red-600 hover:bg-red-700 text-white border-red-700 active:scale-95 disabled:opacity-50'
+                }`}
+                title={isServiceOff ? "Session is permanently Service Off" : "Instruct Teams bot to leave and permanently shut down this session"}
+              >
+                <Power className="h-3.5 w-3.5" />
+                {isServiceOffLoading ? 'Disconnecting...' : 'Disconnect'}
+              </button>
+            )}
           </div>
         )}
       </div>

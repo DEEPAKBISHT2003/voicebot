@@ -21,7 +21,7 @@ class JoinMeetingRequest(BaseModel):
     session_id: str
     meeting_url: str
     bot_role: str = "interviewer"
-    bot_name: str = "Mia - AI Interviewer"
+    bot_name: str = "Mia - Appz Interviewer"
 
 class StopMeetingRequest(BaseModel):
     session_id: str
@@ -41,7 +41,7 @@ async def join_meeting(req: JoinMeetingRequest):
     session_id = req.session_id
     meeting_url = req.meeting_url
     bot_role = req.bot_role or "interviewer"
-    bot_name = req.bot_name or "Mia - AI Interviewer"
+    bot_name = req.bot_name or "Mia - Appz Interviewer"
     
     if not meeting_url or not meeting_url.strip():
         raise HTTPException(status_code=400, detail="meeting_url is required")

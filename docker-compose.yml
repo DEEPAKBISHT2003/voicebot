@@ -67,7 +67,7 @@ services:
       - backend-services
     environment:
       - BROWSER_PORT=${BROWSER_PORT:-8002}
-      - BOT_DISPLAY_NAME=${BOT_DISPLAY_NAME:-Mia - AI Interviewer}
+      - BOT_DISPLAY_NAME=${BOT_DISPLAY_NAME:-Mia - Appz Interviewer}
       - BOT_ROLE=${BOT_ROLE:-interviewer}
       - BOT_HEADLESS=${BOT_HEADLESS:-true}
       - BOT_PREJOIN_TIMEOUT_MS=${BOT_PREJOIN_TIMEOUT_MS:-45000}

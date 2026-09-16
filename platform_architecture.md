@@ -24,7 +24,7 @@ c:\Users\Dell\Desktop\demo\
 │   │       ├── models/interview.py     # Tortoise ORM InterviewSessionModel
 │   │       ├── repositories/           # PostgreSQL & JSON session repositories
 │   │       └── parsers/                # PDF/DOCX/TXT resume & JD parsers
-│   ├── copilot/                        # AI Interviewer Copilot & Intelligence Service
+│   ├── copilot/                        # Appz Interviewer Copilot & Intelligence Service
 │   │   └── src/
 │   │       ├── router.py               # Copilot REST router
 │   │       ├── websocket/handler.py    # Copilot Dashboard WebSocket & audio STT
