@@ -19,7 +19,7 @@ import {
   Pin
 } from 'lucide-react';
 import { useCopilotAudio } from '../hooks/useCopilotAudio';
-import { stopCopilot, getCopilotStatus, finalizeCopilotReport } from '../../api/copilot';
+import { stopCopilot, serviceOffCopilot, getCopilotStatus, finalizeCopilotReport } from '../../api/copilot';
 
 export const CopilotSession: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -46,6 +46,8 @@ export const CopilotSession: React.FC = () => {
 
   const [isSimulationFinished, setIsSimulationFinished] = useState<boolean>(false);
   const [isGeneratingReport, setIsGeneratingReport] = useState<boolean>(false);
+  const [isServiceOff, setIsServiceOff] = useState<boolean>(false);
+  const [isServiceOffLoading, setIsServiceOffLoading] = useState<boolean>(false);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [volume, setVolume] = useState<number>(1.0);
 
@@ -179,7 +181,7 @@ export const CopilotSession: React.FC = () => {
 
   // Poll backend status to auto-detect session closure
   useEffect(() => {
-    if (!id) return;
+    if (!id || isServiceOff) return;
 
     const checkStatus = async () => {
       try {
@@ -187,7 +189,11 @@ export const CopilotSession: React.FC = () => {
         if (res) {
           updateState(res);
           const active = (res as any).is_active;
-          if (active === false) {
+          const serviceOff = (res as any).service_off || res.status === 'Service Off';
+          if (serviceOff) {
+            setIsServiceOff(true);
+            stopConnection();
+          } else if (active === false) {
             setIsSimulationFinished(true);
           }
         }
@@ -199,7 +205,21 @@ export const CopilotSession: React.FC = () => {
     checkStatus();
     const interval = setInterval(checkStatus, 3000);
     return () => clearInterval(interval);
-  }, [id]);
+  }, [id, isServiceOff]);
+
+  const handleServiceOff = async () => {
+    if (!id || isServiceOffLoading || isServiceOff) return;
+    setIsServiceOffLoading(true);
+    try {
+      await serviceOffCopilot(id);
+      stopConnection();
+      setIsServiceOff(true);
+    } catch (e) {
+      console.error('Failed to execute Service Off on backend:', e);
+    } finally {
+      setIsServiceOffLoading(false);
+    }
+  };
 
   const handleEndSession = async () => {
     stopConnection();
@@ -373,14 +393,30 @@ export const CopilotSession: React.FC = () => {
             </button>
 
             {/* Status Indicator */}
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-white rounded-lg border border-border-gray">
-              <span className={`h-2.5 w-2.5 rounded-full ${status === 'connected' ? 'bg-green-500 animate-pulse' :
-                  status === 'connecting' ? 'bg-amber-500 animate-pulse' : 'bg-muted-gray'
-                }`} />
-              <span className="text-xs font-bold capitalize text-primary">{status}</span>
-            </div>
+            {isServiceOff ? (
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-red-50 rounded-lg border border-red-200 shadow-sm">
+                <span className="h-2.5 w-2.5 rounded-full bg-red-600" />
+                <span className="text-xs font-black uppercase text-red-700 tracking-wider">SERVICE OFF</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 px-3 py-1.5 bg-white rounded-lg border border-border-gray">
+                <span className={`h-2.5 w-2.5 rounded-full ${status === 'connected' ? 'bg-green-500 animate-pulse' :
+                    status === 'connecting' ? 'bg-amber-500 animate-pulse' : 'bg-muted-gray'
+                  }`} />
+                <span className="text-xs font-bold capitalize text-primary">{status}</span>
+              </div>
+            )}
 
-            {status === 'connected' ? (
+            {isServiceOff ? (
+              <button
+                disabled
+                className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-400 text-xs font-bold rounded-lg border border-gray-200 cursor-not-allowed"
+                title="This session has been permanently stopped with Service Off."
+              >
+                <Mic className="h-3.5 w-3.5" />
+                Connect Copilot
+              </button>
+            ) : status === 'connected' ? (
               <button
                 onClick={stopConnection}
                 className="flex items-center gap-2 px-4 py-2 bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold rounded-lg border border-red-200 transition-colors"
@@ -398,6 +434,21 @@ export const CopilotSession: React.FC = () => {
                 {status === 'connecting' ? 'Connecting...' : 'Connect Copilot'}
               </button>
             )}
+
+            {/* Dedicated SERVICE OFF Button */}
+            <button
+              onClick={handleServiceOff}
+              disabled={isServiceOff || isServiceOffLoading}
+              className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg shadow-sm transition-all border ${
+                isServiceOff
+                  ? 'bg-red-100 text-red-700 border-red-200 cursor-not-allowed opacity-90'
+                  : 'bg-red-600 hover:bg-red-700 text-white border-red-700 active:scale-95 disabled:opacity-50'
+              }`}
+              title={isServiceOff ? "Session is permanently Service Off" : "Instruct Teams bot to leave and permanently shut down this session"}
+            >
+              <Power className="h-3.5 w-3.5" />
+              {isServiceOff ? 'SERVICE OFF' : isServiceOffLoading ? 'Stopping...' : 'SERVICE OFF'}
+            </button>
           </div>
         )}
       </div>

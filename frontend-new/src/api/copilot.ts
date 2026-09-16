@@ -29,6 +29,11 @@ export const stopCopilot = async (sessionId: string): Promise<{ status: string }
   return res.data;
 };
 
+export const serviceOffCopilot = async (sessionId: string): Promise<{ status: string }> => {
+  const res = await copilotApi.post<{ status: string }>(`/copilot/${sessionId}/service-off`);
+  return res.data;
+};
+
 export const getCopilotStatus = async (sessionId: string): Promise<CopilotStatusResponse> => {
   const res = await copilotApi.get<CopilotStatusResponse>(`/copilot/${sessionId}/status`);
   return res.data;

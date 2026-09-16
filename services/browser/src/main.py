@@ -1,5 +1,6 @@
 import os
 import sys
+import asyncio
 import subprocess
 from dotenv import load_dotenv
 
@@ -23,6 +24,9 @@ class JoinMeetingRequest(BaseModel):
     bot_name: str = "Mia - AI Interviewer"
 
 class StopMeetingRequest(BaseModel):
+    session_id: str
+
+class ServiceOffRequest(BaseModel):
     session_id: str
 
 @app.get("/health")
@@ -103,3 +107,49 @@ async def stop_meeting(req: StopMeetingRequest):
                 logger.warning(f"[BrowserService] Error terminating bot process: {pe}")
         return {"status": "stopped", "session_id": session_id}
     return {"status": "not_found", "session_id": session_id}
+
+@app.post("/service-off")
+async def service_off_meeting(req: ServiceOffRequest):
+    session_id = req.session_id
+    logger.info(f"[BrowserService] Received dedicated /service-off request for session: {session_id}")
+
+    # 1. Write the isolated flag file for this specific session
+    session_dir = os.path.join("interviews", session_id)
+    os.makedirs(session_dir, exist_ok=True)
+    flag_path = os.path.join(session_dir, "service_off.flag")
+    try:
+        with open(flag_path, "w", encoding="utf-8") as f:
+            f.write("service_off")
+        logger.info(f"[BrowserService] Created service_off flag at: {flag_path}")
+    except Exception as fe:
+        logger.warning(f"[BrowserService] Failed to write flag file {flag_path}: {fe}")
+
+    # 2. Check if a bot process is tracked for this session
+    if session_id in active_bots:
+        bot_info = active_bots[session_id]
+        proc = bot_info.get("process")
+        if proc and proc.poll() is None:
+            logger.info(f"[BrowserService] Waiting for bot process PID {proc.pid} to exit gracefully via Leave button...")
+            start_time = asyncio.get_event_loop().time()
+            max_wait_sec = 6.0
+            while (asyncio.get_event_loop().time() - start_time) < max_wait_sec:
+                if proc.poll() is not None:
+                    logger.info(f"[BrowserService] Bot process PID {proc.pid} exited gracefully with code {proc.returncode}.")
+                    break
+                await asyncio.sleep(0.5)
+
+            # Bounded fallback: if still running after timeout, fallback terminate for this session only
+            if proc.poll() is None:
+                logger.warning(f"[BrowserService] Bot process PID {proc.pid} did not exit within {max_wait_sec}s; applying fallback termination...")
+                try:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=2.0)
+                    except Exception:
+                        proc.kill()
+                except Exception as te:
+                    logger.error(f"[BrowserService] Error during fallback termination for PID {proc.pid}: {te}")
+        active_bots.pop(session_id, None)
+        return {"status": "service_off_completed", "session_id": session_id}
+
+    return {"status": "service_off_completed", "session_id": session_id, "detail": "bot_not_active"}

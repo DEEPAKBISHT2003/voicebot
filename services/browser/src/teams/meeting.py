@@ -222,6 +222,7 @@ class TeamsMeeting:
 
         self.debug_dir = os.path.join(os.getcwd(), "interviews", session_id)
         os.makedirs(self.debug_dir, exist_ok=True)
+        self.service_off_flag_path = os.path.join(self.debug_dir, "service_off.flag")
 
     async def dismiss_media_prompt_if_present(self) -> bool:
         """Detects and dismisses the 'Continue without audio or video' confirmation modal if shown by Teams."""
@@ -583,6 +584,52 @@ class TeamsMeeting:
             except Exception:
                 pass
 
+    async def leave_meeting(self) -> bool:
+        """
+        Attempts to gracefully leave the Teams meeting by locating and clicking the Leave / Hang up button.
+        Returns True if the button was located and clicked, False otherwise.
+        """
+        logger.info("[TeamsBot] SERVICE OFF: Attempting to click Teams Leave button...")
+        try:
+            # Check if meeting is already disconnected
+            is_in, state_name, _ = await is_really_in_meeting(self.page)
+            if state_name == "DISCONNECTED":
+                logger.info("[TeamsBot] Meeting is already disconnected. No need to click Leave.")
+                return True
+
+            hangup_selector = (
+                "button#hangup-button, "
+                "button[id='hangup-button'], "
+                "button[title='Leave'], "
+                "button[title*='Leave' i], "
+                "button[data-tid='hangup-button'], "
+                "button[data-tid='leave-call-button'], "
+                "button[aria-label*='Leave' i], "
+                "button[aria-label*='Hang up' i]"
+            )
+
+            main_f = self.page.main_frame
+            ordered_frames = [main_f] + [f for f in self.page.frames if f != main_f]
+
+            for frame in ordered_frames:
+                try:
+                    hangup_el = frame.locator(hangup_selector).first
+                    if await hangup_el.is_visible(timeout=1000):
+                        try:
+                            await hangup_el.click(timeout=3000, force=True)
+                        except Exception:
+                            await hangup_el.evaluate("el => el.click()")
+                        logger.info("[TeamsBot] Clicked Teams Leave button successfully.")
+                        return True
+                except Exception as frame_err:
+                    logger.debug(f"[TeamsBot] Frame leave attempt skipped: {frame_err}")
+
+            logger.warning("[TeamsBot] Could not find visible Leave button in any frame.")
+            return False
+        except Exception as e:
+            logger.error(f"[TeamsBot] Exception during leave_meeting: {e}")
+            return False
+
     async def run_lifecycle_loop(self) -> None:
         """Main Teams Meeting Lifecycle & Polling Loop."""
         consecutive_in_meeting = 0
@@ -594,6 +641,17 @@ class TeamsMeeting:
 
         while True:
             await asyncio.sleep(1.5)
+
+            # Check for dedicated Service Off trigger
+            if os.path.exists(self.service_off_flag_path):
+                logger.info("[TeamsBot] Service Off flag detected. Initiating graceful meeting departure...")
+                try:
+                    await self.leave_meeting()
+                except Exception as lme:
+                    logger.warning(f"[TeamsBot] Error during leave_meeting on Service Off: {lme}")
+                await asyncio.sleep(1.0)
+                break
+
             is_in, current_state, evidence = await is_really_in_meeting(self.page)
 
             if current_state == "IN_MEETING":

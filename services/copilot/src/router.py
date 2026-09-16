@@ -1,3 +1,5 @@
+import os
+import asyncio
 import datetime
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
@@ -94,6 +96,114 @@ async def stop_copilot(
     else:
         # Check database fallback
         return {"status": "stopped"}
+
+@router.post("/{session_id}/service-off")
+async def service_off_copilot(
+    session_id: str,
+    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
+    repo: CopilotRepository = Depends(get_copilot_repo)
+):
+    """
+    Dedicated SERVICE OFF endpoint:
+    - Permanently marks session as Service Off (is_active=False, service_off=True, status="Service Off")
+    - Requests the browser service to make the Teams bot leave and cleanly shut down
+    - Closes active dashboard WebSockets for this session
+    - Persists Service Off state to disk/repository
+    - Is strictly idempotent
+    """
+    logger.info(f"[CopilotServiceOff] Received SERVICE OFF request for session: {session_id}")
+
+    # 1. Update in-memory session state if active or initialize Service Off record
+    if session_id in active_sessions:
+        sess = active_sessions[session_id]
+        sess["service_off"] = True
+        sess["is_active"] = False
+        sess["status"] = "Service Off"
+    else:
+        active_sessions[session_id] = {
+            "service_off": True,
+            "is_active": False,
+            "status": "Service Off",
+            "transcript": [],
+            "dashboard_websockets": set()
+        }
+        sess = active_sessions[session_id]
+
+    # 2. Persist flag to session directory so state is permanently preserved across restarts
+    try:
+        session_dir = os.path.join("interviews", session_id)
+        os.makedirs(session_dir, exist_ok=True)
+        flag_path = os.path.join(session_dir, "service_off.flag")
+        with open(flag_path, "w", encoding="utf-8") as f:
+            f.write("service_off")
+    except Exception as fe:
+        logger.warning(f"[CopilotServiceOff] Error creating local flag: {fe}")
+
+    # 3. Request Browser Service to execute Service Off (gracefully clicking Leave)
+    browser_url = os.getenv("BROWSER_SERVICE_URL", os.getenv("BROWSER_URL", "http://browser-service:8002"))
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.post(f"{browser_url}/service-off", json={"session_id": session_id})
+            logger.info(f"[CopilotServiceOff] Browser service response: {resp.status_code}")
+    except Exception as be:
+        logger.warning(f"[CopilotServiceOff] Notification to browser-service failed or skipped ({be}); checking local bot process...")
+
+    # 4. If bot process was spawned locally in copilot service, wait bounded time or terminate
+    bot_process = sess.get("bot_process")
+    if bot_process and bot_process.poll() is None:
+        logger.info(f"[CopilotServiceOff] Waiting for local bot process PID {bot_process.pid} to exit gracefully...")
+        start_t = asyncio.get_event_loop().time()
+        while (asyncio.get_event_loop().time() - start_t) < 6.0:
+            if bot_process.poll() is not None:
+                break
+            await asyncio.sleep(0.5)
+
+        if bot_process.poll() is None:
+            logger.warning(f"[CopilotServiceOff] Local bot PID {bot_process.pid} did not exit within timeout, terminating...")
+            try:
+                bot_process.terminate()
+                try:
+                    bot_process.wait(timeout=2.0)
+                except Exception:
+                    bot_process.kill()
+            except Exception as pe:
+                logger.warning(f"[CopilotServiceOff] Error terminating local bot: {pe}")
+        sess["bot_process"] = None
+
+    # 5. Cleanly close dashboard WebSockets belonging exclusively to this session
+    dashboards = list(sess.get("dashboard_websockets", set()))
+    for ws in dashboards:
+        try:
+            await ws.send_json({
+                "type": "copilot_update",
+                "session_id": session_id,
+                "status": "Service Off",
+                "service_off": True,
+                "is_active": False
+            })
+            await ws.close(code=1000)
+        except Exception:
+            pass
+    if "dashboard_websockets" in sess:
+        sess["dashboard_websockets"].clear()
+
+    # 6. Save final session snapshot to repository
+    try:
+        await repo.save_session(
+            session_id,
+            {
+                "session_id": session_id,
+                "status": "Service Off",
+                "service_off": True,
+                "transcript": sess.get("transcript", [])
+            }
+        )
+    except Exception as se:
+        logger.debug(f"[CopilotServiceOff] Session save notice: {se}")
+
+    logger.info(f"[CopilotServiceOff] Successfully completed SERVICE OFF for session: {session_id}")
+    return {"status": "Service Off", "session_id": session_id}
 
 @router.get("")
 async def list_copilot_sessions(
@@ -195,6 +305,7 @@ async def get_copilot_status(
         return {
             "session_id": session_id,
             "is_active": sess.get("is_active", True),
+            "service_off": sess.get("service_off", False),
             "status": sess.get("status", "ready"),
             "transcript": engine.get_transcript(),
             "intelligence": engine.get_intelligence(),
@@ -205,10 +316,12 @@ async def get_copilot_status(
         # Fallback to database load
         try:
             db_session = await repo.load_session(session_id)
+            is_service_off = db_session.get("service_off", False)
             return {
                 "session_id": session_id,
                 "is_active": False,
-                "status": "Session completed.",
+                "service_off": is_service_off,
+                "status": "Service Off" if is_service_off else "Session completed.",
                 "transcript": db_session.get("transcript", []),
                 "intelligence": db_session.get("intelligence", {}),
                 "assistance": db_session.get("assistance", {}),

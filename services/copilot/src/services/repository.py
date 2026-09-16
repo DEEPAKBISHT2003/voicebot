@@ -66,13 +66,15 @@ class CopilotRepository:
         session = await CopilotSessionModel.get_or_none(session_id=sid_uuid)
         if not session:
             raise FileNotFoundError(f"Copilot record not found for session: {session_id}")
+        is_service_off = os.path.exists(os.path.join("interviews", str(sid_uuid), "service_off.flag")) or os.path.exists(os.path.join(self.directory, str(sid_uuid), "service_off.flag"))
         return {
             "session_id": str(session.session_id),
             "timestamp": session.timestamp.isoformat() if session.timestamp else None,
             "jd": session.jd,
             "resume": session.resume,
             "custom_prompt": session.custom_prompt,
-            "transcript": session.transcript
+            "transcript": session.transcript,
+            "service_off": is_service_off
         }
 
     async def list_sessions(self) -> List[dict]:

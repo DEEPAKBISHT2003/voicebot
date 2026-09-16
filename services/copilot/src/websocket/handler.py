@@ -42,18 +42,20 @@ async def websocket_endpoint(
     if session_id not in active_sessions:
         try:
             db_session = await repo.load_session(session_id)
+            is_service_off = db_session.get("service_off", False) or os.path.exists(os.path.join("interviews", session_id, "service_off.flag"))
             jd = db_session.get("jd", "")
             resume = db_session.get("resume", "")
             engine = CopilotSessionEngine(session_id, repo, db_session.get("transcript", []), jd=jd, resume=resume)
             active_sessions[session_id] = {
                 "engine": engine,
-                "status": "Ready",
+                "status": "Service Off" if is_service_off else "Ready",
+                "service_off": is_service_off,
                 "transcript": engine.get_transcript(),
                 "timestamp": db_session.get("timestamp"),
                 "jd": jd,
                 "resume": resume,
                 "custom_prompt": db_session.get("custom_prompt", ""),
-                "is_active": True,
+                "is_active": False if is_service_off else True,
                 "dashboard_websockets": set(),
                 "speaker_map": {}
             }
@@ -83,8 +85,31 @@ async def websocket_endpoint(
                 jd=db_session.get("jd", ""),
                 resume=db_session.get("resume", "")
             )
+            if db_session.get("service_off", False):
+                sess["service_off"] = True
+                sess["is_active"] = False
+                sess["status"] = "Service Off"
         except Exception:
             sess["engine"] = CopilotSessionEngine(session_id, repo, [], jd="", resume="")
+
+    # Guard against reactivating permanently stopped Service Off sessions
+    if sess.get("service_off", False) or os.path.exists(os.path.join("interviews", session_id, "service_off.flag")):
+        sess["service_off"] = True
+        sess["is_active"] = False
+        sess["status"] = "Service Off"
+        logger.info(f"[CopilotWS] Rejecting WebSocket connection for permanently stopped Service Off session: {session_id}")
+        try:
+            await websocket.send_json({
+                "type": "copilot_update",
+                "session_id": session_id,
+                "status": "Service Off",
+                "service_off": True,
+                "is_active": False
+            })
+            await websocket.close(code=1000)
+        except Exception:
+            pass
+        return
 
     sess["is_active"] = True
     sess.setdefault("dashboard_websockets", set())
