@@ -9,6 +9,8 @@ export const NewCopilot: React.FC = () => {
   const [jd, setJd] = useState('');
   const [resume, setResume] = useState('');
   const [customPrompt, setCustomPrompt] = useState('');
+  const [verificationCount, setVerificationCount] = useState<number>(10);
+  const [scenarioCount, setScenarioCount] = useState<number>(10);
   
   // File upload state
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
@@ -60,6 +62,8 @@ export const NewCopilot: React.FC = () => {
         jd,
         resume,
         custom_prompt: customPrompt,
+        verification_count: verificationCount,
+        scenario_count: scenarioCount,
       });
       navigate(`/copilots/${response.session_id}`);
     } catch (err: any) {
@@ -155,6 +159,61 @@ export const NewCopilot: React.FC = () => {
                 value={resume}
                 onChange={(e) => setResume(e.target.value)}
               />
+            </div>
+          </div>
+        </div>
+
+        {/* Question Bank Settings */}
+        <div className="p-4 rounded-xl bg-white border border-border-gray space-y-3 shadow-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-primary uppercase tracking-wider">
+              Static Question Bank Settings (Generated Once)
+            </span>
+            <span className="text-[11px] text-muted-gray">
+              Follow-ups will continuously stream live
+            </span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label htmlFor="verification_count" className="text-xs font-semibold text-primary flex items-center justify-between">
+                <span>Verification Questions</span>
+                <span className="bg-amber-100 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                  {verificationCount} questions
+                </span>
+              </label>
+              <input
+                type="number"
+                id="verification_count"
+                min={1}
+                max={30}
+                value={verificationCount}
+                onChange={(e) => setVerificationCount(Math.max(1, Math.min(30, parseInt(e.target.value) || 1)))}
+                className="flex h-9 w-full rounded-lg border border-border-gray bg-white px-3 py-1.5 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              <p className="text-[10px] text-muted-gray">
+                Generated once per interview to verify resume claims and ownership.
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <label htmlFor="scenario_count" className="text-xs font-semibold text-primary flex items-center justify-between">
+                <span>Scenario Questions</span>
+                <span className="bg-blue-100 text-blue-800 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                  {scenarioCount} questions
+                </span>
+              </label>
+              <input
+                type="number"
+                id="scenario_count"
+                min={1}
+                max={30}
+                value={scenarioCount}
+                onChange={(e) => setScenarioCount(Math.max(1, Math.min(30, parseInt(e.target.value) || 1)))}
+                className="flex h-9 w-full rounded-lg border border-border-gray bg-white px-3 py-1.5 text-xs text-primary focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+              <p className="text-[10px] text-muted-gray">
+                Generated once per interview for architecture, coding & real scenarios.
+              </p>
             </div>
           </div>
         </div>

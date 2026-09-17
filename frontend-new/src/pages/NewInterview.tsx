@@ -38,10 +38,9 @@ export const DEFAULT_COPILOT_PROMPT = `You are an expert technical assistant.
 
 Real-Time Guidance Rules:
 1. Evaluate candidate technical accuracy, confidence, and practical depth.
-2. Recommend 2 follow-up questions tailored to missing concepts or partial answers.
-3. Provide 2 scenario-based architecture and coding questions for deep technical verification.
-4. Generate 2 verification questions to verify candidate resume claims.
-5. Suggest the recommended next topic for the interviewer.`;
+2. Continuously recommend real-time follow-up questions tailored to missing concepts, weak answers, or knowledge gaps.
+3. Suggest the recommended next topic for the interviewer.
+4. Provide concise interview notes and observations on candidate understanding.`;
 
 export const NewInterview: React.FC = () => {
   const navigate = useNavigate();
@@ -59,6 +58,10 @@ export const NewInterview: React.FC = () => {
     setTimeout(() => setPromptSavedMsg(null), 4000);
   };
   
+  // Configurable question bank counts for Copilot mode
+  const [verificationCount, setVerificationCount] = useState<number>(10);
+  const [scenarioCount, setScenarioCount] = useState<number>(10);
+
   // Selection states: 'local' | 'teams' | 'simulation'
   const [interviewType, setInterviewType] = useState<'local' | 'teams' | 'simulation'>('local');
   
@@ -157,6 +160,8 @@ export const NewInterview: React.FC = () => {
           jd: data.jd,
           resume: data.resume || '',
           custom_prompt: data.custom_prompt || DEFAULT_COPILOT_PROMPT,
+          verification_count: verificationCount,
+          scenario_count: scenarioCount,
         });
 
         // Trigger the Teams observer bot to join the meeting
@@ -184,6 +189,8 @@ export const NewInterview: React.FC = () => {
           resume: data.resume || '',
           custom_prompt: data.custom_prompt || '',
           session_id: response.session_id,
+          verification_count: verificationCount,
+          scenario_count: scenarioCount,
         });
         // Upload the audio file to the copilot service
         await uploadSimulationAudio(response.session_id, simulationAudioFile);
@@ -349,6 +356,63 @@ export const NewInterview: React.FC = () => {
                     <p className="text-[10px] text-muted-gray mt-0.5">Please upload mono 16kHz WAV files</p>
                   </div>
                 )}
+              </div>
+            </div>
+          )}
+
+          {/* Configurable Verification & Scenario Questions for Copilot Observer or Simulation Mode */}
+          {(interviewType === 'teams' || interviewType === 'simulation') && (
+            <div className="p-4 rounded-xl bg-primary/5 border border-primary/20 space-y-3 animate-fadeIn">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-primary uppercase tracking-wider">
+                  Copilot Question Bank Settings (Generated Once)
+                </span>
+                <span className="text-[11px] text-muted-gray">
+                  Follow-up questions will continue suggesting live
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label htmlFor="verification_count" className="text-xs font-semibold text-primary flex items-center justify-between">
+                    <span>Verification Questions</span>
+                    <span className="bg-amber-100 text-amber-800 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                      {verificationCount} questions
+                    </span>
+                  </label>
+                  <input
+                    type="number"
+                    id="verification_count"
+                    min={1}
+                    max={30}
+                    value={verificationCount}
+                    onChange={(e) => setVerificationCount(Math.max(1, Math.min(30, parseInt(e.target.value) || 1)))}
+                    className="flex h-9 w-full rounded-lg border border-border-gray bg-white px-3 py-1.5 text-xs text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                  />
+                  <p className="text-[10px] text-muted-gray">
+                    Generated once per interview to verify resume claims and ownership.
+                  </p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label htmlFor="scenario_count" className="text-xs font-semibold text-primary flex items-center justify-between">
+                    <span>Scenario Questions</span>
+                    <span className="bg-blue-100 text-blue-800 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                      {scenarioCount} questions
+                    </span>
+                  </label>
+                  <input
+                    type="number"
+                    id="scenario_count"
+                    min={1}
+                    max={30}
+                    value={scenarioCount}
+                    onChange={(e) => setScenarioCount(Math.max(1, Math.min(30, parseInt(e.target.value) || 1)))}
+                    className="flex h-9 w-full rounded-lg border border-border-gray bg-white px-3 py-1.5 text-xs text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                  />
+                  <p className="text-[10px] text-muted-gray">
+                    Generated once per interview for architecture, coding & real scenarios.
+                  </p>
+                </div>
               </div>
             </div>
           )}

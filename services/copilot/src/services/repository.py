@@ -1,5 +1,6 @@
 import os
 import uuid
+import json
 from typing import List, Dict, Any
 from services.copilot.src.models.copilot import CopilotSessionModel
 from services.copilot.src.core.config import Settings
@@ -15,7 +16,9 @@ class CopilotRepository:
         jd: str, 
         resume: str, 
         custom_prompt: str,
-        session_id: str = None
+        session_id: str = None,
+        verification_count: int = 10,
+        scenario_count: int = 10
     ) -> str:
         # Use provided session_id or generate a new one
         if session_id:
@@ -34,6 +37,13 @@ class CopilotRepository:
         # Save Resume file locally
         with open(os.path.join(session_dir, "resume.txt"), "w", encoding="utf-8") as f:
             f.write(resume)
+
+        # Save session configuration
+        with open(os.path.join(session_dir, "config.json"), "w", encoding="utf-8") as f:
+            json.dump({
+                "verification_count": verification_count,
+                "scenario_count": scenario_count
+            }, f, indent=2)
             
         # Save session metadata in database (skip if already exists)
         existing = await CopilotSessionModel.get_or_none(session_id=sid_uuid)
@@ -67,6 +77,19 @@ class CopilotRepository:
         if not session:
             raise FileNotFoundError(f"Copilot record not found for session: {session_id}")
         is_service_off = os.path.exists(os.path.join("interviews", str(sid_uuid), "service_off.flag")) or os.path.exists(os.path.join(self.directory, str(sid_uuid), "service_off.flag"))
+        
+        verification_count = 10
+        scenario_count = 10
+        config_path = os.path.join(self.directory, str(sid_uuid), "config.json")
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                    verification_count = cfg.get("verification_count", 10)
+                    scenario_count = cfg.get("scenario_count", 10)
+            except Exception:
+                pass
+
         return {
             "session_id": str(session.session_id),
             "timestamp": session.timestamp.isoformat() if session.timestamp else None,
@@ -74,7 +97,9 @@ class CopilotRepository:
             "resume": session.resume,
             "custom_prompt": session.custom_prompt,
             "transcript": session.transcript,
-            "service_off": is_service_off
+            "service_off": is_service_off,
+            "verification_count": verification_count,
+            "scenario_count": scenario_count
         }
 
     async def list_sessions(self) -> List[dict]:

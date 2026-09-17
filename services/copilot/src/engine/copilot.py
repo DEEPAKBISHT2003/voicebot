@@ -31,6 +31,88 @@ class AICopilotEngine:
         self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self.model = model
 
+    async def generate_static_interview_questions(
+        self,
+        jd: str = "",
+        resume: str = "",
+        verification_count: int = 10,
+        scenario_count: int = 10
+    ) -> Dict[str, List[str]]:
+        """
+        Generates exactly verification_count verification questions and scenario_count scenario-based questions
+        once per meeting/interview based on the JD and Resume.
+        """
+        v_count = max(1, min(int(verification_count), 50))
+        s_count = max(1, min(int(scenario_count), 50))
+
+        prompt = f"""
+You are an expert technical hiring manager and technical interviewer.
+Analyze the following Job Description (JD) and Candidate Resume to generate two critical banks of interview questions for the interviewer to reference throughout the entire interview.
+
+Job Description:
+{jd if jd else "Technical Engineering Role"}
+
+Candidate Resume:
+{resume if resume else "Technical Candidate Profile"}
+
+Generate a JSON object with EXACTLY the following two fields:
+
+1. "verification_questions": An array of EXACTLY {v_count} deep verification questions.
+   - Purpose: Rigorously verify the authenticity of candidate's claimed projects, technical achievements, architecture choices, metrics, and tools mentioned on their resume.
+   - Detail: Ask targeted questions about implementation details, edge cases, trade-offs, tech stack decisions, and concrete individual ownership to verify authentic hands-on experience.
+   - Count: Must contain EXACTLY {v_count} distinct question strings.
+
+2. "scenario_questions": An array of EXACTLY {s_count} practical scenario-based questions.
+   - Purpose: Evaluate the candidate's real-world problem-solving, system design, architectural judgment, and practical coding/debugging skills tailored to the JD requirements.
+   - Detail: Present realistic engineering scenarios, production outages, scaling bottlenecks, concurrency issues, or architectural design dilemmas relevant to the role.
+   - Count: Must contain EXACTLY {s_count} distinct question strings.
+
+Output ONLY a valid JSON object matching this schema without markdown codeblocks or commentary:
+{{
+  "verification_questions": [
+    "Verification question 1",
+    "Verification question 2"
+  ],
+  "scenario_questions": [
+    "Scenario question 1",
+    "Scenario question 2"
+  ]
+}}
+"""
+        try:
+            chat_completion = await self.client.chat.completions.create(
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                model=self.model,
+                response_format={"type": "json_object"}
+            )
+            response_text = chat_completion.choices[0].message.content
+            result = clean_json_loads(response_text)
+
+            verif = result.get("verification_questions", [])
+            scenario = result.get("scenario_questions", []) or result.get("suggested_practical_questions", [])
+
+            if not isinstance(verif, list):
+                verif = []
+            if not isinstance(scenario, list):
+                scenario = []
+
+            verif_clean = [str(q).strip() for q in verif if str(q).strip()][:v_count]
+            scenario_clean = [str(q).strip() for q in scenario if str(q).strip()][:s_count]
+
+            logger.info(f"Generated {len(verif_clean)} verification and {len(scenario_clean)} scenario questions for interview.")
+            return {
+                "verification_questions": verif_clean,
+                "scenario_questions": scenario_clean
+            }
+        except Exception as e:
+            logger.error(f"Error generating static interview questions: {e}")
+            return {
+                "verification_questions": [],
+                "scenario_questions": []
+            }
+
     async def generate_assistance(
         self,
         transcript: List[Dict[str, Any]],
@@ -39,7 +121,7 @@ class AICopilotEngine:
         custom_prompt: str = ""
     ) -> dict:
         """
-        Invokes Groq LLM to generate structured recommendations and observations.
+        Invokes LLM to generate real-time dynamic follow-up suggestions and observations.
         """
         if not transcript:
             return self._get_empty_state()
@@ -118,21 +200,17 @@ Input:
 
 {decision_prompt}
 
-Provide suggestions and structured guidance for the interviewer. Output a structured JSON object with EXACTLY the following fields:
+Provide real-time suggestions and structured guidance for the interviewer. Output a structured JSON object with EXACTLY the following fields:
 
-1. "suggested_follow_up_questions": array of strings - follow-up questions matching the critical decision rule.
+1. "suggested_follow_up_questions": array of strings - Dynamic follow-up questions matching the critical decision rule based on candidate's recent answers and knowledge gaps. Continuously suggest fresh, probing follow-up questions based on the dialogue.
 
-2. "suggested_practical_questions": array of strings - Scenario-based, coding, or architecture design questions related to the current discussion.
+2. "missing_concepts": array of strings - Important concepts or tools from the JD or candidate resume that have not been adequately covered or were missed in candidate's answers.
 
-3. "missing_concepts": array of strings - Important concepts or tools from the JD or candidate resume that have not been adequately covered or were missed in candidate's answers.
+3. "recommended_next_topic": string - What topic the interviewer should guide the candidate to next (e.g. "Ask about performance optimization", "Move to DB design").
 
-4. "verification_questions": array of strings - Questions to verify the authenticity of project experiences listed on the candidate's resume based on what they've discussed.
+4. "interview_notes": array of strings - Bullets of key observations (e.g. "Candidate has strong SQL index knowledge but struggles with sharding").
 
-5. "recommended_next_topic": string - What topic the interviewer should guide the candidate to next (e.g. "Ask about performance optimization", "Move to DB design").
-
-6. "interview_notes": array of strings - Bullets of key observations (e.g. "Candidate has strong SQL index knowledge but struggles with sharding").
-
-7. "current_candidate_understanding": string - Summary of current technical capability level, strengths, and major concerns observed so far.
+5. "current_candidate_understanding": string - Summary of current technical capability level, strengths, and major concerns observed so far.
 
 You must output ONLY valid JSON matching this schema. Do not output markdown code blocks or additional text.
 """

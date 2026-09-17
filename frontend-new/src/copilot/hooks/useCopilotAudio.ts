@@ -105,32 +105,79 @@ export const useCopilotAudio = (sessionId: string | null) => {
 
   const processIncomingQuestions = (assist: CopilotAssistance) => {
     setQuestions((prev) => {
-      const existingTexts = new Set(prev.map((q) => q.text.trim().toLowerCase()));
-      const newItems: CopilotQuestionItem[] = [];
+      const prevFollowUps = prev.filter((q) => q.type === 'Follow-up');
+      const prevVerifications = prev.filter((q) => q.type === 'Verification');
+      const prevScenarios = prev.filter((q) => q.type === 'Scenario');
 
-      const addItems = (list: string[] | undefined, type: 'Follow-up' | 'Verification' | 'Scenario') => {
-        if (!Array.isArray(list)) return;
-        list.forEach((text) => {
+      // 1. Follow-up Questions: Keep dynamically suggesting new questions throughout the interview
+      const existingFollowUpTexts = new Set(prevFollowUps.map((q) => q.text.trim().toLowerCase()));
+      const newFollowUps: CopilotQuestionItem[] = [];
+      if (Array.isArray(assist.suggested_follow_up_questions)) {
+        assist.suggested_follow_up_questions.forEach((text) => {
           const trimmed = text.trim();
-          if (trimmed && !existingTexts.has(trimmed.toLowerCase())) {
-            existingTexts.add(trimmed.toLowerCase());
-            newItems.push({
-              id: `${type}-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
-              type,
+          if (trimmed && !existingFollowUpTexts.has(trimmed.toLowerCase())) {
+            existingFollowUpTexts.add(trimmed.toLowerCase());
+            newFollowUps.push({
+              id: `Follow-up-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+              type: 'Follow-up',
               text: trimmed,
               isPinned: false,
               timestamp: Date.now()
             });
           }
         });
-      };
+      }
 
-      addItems(assist.suggested_follow_up_questions, 'Follow-up');
-      addItems(assist.verification_questions, 'Verification');
-      addItems(assist.suggested_practical_questions, 'Scenario');
+      // 2. Verification Questions: Comes only once per meeting/interview
+      let finalVerifications = prevVerifications;
+      if (
+        prevVerifications.length === 0 &&
+        Array.isArray(assist.verification_questions) &&
+        assist.verification_questions.length > 0
+      ) {
+        const pinnedMap = new Map(prevVerifications.map((q) => [q.text.trim().toLowerCase(), q.isPinned]));
+        finalVerifications = assist.verification_questions.map((text, idx) => {
+          const trimmed = text.trim();
+          return {
+            id: `Verification-${idx}`,
+            type: 'Verification',
+            text: trimmed,
+            isPinned: pinnedMap.get(trimmed.toLowerCase()) || false,
+            timestamp: Date.now()
+          };
+        });
+      }
 
-      if (newItems.length === 0) return prev;
-      return [...prev, ...newItems];
+      // 3. Scenario Questions: Comes only once per meeting/interview
+      let finalScenarios = prevScenarios;
+      if (
+        prevScenarios.length === 0 &&
+        Array.isArray(assist.suggested_practical_questions) &&
+        assist.suggested_practical_questions.length > 0
+      ) {
+        const pinnedMap = new Map(prevScenarios.map((q) => [q.text.trim().toLowerCase(), q.isPinned]));
+        finalScenarios = assist.suggested_practical_questions.map((text, idx) => {
+          const trimmed = text.trim();
+          return {
+            id: `Scenario-${idx}`,
+            type: 'Scenario',
+            text: trimmed,
+            isPinned: pinnedMap.get(trimmed.toLowerCase()) || false,
+            timestamp: Date.now()
+          };
+        });
+      }
+
+      if (newFollowUps.length === 0 && finalVerifications === prevVerifications && finalScenarios === prevScenarios) {
+        return prev;
+      }
+
+      return [
+        ...prevFollowUps,
+        ...newFollowUps,
+        ...finalVerifications,
+        ...finalScenarios
+      ];
     });
   };
 

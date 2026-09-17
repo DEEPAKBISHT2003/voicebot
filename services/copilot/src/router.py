@@ -17,6 +17,8 @@ class StartCopilotRequest(BaseModel):
     resume: str
     custom_prompt: str = ""
     session_id: str = ""  # Optional: use existing interview session_id
+    verification_count: int = 10
+    scenario_count: int = 10
 
 @router.post("/start")
 async def start_copilot(
@@ -29,11 +31,24 @@ async def start_copilot(
             jd=req.jd,
             resume=req.resume,
             custom_prompt=req.custom_prompt,
-            session_id=req.session_id or None
+            session_id=req.session_id or None,
+            verification_count=req.verification_count,
+            scenario_count=req.scenario_count
         )
         
         # Track session in active memory
-        engine = CopilotSessionEngine(session_id, repo, [], jd=req.jd, resume=req.resume, custom_prompt=req.custom_prompt)
+        engine = CopilotSessionEngine(
+            session_id, 
+            repo, 
+            [], 
+            jd=req.jd, 
+            resume=req.resume, 
+            custom_prompt=req.custom_prompt,
+            verification_count=req.verification_count,
+            scenario_count=req.scenario_count
+        )
+        # Pre-generate verification and scenario questions asynchronously once per interview
+        asyncio.create_task(engine.ensure_static_questions())
         active_sessions[session_id] = {
             "engine": engine,
             "status": "Connecting to audio stream...",
@@ -253,7 +268,9 @@ async def add_copilot_transcript(
                 db_session.get("transcript", []),
                 jd=db_session.get("jd", ""),
                 resume=db_session.get("resume", ""),
-                custom_prompt=db_session.get("custom_prompt", "")
+                custom_prompt=db_session.get("custom_prompt", ""),
+                verification_count=db_session.get("verification_count", 10),
+                scenario_count=db_session.get("scenario_count", 10)
             )
             msg = await engine.add_message(req.speaker, req.text)
             return msg
@@ -369,7 +386,9 @@ async def finalize_copilot_report(
                 db_session.get("transcript", []),
                 jd=db_session.get("jd", ""),
                 resume=db_session.get("resume", ""),
-                custom_prompt=db_session.get("custom_prompt", "")
+                custom_prompt=db_session.get("custom_prompt", ""),
+                verification_count=db_session.get("verification_count", 10),
+                scenario_count=db_session.get("scenario_count", 10)
             )
             res = await engine.finalize_report()
             return res
@@ -398,6 +417,10 @@ async def join_meeting(
     import subprocess
     import threading
     import httpx
+
+    # Ensure static verification and scenario questions are initialized for this meeting
+    if session_id in active_sessions and "engine" in active_sessions[session_id]:
+        asyncio.create_task(active_sessions[session_id]["engine"].ensure_static_questions())
 
     browser_url = os.getenv("BROWSER_SERVICE_URL", os.getenv("BROWSER_URL", "http://browser-service:8002"))
     try:

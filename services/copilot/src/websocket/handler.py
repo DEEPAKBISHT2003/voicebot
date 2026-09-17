@@ -45,7 +45,16 @@ async def websocket_endpoint(
             is_service_off = db_session.get("service_off", False) or os.path.exists(os.path.join("interviews", session_id, "service_off.flag"))
             jd = db_session.get("jd", "")
             resume = db_session.get("resume", "")
-            engine = CopilotSessionEngine(session_id, repo, db_session.get("transcript", []), jd=jd, resume=resume)
+            engine = CopilotSessionEngine(
+                session_id, 
+                repo, 
+                db_session.get("transcript", []), 
+                jd=jd, 
+                resume=resume,
+                custom_prompt=db_session.get("custom_prompt", ""),
+                verification_count=db_session.get("verification_count", 10),
+                scenario_count=db_session.get("scenario_count", 10)
+            )
             active_sessions[session_id] = {
                 "engine": engine,
                 "status": "Service Off" if is_service_off else "Ready",
@@ -83,7 +92,10 @@ async def websocket_endpoint(
                 repo, 
                 db_session.get("transcript", []),
                 jd=db_session.get("jd", ""),
-                resume=db_session.get("resume", "")
+                resume=db_session.get("resume", ""),
+                custom_prompt=db_session.get("custom_prompt", ""),
+                verification_count=db_session.get("verification_count", 10),
+                scenario_count=db_session.get("scenario_count", 10)
             )
             if db_session.get("service_off", False):
                 sess["service_off"] = True
@@ -266,6 +278,8 @@ async def websocket_endpoint(
                 "intelligence": eng.get_intelligence(),
                 "assistance": eng.get_assistance()
             })
+            # Ensure static 10 verification and 10 scenario questions are initialized
+            asyncio.create_task(eng.ensure_static_questions(websocket))
         except Exception as initial_err:
             logger.warning(f"[CopilotWS] Could not send initial state frame to dashboard: {initial_err}")
 

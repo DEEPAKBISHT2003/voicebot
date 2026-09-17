@@ -662,7 +662,7 @@ export const CopilotSession: React.FC = () => {
                       <p className="text-xs text-muted-gray text-center py-8">Offline</p>
                     ) : list.length === 0 ? (
                       <div className="h-full flex items-center justify-center text-center text-muted-gray py-8">
-                        <p className="text-xs italic">No verification questions yet.</p>
+                        <p className="text-xs italic">Generating verification questions for this interview...</p>
                       </div>
                     ) : (
                       list.map((q) => (
@@ -714,7 +714,7 @@ export const CopilotSession: React.FC = () => {
                       <p className="text-xs text-muted-gray text-center py-8">Offline</p>
                     ) : list.length === 0 ? (
                       <div className="h-full flex items-center justify-center text-center text-muted-gray py-8">
-                        <p className="text-xs italic">No scenario questions yet.</p>
+                        <p className="text-xs italic">Generating scenario questions for this interview...</p>
                       </div>
                     ) : (
                       list.map((q) => (

@@ -6,6 +6,8 @@ export interface StartCopilotRequest {
   resume: string;
   custom_prompt?: string;
   session_id?: string;
+  verification_count?: number;
+  scenario_count?: number;
 }
 
 export interface StartCopilotResponse {
