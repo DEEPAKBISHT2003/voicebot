@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, PlusCircle, Mic, Sparkles } from 'lucide-react';
+import { LayoutDashboard, PlusCircle, Sparkles } from 'lucide-react';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -21,10 +21,8 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
       <aside className="w-64 border-r border-border-gray bg-secondary flex flex-col">
         {/* Logo / Brand */}
         <div className="h-16 px-6 border-b border-border-gray flex items-center gap-2.5">
-          <div className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center text-white">
-            <Mic className="h-4 w-4" />
-          </div>
-          <span className="font-semibold text-primary text-sm tracking-tight">AI Interviewer</span>
+          <img src="/appzlogo.webp" alt="Appz Logo" className="h-8 w-8 object-contain" />
+          <span className="font-semibold text-primary text-sm tracking-tight">Appz Interviewer</span>
         </div>
 
         {/* Navigation */}
@@ -53,7 +51,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
         {/* Header */}
         <header className="h-16 border-b border-border-gray px-8 flex items-center justify-between">
           <div className="text-xs font-semibold text-muted-gray uppercase tracking-wider">
-            {location.pathname === '/' ? 'Overview' : location.pathname.includes('/new') ? 'Session Setup' : location.pathname.includes('/copilots/') ? 'Copilot Room' : 'Interview Room'}
+            {location.pathname === '/' ? 'Overview' : location.pathname.includes('/new') ? 'Session Setup' : location.pathname.includes('/copilots/') ? 'Appz Moderator Room' : 'Interview Room'}
           </div>
         </header>
 

@@ -12,7 +12,7 @@ def test_config():
     # 1. Test BOT_ROLE=observer
     env_observer = os.environ.copy()
     env_observer["BOT_ROLE"] = "observer"
-    env_observer["BOT_DISPLAY_NAME"] = "Copilot - Meeting Observer"
+    env_observer["BOT_DISPLAY_NAME"] = "Appzlogic Moderator"
     p1 = subprocess.run(
         [python_exe, "-c", "from services.browser.src.config import config, BrowserConfig, BOT_ROLE, BOT_DISPLAY_NAME; print(f'BOT_ROLE={BOT_ROLE} | BOT_DISPLAY_NAME={BOT_DISPLAY_NAME} | WS_URL={BrowserConfig.get_ws_url(\"sess-123\")}')"],
         capture_output=True, text=True, env=env_observer
@@ -26,7 +26,7 @@ def test_config():
     # 2. Test BOT_ROLE=interviewer
     env_interviewer = os.environ.copy()
     env_interviewer["BOT_ROLE"] = "interviewer"
-    env_interviewer["BOT_DISPLAY_NAME"] = "Mia - AI Interviewer"
+    env_interviewer["BOT_DISPLAY_NAME"] = "Mia - Appz Interviewer"
     p2 = subprocess.run(
         [python_exe, "-c", "from services.browser.src.config import config, BrowserConfig, BOT_ROLE, BOT_DISPLAY_NAME; print(f'BOT_ROLE={BOT_ROLE} | BOT_DISPLAY_NAME={BOT_DISPLAY_NAME} | WS_URL={BrowserConfig.get_ws_url(\"sess-456\")}')"],
         capture_output=True, text=True, env=env_interviewer

@@ -45,7 +45,7 @@ demo/
 
 | Service | Port | Database | Description |
 |---------|------|----------|-------------|
-| Unified Backend | 8000 | PostgreSQL:5432 | AI Interviewer & Copilot API |
+| Unified Backend | 8000 | PostgreSQL:5432 | Appz Interviewer & Copilot API |
 | Browser Service | 8002 | - | Playwright Meeting Bot |
 | Frontend | 3000 | - | React Application |
 

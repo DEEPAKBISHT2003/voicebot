@@ -486,7 +486,7 @@ async def finalize_copilot_report(
 class JoinMeetingRequest(BaseModel):
     meeting_url: str
     bot_role: Literal["observer", "interviewer"] = "observer"
-    bot_name: str = "Copilot - Meeting Observer"
+    bot_name: str = "Appzlogic Observer"
 
 @router.post("/{session_id}/join-meeting")
 async def join_meeting(

@@ -84,7 +84,7 @@ export const joinCopilotMeeting = async (
   sessionId: string,
   meetingUrl: string,
   botRole: string = 'observer',
-  botName: string = 'Copilot - Meeting Observer'
+  botName: string = 'Appzlogic Moderator'
 ): Promise<JoinCopilotMeetingResponse> => {
   const res = await copilotApi.post<JoinCopilotMeetingResponse>(`/copilot/${sessionId}/join-meeting`, {
     meeting_url: meetingUrl,

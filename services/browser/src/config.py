@@ -16,7 +16,7 @@ class BrowserConfig:
     USE_SHARED_NAMESPACE: bool = os.getenv("USE_SHARED_NAMESPACE", "true").lower() == "true"
 
     # Bot Identity & Role
-    BOT_DISPLAY_NAME: str = os.getenv("BOT_DISPLAY_NAME", "Mia - AI Interviewer")
+    BOT_DISPLAY_NAME: str = os.getenv("BOT_DISPLAY_NAME", "Mia - Appz Interviewer")
     BOT_ROLE: str = os.getenv("BOT_ROLE", "interviewer")
 
     # Browser Execution Settings

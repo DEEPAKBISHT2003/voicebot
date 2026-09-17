@@ -389,7 +389,7 @@ export const CopilotSession: React.FC = () => {
               ) : (
                 <>
                   <Mic className="h-5 w-5 text-primary" />
-                  AI Copilot Console
+                  Appz Moderator Console
                 </>
               )}
             </h2>

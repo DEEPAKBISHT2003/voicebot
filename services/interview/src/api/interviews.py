@@ -181,7 +181,7 @@ async def start_interview(
                             "session_id": session_id,
                             "meeting_url": req.meeting_url,
                             "bot_role": "interviewer",
-                            "bot_name": "Mia - AI Interviewer"
+                            "bot_name": "Mia - Appz Interviewer"
                         }
                     )
                     resp.raise_for_status()

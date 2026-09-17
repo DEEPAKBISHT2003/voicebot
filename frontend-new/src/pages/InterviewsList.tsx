@@ -360,7 +360,7 @@ export const InterviewsList: React.FC = () => {
                   {selectedSession.transcript.map((entry, index) => {
                     const isAI = entry.role === 'assistant' || entry.speaker === 'Interviewer';
                     const speakerLabel = isAI
-                      ? '🤖 AI Interviewer'
+                      ? '🤖 Appz Interviewer'
                       : entry.speaker
                       ? `🗣️ ${entry.speaker}`
                       : '🗣️ Candidate';
