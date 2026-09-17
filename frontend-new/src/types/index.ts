@@ -11,6 +11,7 @@ export interface InterviewSession {
   resume: string;
   custom_prompt: string | null;
   transcript: TranscriptEntry[];
+  final_report?: any;
 }
 
 export interface StartSessionRequest {

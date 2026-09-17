@@ -14,9 +14,15 @@ export interface StartCopilotResponse {
 }
 
 export interface CopilotStatusResponse {
+  session_id?: string;
+  is_active?: boolean;
+  service_off?: boolean;
   status: string;
   transcript: TranscriptEntry[];
   custom_prompt?: string;
+  final_report?: any;
+  intelligence?: any;
+  assistance?: any;
 }
 
 export const startCopilot = async (data: StartCopilotRequest): Promise<StartCopilotResponse> => {

@@ -7,7 +7,10 @@ import {
   FileText,
   Calendar,
   Eye,
-  FolderOpen
+  FolderOpen,
+  Briefcase,
+  ExternalLink,
+  Award
 } from 'lucide-react';
 import { listInterviews, getRecordingUrl, getResumeUrl } from '../api/interview';
 import type { InterviewSession } from '../types';
@@ -27,7 +30,8 @@ export const InterviewsList: React.FC = () => {
   const { data: sessions = [], isLoading, error } = useQuery<InterviewSession[]>({
     queryKey: ['interviews'],
     queryFn: listInterviews,
-    refetchInterval: 5000, // refresh every 5s to check for updates
+    refetchInterval: 30000, // refresh every 30s to check for updates
+    staleTime: 10000, // consider fresh for 10s
   });
 
   const extractCandidateName = (resumeText: string): string => {
@@ -124,55 +128,59 @@ export const InterviewsList: React.FC = () => {
           icon={<FolderOpen className="h-6 w-6" />}
         />
       ) : (
-        <div className="border border-border-gray rounded-lg overflow-hidden bg-white">
-          <table className="w-full text-left border-collapse">
+        <div className="border border-border-gray rounded-lg overflow-x-auto bg-white">
+          <table className="w-full text-left border-collapse table-fixed">
             <thead>
               <tr className="border-b border-border-gray bg-secondary text-xs font-semibold text-primary">
-                <th className="px-6 py-4">Candidate Name</th>
-                <th className="px-6 py-4">Session ID</th>
-                <th className="px-6 py-4">Date & Time</th>
-                <th className="px-6 py-4">Status</th>
-                <th className="px-6 py-4 text-right">Actions</th>
+                <th className="px-6 py-4 w-[26%] whitespace-nowrap">Candidate Name</th>
+                <th className="px-6 py-4 w-[18%] whitespace-nowrap">Session ID</th>
+                <th className="px-6 py-4 w-[24%] whitespace-nowrap">Date & Time</th>
+                <th className="px-6 py-4 w-[14%] whitespace-nowrap">Status</th>
+                <th className="px-6 py-4 w-[18%] text-right whitespace-nowrap">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border-gray text-sm">
               {filteredSessions.map((session) => {
                 return (
                   <tr key={session.session_id} className="hover:bg-secondary/40 transition-colors">
-                    <td className="px-6 py-4 font-medium text-primary">
+                    <td className="px-6 py-4 font-medium text-primary truncate">
                       {extractCandidateName(session.resume)}
                     </td>
-                    <td className="px-6 py-4 font-mono text-xs text-muted-gray">
+                    <td className="px-6 py-4 font-mono text-xs text-muted-gray whitespace-nowrap">
                       {session.session_id.substring(0, 8)}...
                     </td>
-                    <td className="px-6 py-4 text-muted-gray flex items-center gap-1.5">
-                      <Calendar className="h-3.5 w-3.5" />
-                      {formatDate(session.timestamp)}
+                    <td className="px-6 py-4 text-muted-gray whitespace-nowrap">
+                      <div className="inline-flex items-center gap-1.5">
+                        <Calendar className="h-3.5 w-3.5" />
+                        <span>{formatDate(session.timestamp)}</span>
+                      </div>
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-6 py-4 whitespace-nowrap">
                       {session.transcript.length > 0 ? (
                         <Badge variant="success">Completed</Badge>
                       ) : (
                         <Badge variant="warning">No Transcript</Badge>
                       )}
                     </td>
-                    <td className="px-6 py-4 text-right flex justify-end gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setSelectedSession(session)}
-                      >
-                        <Eye className="h-3.5 w-3.5 mr-1" />
-                        View
-                      </Button>
-                      <Button
-                        variant="primary"
-                        size="sm"
-                        onClick={() => navigate(`/copilots/${session.session_id}`)}
-                      >
-                        <FileText className="h-3.5 w-3.5 mr-1" />
-                        Results
-                      </Button>
+                    <td className="px-6 py-4 text-right whitespace-nowrap">
+                      <div className="flex items-center justify-end gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setSelectedSession(session)}
+                        >
+                          <Eye className="h-3.5 w-3.5 mr-1" />
+                          View
+                        </Button>
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          onClick={() => navigate(`/copilots/${session.session_id}`)}
+                        >
+                          <FileText className="h-3.5 w-3.5 mr-1" />
+                          Results
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -195,6 +203,14 @@ export const InterviewsList: React.FC = () => {
                 ID: {selectedSession.session_id}
               </span>
               <div className="flex gap-2">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => navigate(`/copilots/${selectedSession.session_id}`)}
+                >
+                  <ExternalLink className="h-3.5 w-3.5 mr-1.5" />
+                  Open Full Dossier
+                </Button>
                 <a
                   href={getResumeUrl(selectedSession.session_id)}
                   download
@@ -262,6 +278,74 @@ export const InterviewsList: React.FC = () => {
                   View Resume
                 </a>
               </div>
+            </div>
+
+            {/* Job Description (JD) */}
+            <div className="border-b border-border-gray pb-4">
+              <span className="block font-semibold text-primary text-sm mb-2">
+                <Briefcase className="inline h-3.5 w-3.5 mr-1.5 -mt-0.5" />
+                Job Description (JD)
+              </span>
+              {selectedSession.jd ? (
+                <div className="p-3 rounded-lg text-xs bg-secondary/50 border border-border-gray text-primary max-h-36 overflow-y-auto whitespace-pre-wrap font-mono leading-relaxed">
+                  {selectedSession.jd}
+                </div>
+              ) : (
+                <div className="text-xs text-muted-gray italic bg-secondary p-3 rounded-lg border border-border-gray">
+                  No Job Description recorded for this session.
+                </div>
+              )}
+            </div>
+
+            {/* Final Report Preview / Dossier Link */}
+            <div className="border-b border-border-gray pb-4">
+              <span className="block font-semibold text-primary text-sm mb-2">
+                <Award className="inline h-3.5 w-3.5 mr-1.5 -mt-0.5 text-primary" />
+                Final Evaluation Report
+              </span>
+              {selectedSession.final_report ? (
+                <div className="p-4 rounded-lg bg-secondary/60 border border-border-gray text-xs space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-primary uppercase text-[11px] tracking-wider">Persisted Dossier Available</span>
+                    <button
+                      onClick={() => navigate(`/copilots/${selectedSession.session_id}`)}
+                      className="inline-flex items-center gap-1 font-bold text-primary hover:underline"
+                    >
+                      View Full Dossier <ExternalLink className="h-3 w-3" />
+                    </button>
+                  </div>
+                  {selectedSession.final_report.intelligence?.covered_skills?.length > 0 && (
+                    <div>
+                      <span className="text-[10px] font-bold text-muted-gray uppercase block mb-1">Covered Skills:</span>
+                      <div className="flex flex-wrap gap-1">
+                        {selectedSession.final_report.intelligence.covered_skills.map((s: string, i: number) => (
+                          <span key={i} className="px-2 py-0.5 bg-green-50 text-green-700 border border-green-200 rounded text-[10px] font-semibold">
+                            {s}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {selectedSession.final_report.assistance?.interview_notes?.length > 0 && (
+                    <div>
+                      <span className="text-[10px] font-bold text-muted-gray uppercase block mb-1">Key Observer Notes:</span>
+                      <p className="text-muted-gray italic leading-relaxed line-clamp-2">
+                        {selectedSession.final_report.assistance.interview_notes[0]}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="p-3 rounded-lg bg-secondary/40 border border-border-gray text-xs text-muted-gray flex items-center justify-between">
+                  <span>Report not finalized yet for this session.</span>
+                  <button
+                    onClick={() => navigate(`/copilots/${selectedSession.session_id}`)}
+                    className="font-bold text-primary hover:underline flex items-center gap-1 text-xs"
+                  >
+                    Open Session <ExternalLink className="h-3 w-3" />
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Transcript list */}

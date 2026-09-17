@@ -43,19 +43,27 @@ async def websocket_endpoint(
         try:
             db_session = await repo.load_session(session_id)
             is_service_off = db_session.get("service_off", False) or os.path.exists(os.path.join("interviews", session_id, "service_off.flag"))
+            final_report = db_session.get("final_report")
+            is_completed = bool(final_report) or is_service_off
             jd = db_session.get("jd", "")
             resume = db_session.get("resume", "")
             engine = CopilotSessionEngine(session_id, repo, db_session.get("transcript", []), jd=jd, resume=resume)
+            if isinstance(final_report, dict):
+                if "intelligence" in final_report and isinstance(final_report["intelligence"], dict):
+                    engine.intelligence = final_report["intelligence"]
+                if "assistance" in final_report and isinstance(final_report["assistance"], dict):
+                    engine.assistance = final_report["assistance"]
             active_sessions[session_id] = {
                 "engine": engine,
-                "status": "Service Off" if is_service_off else "Ready",
+                "status": "Service Off" if is_service_off else ("Session completed." if is_completed else "Ready"),
                 "service_off": is_service_off,
                 "transcript": engine.get_transcript(),
                 "timestamp": db_session.get("timestamp"),
                 "jd": jd,
                 "resume": resume,
                 "custom_prompt": db_session.get("custom_prompt", ""),
-                "is_active": False if is_service_off else True,
+                "is_active": False if is_completed else True,
+                "final_report": final_report,
                 "dashboard_websockets": set(),
                 "speaker_map": {}
             }
@@ -78,6 +86,8 @@ async def websocket_endpoint(
     if "engine" not in sess:
         try:
             db_session = await repo.load_session(session_id)
+            final_report = db_session.get("final_report")
+            is_completed = bool(final_report) or db_session.get("service_off", False)
             sess["engine"] = CopilotSessionEngine(
                 session_id, 
                 repo, 
@@ -85,26 +95,43 @@ async def websocket_endpoint(
                 jd=db_session.get("jd", ""),
                 resume=db_session.get("resume", "")
             )
+            sess["final_report"] = final_report
             if db_session.get("service_off", False):
                 sess["service_off"] = True
                 sess["is_active"] = False
                 sess["status"] = "Service Off"
+            elif is_completed:
+                sess["is_active"] = False
+                sess["status"] = "Session completed."
         except Exception:
             sess["engine"] = CopilotSessionEngine(session_id, repo, [], jd="", resume="")
 
-    # Guard against reactivating permanently stopped Service Off sessions
-    if sess.get("service_off", False) or os.path.exists(os.path.join("interviews", session_id, "service_off.flag")):
-        sess["service_off"] = True
+    # Guard against reactivating completed or permanently stopped Service Off sessions
+    has_final_report = bool(sess.get("final_report"))
+    is_service_off = sess.get("service_off", False) or os.path.exists(os.path.join("interviews", session_id, "service_off.flag"))
+    if has_final_report or is_service_off or sess.get("is_active") is False:
+        sess["service_off"] = is_service_off
         sess["is_active"] = False
-        sess["status"] = "Service Off"
-        logger.info(f"[CopilotWS] Rejecting WebSocket connection for permanently stopped Service Off session: {session_id}")
+        sess["status"] = "Service Off" if is_service_off else "Session completed."
+        logger.info(f"[CopilotWS] Rejecting live WebSocket connection for completed session: {session_id}")
         try:
+            eng = sess.get("engine")
+            intel = eng.get_intelligence() if eng else {}
+            assist = eng.get_assistance() if eng else {}
+            rep = sess.get("final_report")
+            if isinstance(rep, dict):
+                intel = rep.get("intelligence", intel)
+                assist = rep.get("assistance", assist)
             await websocket.send_json({
                 "type": "copilot_update",
                 "session_id": session_id,
-                "status": "Service Off",
-                "service_off": True,
-                "is_active": False
+                "status": sess["status"],
+                "service_off": is_service_off,
+                "is_active": False,
+                "transcript": sess.get("transcript", []),
+                "intelligence": intel,
+                "assistance": assist,
+                "final_report": rep
             })
             await websocket.close(code=1000)
         except Exception:
@@ -220,9 +247,12 @@ async def websocket_endpoint(
         pipeline_res = builder.build_observer_pipeline(websocket, session_id, on_transcript_entry)
 
         if pipeline_res is not None:
-            pipeline, worker = pipeline_res
+            pipeline, worker, audio_buffer = pipeline_res
             sess["worker"] = worker
+            sess["audio_buffer"] = audio_buffer
+            sess["audio_websocket"] = websocket
             runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
+            sess["runner"] = runner
             logger.info(f"[CopilotWS] Pipecat audio observer runner active for audio producer session {session_id}")
             try:
                 if hasattr(runner, "add_workers"):
@@ -236,6 +266,30 @@ async def websocket_endpoint(
                 logger.error(f"[CopilotWS] Audio pipeline error: {err}")
             finally:
                 inactivity_task.cancel()
+                if audio_buffer:
+                    user_audio_snapshot = bytes(audio_buffer._user_audio_buffer) if hasattr(audio_buffer, "_user_audio_buffer") else b""
+                    try:
+                        logger.info(f"[CopilotWS] Stopping audio_buffer and saving recording for session: {session_id}")
+                        await audio_buffer.stop_recording()
+                        await asyncio.sleep(0.5)
+                    except Exception as abe:
+                        logger.warning(f"[CopilotWS] Error flushing audio buffer: {abe}")
+                    # Direct disk write fallback if on_audio_data didn't write yet
+                    rec_path = os.path.join("interviews", session_id, "recording.wav")
+                    if not os.path.exists(rec_path):
+                        try:
+                            import wave
+                            directory = os.path.join("interviews", session_id)
+                            os.makedirs(directory, exist_ok=True)
+                            frames_to_write = user_audio_snapshot if len(user_audio_snapshot) > 0 else (b"\x00" * 32000)
+                            with wave.open(rec_path, "wb") as wf:
+                                wf.setnchannels(1)
+                                wf.setsampwidth(2)
+                                wf.setframerate(16000)
+                                wf.writeframes(frames_to_write)
+                            logger.info(f"[CopilotWS] Successfully wrote fallback recording directly: {rec_path} ({len(frames_to_write)} bytes)")
+                        except Exception as fe:
+                            logger.warning(f"[CopilotWS] Fallback recording write failed: {fe}")
         else:
             logger.warning(f"[CopilotWS] Could not build observer pipeline for audio producer. Falling back to byte echo.")
             try:

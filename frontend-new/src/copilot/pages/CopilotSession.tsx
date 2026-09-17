@@ -59,19 +59,52 @@ export const CopilotSession: React.FC = () => {
     volumeRef.current = volume;
   }, [isMuted, volume]);
 
-  // Establish Copilot WebSocket connection on mount or when id changes
+  const [isCompletedSession, setIsCompletedSession] = useState<boolean>(false);
+
+  // Initial session inspection: detect completed status from PostgreSQL before connecting WebSocket
   useEffect(() => {
-    if (id) {
-      startConnection();
-    }
+    if (!id) return;
+    let isMounted = true;
+
+    const initSession = async () => {
+      try {
+        const res = await getCopilotStatus(id);
+        if (!isMounted || !res) return;
+
+        updateState(res);
+        const active = (res as any).is_active;
+        const serviceOff = (res as any).service_off || res.status === 'Service Off';
+        const hasReport = Boolean((res as any).final_report);
+
+        if (hasReport || serviceOff || active === false) {
+          setIsCompletedSession(true);
+          setIsSimulationFinished(true);
+          if (serviceOff) setIsServiceOff(true);
+          stopConnection();
+          if (hasReport) {
+            setUiMode('report');
+          }
+        } else {
+          setIsCompletedSession(false);
+          startConnection();
+        }
+      } catch (err) {
+        console.error('Failed to initialize session status:', err);
+        if (isMounted) startConnection();
+      }
+    };
+
+    initSession();
+
     return () => {
+      isMounted = false;
       stopConnection();
     };
   }, [id]);
 
-  // Secondary connection to trigger audio simulation and receive binary audio frames if simulate=true
+  // Secondary connection to trigger audio simulation only if simulate=true and not completed
   useEffect(() => {
-    if (!id) return;
+    if (!id || isCompletedSession) return;
     const simulate = searchParams.get('simulate');
     if (simulate !== 'true') return;
 
@@ -179,9 +212,9 @@ export const CopilotSession: React.FC = () => {
   }, [transcript, isTranscriptExpanded]);
 
 
-  // Poll backend status to auto-detect session closure
+  // Poll backend status to auto-detect session closure for active sessions
   useEffect(() => {
-    if (!id || isServiceOff) return;
+    if (!id || isServiceOff || isCompletedSession) return;
 
     const checkStatus = async () => {
       try {
@@ -190,11 +223,19 @@ export const CopilotSession: React.FC = () => {
           updateState(res);
           const active = (res as any).is_active;
           const serviceOff = (res as any).service_off || res.status === 'Service Off';
+          const hasReport = Boolean((res as any).final_report);
+
           if (serviceOff) {
             setIsServiceOff(true);
+            setIsCompletedSession(true);
             stopConnection();
-          } else if (active === false) {
+          } else if (hasReport || active === false) {
+            setIsCompletedSession(true);
             setIsSimulationFinished(true);
+            stopConnection();
+            if (hasReport) {
+              setUiMode('report');
+            }
           }
         }
       } catch (err) {
@@ -205,7 +246,7 @@ export const CopilotSession: React.FC = () => {
     checkStatus();
     const interval = setInterval(checkStatus, 3000);
     return () => clearInterval(interval);
-  }, [id, isServiceOff]);
+  }, [id, isServiceOff, isCompletedSession]);
 
   const handleServiceOff = async () => {
     if (!id || isServiceOffLoading || isServiceOff) return;
@@ -356,104 +397,120 @@ export const CopilotSession: React.FC = () => {
           </div>
         </div>
 
-        {uiMode === 'live' && (
-          <div className="flex items-center gap-3 self-end sm:self-auto">
-            {/* View Final Results Button */}
+        <div className="flex items-center gap-3 self-end sm:self-auto">
+          {uiMode === 'report' ? (
             <button
-              onClick={async () => {
-                if (!id) return;
-                setIsGeneratingReport(true);
-                try {
-                  const finalRes = await finalizeCopilotReport(id);
-                  if (finalRes) {
-                    updateState(finalRes);
-                  }
-                  setUiMode('report');
-                } catch (err) {
-                  console.error('Failed to compile final report:', err);
-                  setUiMode('report');
-                } finally {
-                  setIsGeneratingReport(false);
-                }
-              }}
-              disabled={isGeneratingReport}
-              className={`flex items-center gap-2 px-4 py-2 text-white text-xs font-bold rounded-lg shadow-md transition-all cursor-pointer border ${isSimulationFinished
-                  ? 'bg-green-600 hover:bg-green-700 border-green-700 animate-bounce'
-                  : 'bg-primary hover:bg-primary/90 border-primary'
-                }`}
+              onClick={() => setUiMode('live')}
+              className="flex items-center gap-2 px-4 py-2 bg-white hover:bg-secondary text-primary text-xs font-bold rounded-lg border border-border-gray shadow-sm transition-all cursor-pointer"
+              title="Switch to Live Console & Transcript view"
             >
-              {isGeneratingReport ? (
-                <>
-                  <div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-white" />
-                  Compiling Report...
-                </>
+              <Mic className="h-4 w-4" />
+              Console & Logs View
+            </button>
+          ) : (
+            <>
+              {/* View Final Results Button */}
+              <button
+                onClick={async () => {
+                  if (!id) return;
+                  if (intelligence.covered_skills.length > 0 || isCompletedSession) {
+                    setUiMode('report');
+                    return;
+                  }
+                  setIsGeneratingReport(true);
+                  try {
+                    const finalRes = await finalizeCopilotReport(id);
+                    if (finalRes) {
+                      updateState(finalRes);
+                    }
+                    setUiMode('report');
+                  } catch (err) {
+                    console.error('Failed to compile final report:', err);
+                    setUiMode('report');
+                  } finally {
+                    setIsGeneratingReport(false);
+                  }
+                }}
+                disabled={isGeneratingReport}
+                className={`flex items-center gap-2 px-4 py-2 text-white text-xs font-bold rounded-lg shadow-md transition-all cursor-pointer border ${
+                  isSimulationFinished
+                    ? 'bg-green-600 hover:bg-green-700 border-green-700'
+                    : 'bg-primary hover:bg-primary/90 border-primary'
+                }`}
+              >
+                {isGeneratingReport ? (
+                  <>
+                    <div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-white" />
+                    Compiling Report...
+                  </>
+                ) : (
+                  <>
+                    <FileText className="h-4 w-4" />
+                    View Final Results
+                  </>
+                )}
+              </button>
+
+              {/* Status Indicator */}
+              {isServiceOff ? (
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-red-50 rounded-lg border border-red-200 shadow-sm">
+                  <span className="h-2.5 w-2.5 rounded-full bg-red-600" />
+                  <span className="text-xs font-black uppercase text-red-700 tracking-wider">SERVICE OFF</span>
+                </div>
+              ) : isCompletedSession ? (
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-green-50 rounded-lg border border-green-200 shadow-sm">
+                  <span className="h-2.5 w-2.5 rounded-full bg-green-600" />
+                  <span className="text-xs font-bold uppercase text-green-700 tracking-wider">COMPLETED</span>
+                </div>
               ) : (
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-white rounded-lg border border-border-gray">
+                  <span className={`h-2.5 w-2.5 rounded-full ${status === 'connected' ? 'bg-green-500 animate-pulse' :
+                      status === 'connecting' ? 'bg-amber-500 animate-pulse' : 'bg-muted-gray'
+                    }`} />
+                  <span className="text-xs font-bold capitalize text-primary">{status}</span>
+                </div>
+              )}
+
+              {!isCompletedSession && !isServiceOff && (
                 <>
-                  <FileText className="h-4 w-4" />
-                  View Final Results
+                  {status === 'connected' ? (
+                    <button
+                      onClick={stopConnection}
+                      className="flex items-center gap-2 px-4 py-2 bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold rounded-lg border border-red-200 transition-colors"
+                    >
+                      <Power className="h-3.5 w-3.5" />
+                      Disconnect
+                    </button>
+                  ) : (
+                    <button
+                      onClick={startConnection}
+                      disabled={status === 'connecting'}
+                      className="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/95 text-white text-xs font-bold rounded-lg disabled:opacity-50 transition-colors shadow-sm"
+                    >
+                      <Mic className="h-3.5 w-3.5" />
+                      {status === 'connecting' ? 'Connecting...' : 'Connect Copilot'}
+                    </button>
+                  )}
                 </>
               )}
-            </button>
 
-            {/* Status Indicator */}
-            {isServiceOff ? (
-              <div className="flex items-center gap-2 px-3 py-1.5 bg-red-50 rounded-lg border border-red-200 shadow-sm">
-                <span className="h-2.5 w-2.5 rounded-full bg-red-600" />
-                <span className="text-xs font-black uppercase text-red-700 tracking-wider">SERVICE OFF</span>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 px-3 py-1.5 bg-white rounded-lg border border-border-gray">
-                <span className={`h-2.5 w-2.5 rounded-full ${status === 'connected' ? 'bg-green-500 animate-pulse' :
-                    status === 'connecting' ? 'bg-amber-500 animate-pulse' : 'bg-muted-gray'
-                  }`} />
-                <span className="text-xs font-bold capitalize text-primary">{status}</span>
-              </div>
-            )}
-
-            {isServiceOff ? (
+              {/* Dedicated SERVICE OFF Button */}
               <button
-                disabled
-                className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-400 text-xs font-bold rounded-lg border border-gray-200 cursor-not-allowed"
-                title="This session has been permanently stopped with Service Off."
-              >
-                <Mic className="h-3.5 w-3.5" />
-                Connect Copilot
-              </button>
-            ) : status === 'connected' ? (
-              <button
-                onClick={stopConnection}
-                className="flex items-center gap-2 px-4 py-2 bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold rounded-lg border border-red-200 transition-colors"
+                onClick={handleServiceOff}
+                disabled={isServiceOff || isServiceOffLoading || isCompletedSession}
+                className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg shadow-sm transition-all border ${
+                  isServiceOff || isCompletedSession
+                    ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed opacity-90'
+                    : 'bg-red-600 hover:bg-red-700 text-white border-red-700 active:scale-95 disabled:opacity-50'
+                }`}
+                title={isServiceOff ? "Session is permanently Service Off" : isCompletedSession ? "Session is completed" : "Instruct Teams bot to leave and permanently shut down this session"}
               >
                 <Power className="h-3.5 w-3.5" />
-                Disconnect
+                {isServiceOff ? 'SERVICE OFF' : isServiceOffLoading ? 'Stopping...' : 'SERVICE OFF'}
               </button>
-            ) : (
-              <button
-                onClick={startConnection}
-                disabled={status === 'connecting'}
-                className="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/95 text-white text-xs font-bold rounded-lg disabled:opacity-50 transition-colors shadow-sm"
-              >
-                <Mic className="h-3.5 w-3.5" />
-                {status === 'connecting' ? 'Connecting...' : 'Connect Copilot'}
-              </button>
-            )}
-
-            {/* Dedicated SERVICE OFF Button */}
-            <button
-              onClick={handleServiceOff}
-              disabled={isServiceOff || isServiceOffLoading}
-              className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg shadow-sm transition-all border ${
-                isServiceOff
-                  ? 'bg-red-100 text-red-700 border-red-200 cursor-not-allowed opacity-90'
-                  : 'bg-red-600 hover:bg-red-700 text-white border-red-700 active:scale-95 disabled:opacity-50'
-              }`}
-              title={isServiceOff ? "Session is permanently Service Off" : "Instruct Teams bot to leave and permanently shut down this session"}
-            >
-              <Power className="h-3.5 w-3.5" />
-              {isServiceOff ? 'SERVICE OFF' : isServiceOffLoading ? 'Stopping...' : 'SERVICE OFF'}
-            </button>
-          </div>
-        )}
+            </>
+          )}
+        </div>
       </div>
 
       {error && (

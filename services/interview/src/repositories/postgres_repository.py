@@ -1,6 +1,6 @@
 import os
 import uuid
-from typing import List
+from typing import List, Optional
 from services.interview.src.core.interfaces.repository import IInterviewRepository
 from services.interview.src.models.interview import InterviewSessionModel
 from services.interview.src.core.config import Settings
@@ -88,3 +88,21 @@ class PostgresInterviewRepository(IInterviewRepository):
         # Fetch all session_ids from the database
         sessions = await InterviewSessionModel.all().values_list("session_id", flat=True)
         return [str(sid) for sid in sessions]
+
+    async def list_all_sessions(self, limit: Optional[int] = None) -> List[dict]:
+        """Fetch all sessions ordered by timestamp in a single query."""
+        query = InterviewSessionModel.all().order_by("-timestamp")
+        if limit is not None and limit > 0:
+            query = query.limit(limit)
+        sessions = await query
+        return [
+            {
+                "session_id": str(s.session_id),
+                "timestamp": s.timestamp.isoformat() if s.timestamp else None,
+                "jd": s.jd,
+                "resume": s.resume,
+                "custom_prompt": s.custom_prompt,
+                "transcript": s.transcript or []
+            }
+            for s in sessions
+        ]

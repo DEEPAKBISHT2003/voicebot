@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Literal
 from services.copilot.src.api.deps import get_copilot_repo, get_copilot_sessions
 from services.copilot.src.services.repository import CopilotRepository
 from services.copilot.src.engine.session import CopilotSessionEngine
+from services.copilot.src.core.config import Settings
 
 router = APIRouter()
 
@@ -171,6 +172,55 @@ async def service_off_copilot(
                 logger.warning(f"[CopilotServiceOff] Error terminating local bot: {pe}")
         sess["bot_process"] = None
 
+    # 4b. Explicitly save audio recording if buffered, stop worker/runner, and close audio producer WebSocket
+    audio_buf = sess.get("audio_buffer")
+    if audio_buf:
+        rec_path = os.path.join(Settings.DEFAULT_STORAGE_DIR, session_id, "recording.wav")
+        if not os.path.exists(rec_path):
+            try:
+                import wave
+                user_audio = bytes(audio_buf._user_audio_buffer) if hasattr(audio_buf, "_user_audio_buffer") else b""
+                directory = os.path.join(Settings.DEFAULT_STORAGE_DIR, session_id)
+                os.makedirs(directory, exist_ok=True)
+                frames_to_write = user_audio if len(user_audio) > 0 else (b"\x00" * 32000)
+                with wave.open(rec_path, "wb") as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(16000)
+                    wf.writeframes(frames_to_write)
+                logger.info(f"[CopilotServiceOff] Directly saved recording.wav for session {session_id} ({len(frames_to_write)} bytes)")
+            except Exception as fe:
+                logger.warning(f"[CopilotServiceOff] Error directly saving recording: {fe}")
+
+    audio_ws = sess.get("audio_websocket")
+    if audio_ws:
+        try:
+            await audio_ws.close(code=1000)
+            logger.info(f"[CopilotServiceOff] Closed audio producer WebSocket for session {session_id}")
+        except Exception as awe:
+            logger.warning(f"[CopilotServiceOff] Error closing audio producer WebSocket: {awe}")
+        sess["audio_websocket"] = None
+
+    worker = sess.get("worker")
+    if worker:
+        try:
+            if hasattr(worker, "cancel"):
+                await worker.cancel()
+            elif hasattr(worker, "stop"):
+                await worker.stop()
+        except Exception as we:
+            logger.warning(f"[CopilotServiceOff] Error stopping worker: {we}")
+
+    runner = sess.get("runner")
+    if runner:
+        try:
+            if hasattr(runner, "stop"):
+                await runner.stop()
+            elif hasattr(runner, "cancel"):
+                await runner.cancel()
+        except Exception as re:
+            logger.warning(f"[CopilotServiceOff] Error stopping runner: {re}")
+
     # 5. Cleanly close dashboard WebSockets belonging exclusively to this session
     dashboards = list(sess.get("dashboard_websockets", set()))
     for ws in dashboards:
@@ -301,16 +351,37 @@ async def get_copilot_status(
         raise HTTPException(status_code=404, detail=f"Invalid session id: {session_id}")
     if session_id in active_sessions:
         sess = active_sessions[session_id]
-        engine = sess["engine"]
+        engine = sess.get("engine")
+        final_rep = sess.get("final_report")
+        if not final_rep:
+            try:
+                db_sess = await repo.load_session(session_id)
+                if db_sess.get("final_report"):
+                    final_rep = db_sess.get("final_report")
+                    sess["final_report"] = final_rep
+                    sess["is_active"] = False
+                    sess["status"] = "Service Off" if db_sess.get("service_off") else "Session completed."
+            except Exception:
+                pass
+
+        intelligence = engine.get_intelligence() if engine else {}
+        assistance = engine.get_assistance() if engine else {}
+        if isinstance(final_rep, dict):
+            if not intelligence or intelligence.get("current_topic") == "":
+                intelligence = final_rep.get("intelligence", intelligence)
+            if not assistance or not assistance.get("suggested_follow_up_questions"):
+                assistance = final_rep.get("assistance", assistance)
+
+        is_act = False if (final_rep or sess.get("service_off")) else sess.get("is_active", True)
         return {
             "session_id": session_id,
-            "is_active": sess.get("is_active", True),
+            "is_active": is_act,
             "service_off": sess.get("service_off", False),
             "status": sess.get("status", "ready"),
-            "transcript": engine.get_transcript(),
-            "intelligence": engine.get_intelligence(),
-            "assistance": engine.get_assistance(),
-            "final_report": sess.get("final_report"),
+            "transcript": engine.get_transcript() if engine else sess.get("transcript", []),
+            "intelligence": intelligence,
+            "assistance": assistance,
+            "final_report": final_rep,
             "custom_prompt": sess.get("custom_prompt", "")
         }
     else:
@@ -360,6 +431,20 @@ async def finalize_copilot_report(
     active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
     repo: CopilotRepository = Depends(get_copilot_repo)
 ):
+    # 1. Always check PostgreSQL first for an already persisted final_report
+    db_session = None
+    try:
+        db_session = await repo.load_session(session_id)
+        if db_session.get("final_report"):
+            logger.info(f"Returning already finalized report from DB for session {session_id} (zero LLM calls)")
+            if session_id in active_sessions:
+                active_sessions[session_id]["is_active"] = False
+                active_sessions[session_id]["final_report"] = db_session["final_report"]
+            return db_session["final_report"]
+    except FileNotFoundError:
+        pass
+
+    # 2. Check active memory
     if session_id in active_sessions:
         bot_process = active_sessions[session_id].get("bot_process")
         if bot_process and bot_process.poll() is None:
@@ -382,25 +467,19 @@ async def finalize_copilot_report(
         active_sessions[session_id]["final_report"] = res
         return res
     else:
-        try:
-            db_session = await repo.load_session(session_id)
-            # Idempotency check: if report already exists in database, return it
-            if db_session.get("final_report"):
-                logger.info(f"Returning already finalized report from DB for session {session_id}")
-                return db_session["final_report"]
-
-            engine = CopilotSessionEngine(
-                session_id,
-                repo,
-                db_session.get("transcript", []),
-                jd=db_session.get("jd", ""),
-                resume=db_session.get("resume", ""),
-                custom_prompt=db_session.get("custom_prompt", "")
-            )
-            res = await engine.finalize_report()
-            return res
-        except FileNotFoundError:
+        if not db_session:
             raise HTTPException(status_code=404, detail="Session not found")
+
+        engine = CopilotSessionEngine(
+            session_id,
+            repo,
+            db_session.get("transcript", []),
+            jd=db_session.get("jd", ""),
+            resume=db_session.get("resume", ""),
+            custom_prompt=db_session.get("custom_prompt", "")
+        )
+        res = await engine.finalize_report()
+        return res
 
 
 

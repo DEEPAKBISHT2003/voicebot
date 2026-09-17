@@ -90,3 +90,15 @@ class JSONFileInterviewRepository(IInterviewRepository):
                 sessions.append(name.replace(".json", ""))
         return sessions
 
+    async def list_all_sessions(self, limit: int = None) -> list[dict]:
+        session_ids = await self.list_sessions()
+        if limit:
+            session_ids = session_ids[:limit]
+        results = []
+        for sid in session_ids:
+            try:
+                results.append(await self.load_session(sid))
+            except Exception:
+                pass
+        return results
+

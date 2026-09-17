@@ -454,34 +454,45 @@ async def get_session_status(
 @router.get("/interviews")
 async def list_interviews(
     request: Request,
+    limit: Optional[int] = 100,
+    offset: int = 0,
     repo=Depends(get_repo),
     active_sessions=Depends(get_active_sessions)
 ):
     try:
-        session_ids = await repo.list_sessions()
-        detailed_records = []
-        seen_ids = set()
+        fetch_limit = (offset + limit) if limit else None
 
-        for sid in session_ids:
-            try:
-                if sid in active_sessions:
-                    sess = active_sessions[sid]
-                    detailed_records.append({
-                        "session_id": sid,
-                        "timestamp": sess["timestamp"],
-                        "jd": sess["jd"],
-                        "resume": sess["resume"],
-                        "custom_prompt": sess["custom_prompt"],
-                        "transcript": sess["transcript"]
-                    })
-                else:
-                    rec = await repo.load_session(sid)
-                    detailed_records.append(rec)
-                seen_ids.add(str(sid))
-            except Exception:
-                pass
+        # 1. Fetch sessions in a single optimized query
+        if hasattr(repo, "list_all_sessions"):
+            interview_sessions = await repo.list_all_sessions(limit=fetch_limit)
+        else:
+            session_ids = await repo.list_sessions()
+            if fetch_limit:
+                session_ids = session_ids[:fetch_limit]
+            interview_sessions = []
+            for sid in session_ids:
+                try:
+                    interview_sessions.append(await repo.load_session(sid))
+                except Exception:
+                    pass
 
-        # Retrieve and merge persisted Copilot sessions
+        # Index by session_id for O(1) deduplication and fast merging
+        records_by_id: Dict[str, dict] = {
+            str(rec.get("session_id")): rec for rec in interview_sessions if rec and rec.get("session_id")
+        }
+
+        # Merge active in-memory sessions (override DB if active)
+        for sid, sess in active_sessions.items():
+            records_by_id[str(sid)] = {
+                "session_id": str(sid),
+                "timestamp": sess.get("timestamp"),
+                "jd": sess.get("jd", ""),
+                "resume": sess.get("resume", ""),
+                "custom_prompt": sess.get("custom_prompt", ""),
+                "transcript": sess.get("transcript", [])
+            }
+
+        # 2. Retrieve and merge persisted Copilot sessions
         copilot_repo = getattr(request.app.state, "copilot_repo", None)
         if copilot_repo is None:
             try:
@@ -492,7 +503,7 @@ async def list_interviews(
 
         if copilot_repo:
             try:
-                copilot_sessions = await copilot_repo.list_sessions()
+                copilot_sessions = await copilot_repo.list_sessions(limit=fetch_limit)
                 copilot_active = getattr(request.app.state, "copilot_sessions", {})
                 for cs in copilot_sessions:
                     cs_id = str(cs.get("session_id", ""))
@@ -508,27 +519,29 @@ async def list_interviews(
                         if "timestamp" in active_c:
                             cs["timestamp"] = active_c["timestamp"]
 
-                    if cs_id not in seen_ids:
-                        detailed_records.append({
+                    if cs_id not in records_by_id:
+                        records_by_id[cs_id] = {
                             "session_id": cs_id,
                             "timestamp": cs.get("timestamp"),
                             "jd": cs.get("jd", ""),
                             "resume": cs.get("resume", ""),
                             "custom_prompt": cs.get("custom_prompt", ""),
-                            "transcript": cs.get("transcript", [])
-                        })
-                        seen_ids.add(cs_id)
+                            "transcript": cs.get("transcript", []),
+                            "final_report": cs.get("final_report")
+                        }
                     else:
-                        # If already seen, merge transcript if copilot has more data
-                        for existing_rec in detailed_records:
-                            if str(existing_rec.get("session_id")) == cs_id:
-                                if not existing_rec.get("transcript") and cs.get("transcript"):
-                                    existing_rec["transcript"] = cs.get("transcript")
-                                break
+                        existing_rec = records_by_id[cs_id]
+                        if not existing_rec.get("transcript") and cs.get("transcript"):
+                            existing_rec["transcript"] = cs.get("transcript")
+                        if not existing_rec.get("final_report") and cs.get("final_report"):
+                            existing_rec["final_report"] = cs.get("final_report")
             except Exception as c_err:
                 logger.warning(f"Failed to list copilot sessions for merge: {c_err}")
 
+        detailed_records = list(records_by_id.values())
         detailed_records.sort(key=lambda x: x.get("timestamp") or "", reverse=True)
+        if limit is not None and limit > 0:
+            detailed_records = detailed_records[offset : offset + limit]
         return detailed_records
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -548,7 +561,8 @@ async def get_interview(
             "jd": sess["jd"],
             "resume": sess["resume"],
             "custom_prompt": sess["custom_prompt"],
-            "transcript": sess["transcript"]
+            "transcript": sess["transcript"],
+            "final_report": sess.get("final_report")
         }
     try:
         return await repo.load_session(session_id)
@@ -573,7 +587,8 @@ async def get_interview(
                         "jd": sess.get("jd", ""),
                         "resume": sess.get("resume", ""),
                         "custom_prompt": sess.get("custom_prompt", ""),
-                        "transcript": engine.get_transcript() if engine else sess.get("transcript", [])
+                        "transcript": engine.get_transcript() if engine else sess.get("transcript", []),
+                        "final_report": sess.get("final_report")
                     }
                 cs = await copilot_repo.load_session(session_id)
                 return {
@@ -582,7 +597,8 @@ async def get_interview(
                     "jd": cs.get("jd", ""),
                     "resume": cs.get("resume", ""),
                     "custom_prompt": cs.get("custom_prompt", ""),
-                    "transcript": cs.get("transcript", [])
+                    "transcript": cs.get("transcript", []),
+                    "final_report": cs.get("final_report")
                 }
             except FileNotFoundError:
                 pass

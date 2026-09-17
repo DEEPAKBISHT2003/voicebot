@@ -31,14 +31,23 @@ export const listInterviews = async (): Promise<InterviewSession[]> => {
   return res.data;
 };
 
+const getBaseApiUrl = (): string => {
+  let url = import.meta.env.VITE_API_URL || '/api';
+  if (url.endsWith('/')) {
+    url = url.slice(0, -1);
+  }
+  if (!url.endsWith('/api')) {
+    url = `${url}/api`;
+  }
+  return url;
+};
+
 export const getRecordingUrl = (sessionId: string): string => {
-  const base = import.meta.env.VITE_API_URL || '/api';
-  return `${base}/interviews/${sessionId}/recording`;
+  return `${getBaseApiUrl()}/interviews/${sessionId}/recording`;
 };
 
 export const getResumeUrl = (sessionId: string): string => {
-  const base = import.meta.env.VITE_API_URL || '/api';
-  return `${base}/interviews/${sessionId}/resume`;
+  return `${getBaseApiUrl()}/interviews/${sessionId}/resume`;
 };
 
 export const parseResumeFile = async (file: File): Promise<string> => {

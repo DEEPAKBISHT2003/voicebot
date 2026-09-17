@@ -59,8 +59,9 @@ class CopilotPipelineBuilder:
 
             accumulator = TranscriptAccumulator(callback=transcript_callback)
 
-            # Audio buffer processor for recording audio
+            # Audio buffer processor for recording audio (16kHz mono PCM)
             audio_buffer = AudioBufferProcessor(
+                sample_rate=16000,
                 num_channels=1,
                 auto_start_recording=True
             )
@@ -78,27 +79,33 @@ class CopilotPipelineBuilder:
                         wf.setsampwidth(2)  # 16-bit
                         wf.setframerate(sample_rate)
                         wf.writeframes(audio)
-                    logger.debug(f"[CopilotPipeline] Saved audio recording to {recording_path}")
+                    logger.info(f"[CopilotPipeline] Successfully saved audio recording to {recording_path} ({len(audio)} bytes)")
                 except Exception as e:
                     logger.error(f"[CopilotPipeline] Failed to save audio recording: {e}")
 
+            # Audio buffer placed immediately after transport.input() to capture all incoming PCM frames
             pipeline = Pipeline([
                 transport.input(),
+                audio_buffer,
                 stt,
-                accumulator,
-                audio_buffer
+                accumulator
             ])
 
             worker = PipelineWorker(
                 pipeline,
+                enable_rtvi=False,
+                enable_turn_tracking=False,
+                setup_timeout_secs=60.0,
                 params=PipelineParams(
                     enable_metrics=False,
                     enable_usage_metrics=False,
+                    audio_in_sample_rate=16000,
+                    audio_out_sample_rate=16000,
                 )
             )
 
             logger.info(f"[CopilotPipeline] Successfully built audio observer pipeline for session: {session_id}")
-            return pipeline, worker
+            return pipeline, worker, audio_buffer
 
         except Exception as err:
             logger.error(f"[CopilotPipeline] Failed to build observer pipeline: {err}")

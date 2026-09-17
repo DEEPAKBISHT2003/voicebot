@@ -1,6 +1,6 @@
 import os
 import uuid
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from services.copilot.src.models.copilot import CopilotSessionModel
 from services.copilot.src.core.config import Settings
 
@@ -90,9 +90,12 @@ class CopilotRepository:
             "service_off": is_service_off
         }
 
-    async def list_sessions(self) -> List[dict]:
+    async def list_sessions(self, limit: Optional[int] = None) -> List[dict]:
         # Fetch all session details ordered by timestamp
-        sessions = await CopilotSessionModel.all().order_by("-timestamp")
+        query = CopilotSessionModel.all().order_by("-timestamp")
+        if limit is not None and limit > 0:
+            query = query.limit(limit)
+        sessions = await query
         return [
             {
                 "session_id": str(s.session_id),

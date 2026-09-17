@@ -14,7 +14,7 @@ from services.copilot.src.core.config import Settings as CopilotSettings
 InterviewSettings.validate()
 CopilotSettings.validate()
 
-from services.interview.src.api.interviews import router as interviews_router
+from services.interview.src.api.interviews import router as interviews_router, get_recording, get_resume
 from services.copilot.src.router import router as copilot_router
 from services.copilot.src.websocket.handler import router as copilot_ws_router
 from services.copilot.src.api.simulation import router as simulation_router
@@ -67,6 +67,15 @@ app.state.copilot_sessions = {}
 # Include Routers
 # 1. Interview Service Routers (e.g., /api/interviews, /api/questions, /api/ws/interview/...)
 app.include_router(interviews_router, tags=["Interviews"])
+
+# Root alias routes for direct media downloads (/interviews/{session_id}/recording and /interviews/{session_id}/resume)
+@app.get("/interviews/{session_id}/recording", tags=["Interviews"])
+def get_recording_root_alias(session_id: str):
+    return get_recording(session_id)
+
+@app.get("/interviews/{session_id}/resume", tags=["Interviews"])
+def get_resume_root_alias(session_id: str):
+    return get_resume(session_id)
 
 # 2. Copilot Service Routers (e.g., /api/copilot/start, /api/copilot/{id}/join-meeting...)
 app.include_router(copilot_router, prefix="/api/copilot", tags=["Copilot"])
