@@ -434,7 +434,7 @@ export const CopilotSession: React.FC = () => {
                 disabled={isGeneratingReport}
                 className={`flex items-center gap-2 px-4 py-2 text-white text-xs font-bold rounded-lg shadow-md transition-all cursor-pointer border ${
                   isSimulationFinished
-                    ? 'bg-green-600 hover:bg-green-700 border-green-700'
+                    ? 'bg-green-600 hover:bg-green-700 border-green-700 animate-bounce'
                     : 'bg-primary hover:bg-primary/90 border-primary'
                 }`}
               >
@@ -455,7 +455,7 @@ export const CopilotSession: React.FC = () => {
               {isServiceOff ? (
                 <div className="flex items-center gap-2 px-3 py-1.5 bg-red-50 rounded-lg border border-red-200 shadow-sm">
                   <span className="h-2.5 w-2.5 rounded-full bg-red-600" />
-                  <span className="text-xs font-black uppercase text-red-700 tracking-wider">SERVICE OFF</span>
+                  <span className="text-xs font-black uppercase text-red-700 tracking-wider">Service Disconnected</span>
                 </div>
               ) : isCompletedSession ? (
                 <div className="flex items-center gap-2 px-3 py-1.5 bg-green-50 rounded-lg border border-green-200 shadow-sm">
@@ -467,7 +467,7 @@ export const CopilotSession: React.FC = () => {
                   <span className={`h-2.5 w-2.5 rounded-full ${status === 'connected' ? 'bg-green-500 animate-pulse' :
                       status === 'connecting' ? 'bg-amber-500 animate-pulse' : 'bg-muted-gray'
                     }`} />
-                  <span className="text-xs font-bold capitalize text-primary">{status}</span>
+                  <span className="text-xs font-bold capitalize text-primary">{status === 'disconnected' ? 'On Hold' : status}</span>
                 </div>
               )}
 
@@ -494,7 +494,7 @@ export const CopilotSession: React.FC = () => {
                 </>
               )}
 
-              {/* Dedicated SERVICE OFF Button */}
+              {/* Dedicated SERVICE OFF / Disconnect Button */}
               <button
                 onClick={handleServiceOff}
                 disabled={isServiceOff || isServiceOffLoading || isCompletedSession}
@@ -506,7 +506,7 @@ export const CopilotSession: React.FC = () => {
                 title={isServiceOff ? "Session is permanently Service Off" : isCompletedSession ? "Session is completed" : "Instruct Teams bot to leave and permanently shut down this session"}
               >
                 <Power className="h-3.5 w-3.5" />
-                {isServiceOff ? 'SERVICE OFF' : isServiceOffLoading ? 'Stopping...' : 'SERVICE OFF'}
+                {isServiceOff ? 'Service Disconnected' : isServiceOffLoading ? 'Disconnecting...' : 'Disconnect'}
               </button>
             </>
           )}
