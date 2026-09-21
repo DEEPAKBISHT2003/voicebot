@@ -18,8 +18,33 @@ import {
   VolumeX,
   Pin
 } from 'lucide-react';
-import { useCopilotAudio } from '../hooks/useCopilotAudio';
+import { useCopilotAudio, getTranscriptEntryKey, type CopilotTranscriptEntry } from '../hooks/useCopilotAudio';
 import { stopCopilot, serviceOffCopilot, getCopilotStatus, finalizeCopilotReport } from '../../api/copilot';
+
+export const getSpeakerDisplayName = (
+  rawSpeaker?: string,
+  allEntries?: CopilotTranscriptEntry[]
+): string => {
+  const genericRoles = new Set(['candidate', 'interviewer', 'user', 'assistant', 'system', 'unknown']);
+  const clean = (rawSpeaker || '').trim();
+
+  if (clean && !genericRoles.has(clean.toLowerCase())) {
+    return clean;
+  }
+
+  // Look for any real human speaker name present in the session transcript
+  if (allEntries && allEntries.length > 0) {
+    const realEntry = allEntries.find((e) => {
+      const spk = (e.speaker_name || e.speaker || '').trim();
+      return spk && !genericRoles.has(spk.toLowerCase());
+    });
+    if (realEntry) {
+      return (realEntry.speaker_name || realEntry.speaker).trim();
+    }
+  }
+
+  return 'Participant';
+};
 
 export const CopilotSession: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -194,8 +219,8 @@ export const CopilotSession: React.FC = () => {
     };
   }, [id]);
 
-  // Accordion open/close toggles for Live Interview view
-  const [isTranscriptExpanded, setIsTranscriptExpanded] = useState<boolean>(false);
+  // Accordion open/close toggles for Live Interview view (Live Transcript expanded by default)
+  const [isTranscriptExpanded, setIsTranscriptExpanded] = useState<boolean>(true);
   const [isJdCoverageExpanded, setIsJdCoverageExpanded] = useState<boolean>(false);
   const [isResumeCoverageExpanded, setIsResumeCoverageExpanded] = useState<boolean>(false);
 
@@ -276,7 +301,7 @@ export const CopilotSession: React.FC = () => {
 
   // Helper to calculate candidate average score from latest evaluations
   const getCandidateScore = () => {
-    const candidateMessages = transcript.filter(m => m.speaker === 'Candidate' && m.evaluation);
+    const candidateMessages = transcript.filter(m => (m.speaker === 'Candidate' || Boolean(m.evaluation)) && m.evaluation);
     if (candidateMessages.length === 0) return 'N/A';
 
     let totalAccuracy = 0;
@@ -294,7 +319,7 @@ export const CopilotSession: React.FC = () => {
 
   // Helper to calculate average score for custom metric keys
   const getAverageMetric = (key: 'technical_accuracy' | 'confidence' | 'completeness' | 'practical_knowledge' | 'communication' | 'production_experience') => {
-    const candidateMessages = transcript.filter(m => m.speaker === 'Candidate' && m.evaluation);
+    const candidateMessages = transcript.filter(m => (m.speaker === 'Candidate' || Boolean(m.evaluation)) && m.evaluation);
     if (candidateMessages.length === 0) return 0;
 
     let total = 0;
@@ -809,62 +834,66 @@ export const CopilotSession: React.FC = () => {
           {/* Collapsible Accordion Sections */}
           <div className="space-y-4">
 
-            {/* Accordion 1: Live Transcript Log */}
+            {/* Accordion 1: LIVE TRANSCRIPT */}
             <div className="bg-secondary rounded-xl border border-border-gray shadow-sm overflow-hidden">
               <button
                 onClick={() => setIsTranscriptExpanded(!isTranscriptExpanded)}
                 className="w-full flex items-center justify-between p-4 bg-secondary/80 hover:bg-secondary transition-colors"
               >
-                <span className="font-bold text-primary flex items-center gap-2 text-sm">
+                <div className="flex items-center gap-2.5">
                   <MessageSquare className="h-4 w-4 text-primary" />
-                  Live Transcript Log
-                </span>
+                  <span className="font-bold text-primary text-sm tracking-wide">
+                    LIVE TRANSCRIPT
+                  </span>
+                  <span className="text-[11px] font-semibold bg-primary/10 text-primary px-2 py-0.5 rounded-full">
+                    {transcript.length} {transcript.length === 1 ? 'turn' : 'turns'}
+                  </span>
+                </div>
                 {isTranscriptExpanded ? <ChevronUp className="h-4 w-4 text-primary" /> : <ChevronDown className="h-4 w-4 text-primary" />}
               </button>
 
               {isTranscriptExpanded && (
-                <div ref={transcriptContainerRef} className="border-t border-border-gray p-4 max-h-[400px] overflow-y-auto space-y-4 bg-white">
+                <div ref={transcriptContainerRef} className="border-t border-border-gray p-4 max-h-[420px] overflow-y-auto space-y-3 bg-white">
                   {transcript.length === 0 ? (
-                    <p className="text-xs text-muted-gray text-center py-4">No transcript logged yet.</p>
+                    <div className="text-center py-8 space-y-1.5">
+                      <p className="text-xs text-muted-gray font-medium">Listening for speech from Microsoft Teams Native Captions...</p>
+                      <p className="text-[10px] text-muted-gray/70">Finalized conversational turns will appear here in real time.</p>
+                    </div>
                   ) : (
-                    transcript.map((msg, index) => {
-                      const isCandidate = msg.speaker === 'Candidate';
-                      const isInterviewer = msg.speaker === 'Interviewer';
+                    transcript.map((msg) => {
                       const isSystem = msg.speaker === 'System';
 
                       if (isSystem) {
                         return (
-                          <div key={index} className="flex justify-center">
-                            <span className="text-[10px] font-bold bg-border-gray/50 text-muted-gray px-2.5 py-1 rounded-full uppercase tracking-wider">
+                          <div key={getTranscriptEntryKey(msg)} className="flex justify-center my-1">
+                            <span className="text-[10px] font-medium bg-border-gray/50 text-muted-gray px-3 py-1 rounded-full uppercase tracking-wider">
                               {msg.text}
                             </span>
                           </div>
                         );
                       }
 
+                      const entryKey = getTranscriptEntryKey(msg);
+                      const displayName = getSpeakerDisplayName(msg.speaker || msg.speaker_name, transcript);
+
                       return (
                         <div
-                          key={index}
-                          className={`flex flex-col gap-1.5 ${isCandidate ? 'items-start' : 'items-end'}`}
+                          key={entryKey}
+                          className="p-3.5 rounded-xl border border-border-gray/70 bg-secondary/30 hover:bg-secondary/60 transition-colors space-y-1"
                         >
-                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${isCandidate
-                              ? 'bg-blue-50 text-blue-700 border-blue-200'
-                              : isInterviewer
-                                ? 'bg-purple-50 text-purple-700 border-purple-200'
-                                : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                            }`}>
-                            {msg.speaker}
-                          </span>
-                          <div className={`group relative rounded-xl p-3 max-w-[85%] border shadow-sm transition-all ${isCandidate
-                              ? 'bg-white border-border-gray text-primary'
-                              : 'bg-primary text-white border-primary/30'
-                            }`}>
-                            <p className="text-xs leading-relaxed">{msg.text}</p>
-                            <span className={`block text-[9px] mt-1.5 text-right ${isCandidate ? 'text-muted-gray' : 'text-primary-foreground/75'
-                              }`}>
-                              {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-xs text-primary tracking-tight">
+                              {displayName}
                             </span>
+                            {msg.timestamp && (
+                              <span className="text-[10px] text-muted-gray font-mono">
+                                {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                              </span>
+                            )}
                           </div>
+                          <p className="text-xs text-primary leading-relaxed whitespace-pre-wrap">
+                            {msg.text}
+                          </p>
                         </div>
                       );
                     })
@@ -1267,13 +1296,12 @@ export const CopilotSession: React.FC = () => {
             </h3>
 
             <div className="space-y-6 max-h-[700px] overflow-y-auto pr-1">
-              {transcript.map((msg, index) => {
-                const isCandidate = msg.speaker === 'Candidate';
+              {transcript.map((msg) => {
                 const isSystem = msg.speaker === 'System';
 
                 if (isSystem) {
                   return (
-                    <div key={index} className="flex justify-center">
+                    <div key={getTranscriptEntryKey(msg)} className="flex justify-center">
                       <span className="text-[10px] font-bold bg-border-gray/50 text-muted-gray px-2.5 py-1 rounded-full uppercase tracking-wider">
                         {msg.text}
                       </span>
@@ -1281,13 +1309,16 @@ export const CopilotSession: React.FC = () => {
                   );
                 }
 
+                const displayName = getSpeakerDisplayName(msg.speaker || msg.speaker_name, transcript);
+                const isCandidate = msg.speaker === 'Candidate' || Boolean(msg.evaluation);
+
                 return (
                   <div
-                    key={index}
+                    key={getTranscriptEntryKey(msg)}
                     className={`flex flex-col gap-2 ${isCandidate ? 'items-start' : 'items-end'}`}
                   >
                     <span className="text-[10px] font-bold text-muted-gray px-1">
-                      {msg.speaker}
+                      {displayName}
                     </span>
 
                     <div className={`group relative rounded-xl p-3.5 max-w-[90%] border shadow-sm transition-all ${isCandidate

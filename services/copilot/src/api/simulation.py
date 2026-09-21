@@ -169,13 +169,13 @@ async def simulation_websocket(
     sess = active_sessions[session_id]
     engine: CopilotSessionEngine = sess["engine"]
 
-    # Transcribe the full WAV file using Deepgram REST API
+    # Transcribe the full WAV file (optional simulation fallback)
     transcript_segments = []
     try:
-        import httpx
-        deepgram_key = Settings.DEEPGRAM_API_KEY
+        deepgram_key = getattr(Settings, "DEEPGRAM_API_KEY", "") or os.getenv("DEEPGRAM_API_KEY", "")
         if deepgram_key:
-            logger.info(f"Transcribing audio for session {session_id} via Deepgram...")
+            import httpx
+            logger.info(f"Transcribing simulation audio for session {session_id} via Deepgram...")
             with open(file_path, "rb") as audio_file:
                 audio_bytes = audio_file.read()
 
@@ -206,9 +206,9 @@ async def simulation_websocket(
             else:
                 logger.warning(f"Deepgram returned {response.status_code}: {response.text}")
         else:
-            logger.warning("No DEEPGRAM_API_KEY set — skipping transcription")
+            logger.info("Deepgram STT decoupled in Phase 2N — skipping simulation transcription")
     except Exception as e:
-        logger.error(f"Transcription failed: {e}")
+        logger.error(f"Simulation transcription failed: {e}")
 
     try:
         await asyncio.sleep(1.0)

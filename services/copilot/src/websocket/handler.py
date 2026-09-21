@@ -5,11 +5,15 @@ import json
 import asyncio
 import time
 import os
+import uuid
+import datetime
 
 from services.copilot.src.api.deps import get_copilot_sessions_ws, get_copilot_repo_ws
 from services.copilot.src.services.repository import CopilotRepository
 from services.copilot.src.engine.session import CopilotSessionEngine
 from services.copilot.src.pipeline.builder import CopilotPipelineBuilder
+from services.copilot.src.pipeline.native_turn_finalizer import NativeTurnAggregator
+from services.copilot.src.pipeline.native_turn_aligner import NativeLogicalTurnAggregator
 try:
     from pipecat.pipeline.runner import PipelineRunner as WorkerRunner
 except ImportError:
@@ -36,7 +40,8 @@ async def websocket_endpoint(
     await websocket.accept()
     mode = websocket.query_params.get("mode", "")
     is_audio_producer = (mode == "audio_stream")
-    logger.info(f"[CopilotWS] WebSocket client connected (session={session_id}, is_audio_producer={is_audio_producer})")
+    is_native_captions = (mode == "native_captions")
+    logger.info(f"[CopilotWS] WebSocket client connected (session={session_id}, is_audio_producer={is_audio_producer}, is_native_captions={is_native_captions})")
     
     # Initialize active session state if not already started
     if session_id not in active_sessions:
@@ -165,46 +170,38 @@ async def websocket_endpoint(
                 logger.debug(f"[CopilotWS] Failed to broadcast update to dashboard client: {ws_err}")
                 dead_sockets.add(dash_ws)
         
+        # Also broadcast dedicated single-turn transcript event frame if last_message is provided
+        if last_message and dashboards:
+            turn_id_val = last_message.get("turn_id")
+            id_val = last_message.get("id") or (f"{session_id}-turn-{turn_id_val}" if turn_id_val else None)
+            speaker_val = last_message.get("speaker", "")
+            transcript_frame = {
+                "type": "transcript",
+                "session_id": session_id,
+                "id": id_val,
+                "turn_id": turn_id_val,
+                "speaker": speaker_val,
+                "speaker_name": speaker_val,
+                "text": last_message.get("text", ""),
+                "timestamp": last_message.get("timestamp"),
+                "source": last_message.get("source", "teams_native")
+            }
+            for dash_ws in dashboards.difference(dead_sockets):
+                try:
+                    await dash_ws.send_json(transcript_frame)
+                except Exception:
+                    pass
+
         if dead_sockets:
             sess["dashboard_websockets"].difference_update(dead_sockets)
 
     if sess.get("engine"):
         sess["engine"].on_update_callback = broadcast_update
 
-    # Audio Producer Branch (Teams Bot / Raw Audio Stream)
+    # Audio Producer Branch (Teams Bot / Raw Audio Stream for recording.wav capture)
     if is_audio_producer:
         sess["status"] = "Listening to audio stream..."
         sess["last_speech_time"] = time.time()
-        
-        async def on_transcript_entry(entry: dict):
-            raw_spk = entry.get("speaker")
-            text_content = entry.get("text", "").strip()
-            if not text_content:
-                return
-
-            sess["last_speech_time"] = time.time()
-
-            if raw_spk is not None:
-                spk_key = str(raw_spk)
-                if spk_key not in speaker_map:
-                    if len(speaker_map) == 0:
-                        speaker_map[spk_key] = "Candidate"
-                    elif len(speaker_map) == 1:
-                        speaker_map[spk_key] = "Interviewer"
-                    else:
-                        speaker_map[spk_key] = f"Speaker {len(speaker_map) + 1}"
-                speaker = speaker_map[spk_key]
-            else:
-                role_val = entry.get("role", "user")
-                speaker = "Candidate" if role_val == "user" else ("Interviewer" if role_val == "assistant" else "System")
-
-            logger.info(f"[CopilotWS] Audio STT segment ({speaker}): {text_content}")
-
-            eng = sess.get("engine")
-            if eng:
-                last_msg = await eng.add_message(speaker, text_content)
-                sess["transcript"] = eng.get_transcript()
-                await broadcast_update(last_msg)
 
         # Inactivity timeout monitor (default 15 mins / 900 seconds)
         timeout_sec = int(os.getenv("INACTIVITY_TIMEOUT_SECONDS", "900"))
@@ -244,7 +241,7 @@ async def websocket_endpoint(
         inactivity_task = asyncio.create_task(monitor_inactivity())
 
         builder = CopilotPipelineBuilder()
-        pipeline_res = builder.build_observer_pipeline(websocket, session_id, on_transcript_entry)
+        pipeline_res = builder.build_observer_pipeline(websocket, session_id)
 
         if pipeline_res is not None:
             pipeline, worker, audio_buffer = pipeline_res
@@ -253,7 +250,7 @@ async def websocket_endpoint(
             sess["audio_websocket"] = websocket
             runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
             sess["runner"] = runner
-            logger.info(f"[CopilotWS] Pipecat audio observer runner active for audio producer session {session_id}")
+            logger.info(f"[CopilotWS] Pipecat audio recorder runner active for audio producer session {session_id}")
             try:
                 if hasattr(runner, "add_workers"):
                     await runner.add_workers(worker)
@@ -303,6 +300,236 @@ async def websocket_endpoint(
                 pass
             finally:
                 inactivity_task.cancel()
+
+    # Native Captions Branch (Teams Bot Live Captions Producer — Production Transcript Source)
+    elif is_native_captions:
+        sess.setdefault("native_captions", [])
+        sess["native_caption_websockets"] = sess.setdefault("native_caption_websockets", set())
+        sess["native_caption_websockets"].add(websocket)
+        logger.info(f"[CopilotWS] Native captions client connected (session={session_id})")
+
+        # Native Captions Production Pipeline Components
+        turn_aggregator: NativeTurnAggregator = sess.setdefault(
+            "turn_aggregator",
+            NativeTurnAggregator(session_id=session_id)
+        )
+        logical_aggregator: NativeLogicalTurnAggregator = sess.setdefault(
+            "logical_aggregator",
+            NativeLogicalTurnAggregator(session_id=session_id, inactivity_threshold_ms=3000.0)
+        )
+        dispatched_seq_ids: Set[int] = sess.setdefault("dispatched_seq_ids", set())
+
+        session_dir = os.path.join("interviews", session_id)
+        os.makedirs(session_dir, exist_ok=True)
+        captions_file_path = os.path.join(session_dir, "native_captions.jsonl")
+
+        poc_dir = os.path.join("interviews", "phase2i_poc")
+        os.makedirs(poc_dir, exist_ok=True)
+        poc_captions_file_path = os.path.join(poc_dir, "native_captions.jsonl")
+
+        async def dispatch_finalized_sequences(newly_fin: Dict[str, list]):
+            eng = sess.get("engine")
+            if not eng:
+                return
+            for strat in ("strategy_c_quiescence_800ms", "strategy_b_dom_removal"):
+                for fseq in newly_fin.get(strat, []):
+                    if fseq.sequence_id not in dispatched_seq_ids:
+                        dispatched_seq_ids.add(fseq.sequence_id)
+                        completed_turns = logical_aggregator.process_finalized_sequence(fseq)
+                        for turn in completed_turns:
+                            logger.info(f"[CopilotWS] Emitting completed turn: speaker='{turn.speaker_name}', text='{turn.text}'")
+                            last_msg = await eng.add_message(
+                                speaker=turn.speaker_name,
+                                text=turn.text,
+                                source="teams_native",
+                                allow_merge=False,
+                                turn_id=turn.logical_turn_id,
+                                is_final=True
+                            )
+                            sess["transcript"] = eng.get_transcript()
+                            sess["last_speech_time"] = time.time()
+                            await broadcast_update(last_msg)
+
+                        # Emit progressive update for active logical turn immediately (<1s display latency)
+                        if logical_aggregator.active_turn:
+                            active = logical_aggregator.active_turn
+                            logger.info(f"[CopilotWS] Emitting progressive turn: speaker='{active.speaker_name}', text='{active.text}'")
+                            last_msg = await eng.add_message(
+                                speaker=active.speaker_name,
+                                text=active.text,
+                                source="teams_native",
+                                allow_merge=False,
+                                turn_id=active.logical_turn_id,
+                                is_final=False
+                            )
+                            sess["transcript"] = eng.get_transcript()
+                            sess["last_speech_time"] = time.time()
+                            await broadcast_update(last_msg)
+
+        async def monitor_native_turn_inactivity():
+            while True:
+                await asyncio.sleep(0.25)
+                if sess.get("service_off") or sess.get("is_active") is False or bool(sess.get("final_report")):
+                    break
+                # 1. Quiescence check on turn_aggregator (evaluates 800ms threshold)
+                q_fin = turn_aggregator.check_quiescence()
+                await dispatch_finalized_sequences(q_fin)
+
+                # 2. Inactivity timeout check on logical_aggregator (finalizes turn after 3s conversational pause)
+                timeout_turns = logical_aggregator.check_inactivity()
+                eng = sess.get("engine")
+                if eng:
+                    for turn in timeout_turns:
+                        logger.info(f"[CopilotWS] Emitting production turn (inactivity timeout): speaker='{turn.speaker_name}', text='{turn.text}'")
+                        last_msg = await eng.add_message(
+                            speaker=turn.speaker_name,
+                            text=turn.text,
+                            source="teams_native",
+                            allow_merge=False,
+                            turn_id=turn.logical_turn_id,
+                            is_final=True
+                        )
+                        sess["transcript"] = eng.get_transcript()
+                        sess["last_speech_time"] = time.time()
+                        await broadcast_update(last_msg)
+
+        native_monitor_task = asyncio.create_task(monitor_native_turn_inactivity())
+
+        try:
+            while True:
+                msg = await websocket.receive()
+                if msg.get("type") == "websocket.disconnect":
+                    raise WebSocketDisconnect(code=msg.get("code", 1000))
+
+                # Guard against inactive or service off sessions during live transport
+                is_off = sess.get("service_off") or os.path.exists(os.path.join("interviews", session_id, "service_off.flag"))
+                if is_off or sess.get("is_active") is False or bool(sess.get("final_report")):
+                    logger.info(f"[CopilotWS] Session {session_id} is inactive or Service Off. Closing native captions socket.")
+                    try:
+                        await websocket.close(code=1000)
+                    except Exception:
+                        pass
+                    break
+
+                if "text" in msg:
+                    try:
+                        payload = json.loads(msg["text"])
+                        if not isinstance(payload, dict):
+                            continue
+
+                        event_type = payload.get("event_type")
+                        if event_type != "native_caption":
+                            logger.warning(f"[CopilotWS] Ignored unexpected event_type '{event_type}' on native captions channel.")
+                            continue
+
+                        payload_session_id = payload.get("session_id")
+                        if payload_session_id and payload_session_id != session_id:
+                            logger.warning(f"[CopilotWS] Mismatched session_id in payload: {payload_session_id} != {session_id}")
+                            continue
+
+                        text = (payload.get("text") or "").strip()
+                        if not text:
+                            continue
+
+                        raw_speaker = payload.get("speaker_name")
+                        if not raw_speaker or not str(raw_speaker).strip():
+                            raw_speaker = "Unknown"
+                        else:
+                            raw_speaker = str(raw_speaker).strip()
+
+                        detected_at_str = payload.get("detected_at")
+                        received_at_dt = datetime.datetime.now(datetime.timezone.utc)
+                        received_at_str = received_at_dt.isoformat()
+
+                        latency_ms = None
+                        if detected_at_str:
+                            try:
+                                detected_dt = datetime.datetime.fromisoformat(detected_at_str.replace("Z", "+00:00"))
+                                latency_ms = max(0.0, (received_at_dt - detected_dt).total_seconds() * 1000.0)
+                            except Exception:
+                                pass
+
+                        seq_num = payload.get("caption_sequence")
+                        dom_action = payload.get("dom_action", "updated")
+
+                        event_record = {
+                            "event_type": "native_caption",
+                            "session_id": session_id,
+                            "event_id": payload.get("event_id") or str(uuid.uuid4()),
+                            "speaker_name": raw_speaker,
+                            "text": text,
+                            "detected_at": detected_at_str or received_at_str,
+                            "received_at": received_at_str,
+                            "latency_ms": round(latency_ms, 2) if latency_ms is not None else None,
+                            "source": "teams_native",
+                            "is_final": payload.get("is_final"),
+                            "finality": payload.get("finality", "unknown"),
+                            "caption_sequence": seq_num,
+                            "dom_action": dom_action,
+                        }
+
+                        # 1. In-memory runtime persistence
+                        sess["native_captions"].append(event_record)
+                        sess["last_speech_time"] = time.time()
+
+                        # 2. Append to interview session artifact
+                        with open(captions_file_path, "a", encoding="utf-8") as f:
+                            f.write(json.dumps(event_record) + "\n")
+
+                        # 3. Append to phase2i_poc shared artifact
+                        with open(poc_captions_file_path, "a", encoding="utf-8") as pf:
+                            pf.write(json.dumps(event_record) + "\n")
+
+                        # 4. Structured log output
+                        lat_disp = f"{latency_ms:.1f}ms" if latency_ms is not None else "N/A"
+                        logger.info(
+                            f"[TEAMS_NATIVE] speaker='{raw_speaker}' text='{text}' "
+                            f"seq={seq_num} detected_at='{detected_at_str}' received_at='{received_at_str}' latency={lat_disp}"
+                        )
+
+                        # 5. Broadcast to observer/benchmark subscribers on native_caption_websockets
+                        for sub_ws in list(sess.get("native_caption_websockets", set())):
+                            if sub_ws != websocket:
+                                try:
+                                    await sub_ws.send_text(json.dumps(event_record))
+                                except Exception:
+                                    pass
+
+                        # 6. Feed raw caption event into NativeTurnAggregator (Production Path)
+                        newly_finalized = turn_aggregator.process_raw_event(event_record)
+                        await dispatch_finalized_sequences(newly_finalized)
+
+                    except json.JSONDecodeError as jde:
+                        logger.warning(f"[CopilotWS] JSON parse error on native captions payload: {jde}")
+                    except Exception as ex:
+                        logger.error(f"[CopilotWS] Error processing native caption event: {ex}")
+
+        except WebSocketDisconnect:
+            logger.info(f"[CopilotWS] Native captions client disconnected: {session_id}")
+        finally:
+            native_monitor_task.cancel()
+            # Flush pending sequences and turns to production transcript
+            flushed_seqs = turn_aggregator.finalize_all_pending()
+            await dispatch_finalized_sequences(flushed_seqs)
+
+            final_flushed_turns = logical_aggregator.flush()
+            eng = sess.get("engine")
+            if eng:
+                for turn in final_flushed_turns:
+                    logger.info(f"[CopilotWS] Emitting flushed production turn: speaker='{turn.speaker_name}', text='{turn.text}'")
+                    last_msg = await eng.add_message(
+                        speaker=turn.speaker_name,
+                        text=turn.text,
+                        source="teams_native",
+                        allow_merge=False,
+                        turn_id=turn.logical_turn_id,
+                        is_final=True
+                    )
+                    sess["transcript"] = eng.get_transcript()
+                    await broadcast_update(last_msg)
+
+            if session_id in active_sessions:
+                active_sessions[session_id].get("native_caption_websockets", set()).discard(websocket)
 
     # Dashboard Subscriber Branch (Browser UI Window)
     else:

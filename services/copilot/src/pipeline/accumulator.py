@@ -1,3 +1,9 @@
+"""
+[DEPRECATED / INACTIVE IN COPILOT — PHASE 2N]
+Deepgram STT TranscriptAccumulator is no longer used in the Copilot service.
+Production transcripts are now exclusively generated from Microsoft Teams Native Live Captions
+via NativeTurnAggregator and NativeLogicalTurnAggregator.
+"""
 import asyncio
 from typing import Callable, List, Dict, Optional, Any
 from loguru import logger

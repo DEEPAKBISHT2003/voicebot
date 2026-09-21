@@ -28,7 +28,7 @@ class CopilotSessionEngine:
         # Normalize and map transcript entries for backward-compatibility with interview role keys
         self.transcript: List[Dict[str, Any]] = []
         raw_list = initial_transcript or []
-        for msg in raw_list:
+        for idx, msg in enumerate(raw_list):
             speaker = msg.get("speaker")
             if not speaker:
                 role = msg.get("role")
@@ -42,11 +42,16 @@ class CopilotSessionEngine:
                     speaker = "System"
             if speaker in ("Candidate", "Interviewer", "System"):
                 self.detected_speakers.add(speaker)
+            t_id = msg.get("turn_id", idx + 1)
+            e_id = msg.get("id") or f"{self.session_id}-turn-{t_id}"
             self.transcript.append({
+                "id": e_id,
+                "turn_id": t_id,
                 "speaker": speaker,
                 "text": msg.get("text", ""),
                 "timestamp": msg.get("timestamp") or datetime.datetime.now().isoformat(),
-                "evaluation": msg.get("evaluation")
+                "evaluation": msg.get("evaluation"),
+                "source": msg.get("source", "teams_native")
             })
 
         self.evaluation_service = CandidateEvaluationService()
@@ -137,10 +142,21 @@ class CopilotSessionEngine:
         except Exception as e:
             logger.error(f"Error in background LLM task execution for session {self.session_id}: {e}")
 
-    async def add_message(self, speaker: str, text: str, websocket: Any = None) -> Dict[str, Any]:
+    async def add_message(
+        self,
+        speaker: str,
+        text: str,
+        websocket: Any = None,
+        source: str = "teams_native",
+        allow_merge: bool = True,
+        turn_id: Any = None,
+        msg_id: Any = None,
+        is_final: bool = True
+    ) -> Dict[str, Any]:
         """
         Adds a new message to the session transcript and returns INSTANTLY (<5ms).
-        Stitches rapid same-speaker utterances into unified thoughts.
+        Stitches rapid same-speaker utterances into unified thoughts when allow_merge=True.
+        When allow_merge=False (e.g. from NativeLogicalTurnAggregator), each logical turn is recorded distinctly.
         All LLM processing (Evaluation, Intelligence, Assistance) runs asynchronously in parallel background task.
         """
         self.detected_speakers.add(speaker)
@@ -148,13 +164,22 @@ class CopilotSessionEngine:
         if not clean_text:
             return {}
 
-        # Same-Speaker Utterance Stitching Engine (Merges rapid consecutive chunks)
-        if self.transcript:
+        curr_turn_id = turn_id if turn_id is not None else (len(self.transcript) + 1)
+        entry_id = msg_id or f"{self.session_id}-turn-{curr_turn_id}"
+
+        # Same-Speaker Utterance Stitching Engine (Merges rapid consecutive chunks if allow_merge is True)
+        if allow_merge and self.transcript:
             last_entry = self.transcript[-1]
             if last_entry.get("speaker") == speaker:
                 # Merge into existing message bubble
                 last_entry["text"] = (last_entry.get("text", "") + " " + clean_text).strip()
                 last_entry["timestamp"] = datetime.datetime.now().isoformat()
+                if "source" not in last_entry:
+                    last_entry["source"] = source
+                if "id" not in last_entry:
+                    last_entry["id"] = entry_id
+                if "turn_id" not in last_entry:
+                    last_entry["turn_id"] = curr_turn_id
                 
                 # Retrieve last question if candidate
                 last_q = ""
@@ -164,7 +189,13 @@ class CopilotSessionEngine:
                             last_q = msg.get("text", "")
                             break
                             
-                asyncio.create_task(self._update_all_background_llm_tasks(last_entry, last_q, websocket))
+                try:
+                    await self.repo.save_session(self.session_id, {"transcript": self.transcript})
+                except Exception as save_err:
+                    logger.debug(f"Immediate transcript save warning: {save_err}")
+
+                if is_final:
+                    asyncio.create_task(self._update_all_background_llm_tasks(last_entry, last_q, websocket))
                 return last_entry
 
         # Retrieve the last interviewer question from transcript history
@@ -175,16 +206,44 @@ class CopilotSessionEngine:
                     last_question = msg.get("text", "")
                     break
 
+        # Check if updating an existing turn (e.g. from progressive extension or late arrival)
+        for msg in self.transcript:
+            if (turn_id is not None and msg.get("turn_id") == curr_turn_id) or (msg_id and msg.get("id") == entry_id):
+                if clean_text.startswith(msg.get("text", "")):
+                    msg["text"] = clean_text
+                elif not msg.get("text", "").endswith(clean_text):
+                    msg["text"] = f"{msg.get('text', '')} {clean_text}".strip()
+                msg["timestamp"] = datetime.datetime.now().isoformat()
+                try:
+                    await self.repo.save_session(self.session_id, {"transcript": self.transcript})
+                except Exception as save_err:
+                    logger.debug(f"Immediate transcript save warning: {save_err}")
+                if is_final and not msg.get("_llm_evaluated"):
+                    msg["_llm_evaluated"] = True
+                    asyncio.create_task(self._update_all_background_llm_tasks(msg, last_question, websocket))
+                return msg
+
         message = {
+            "id": entry_id,
+            "turn_id": curr_turn_id,
             "speaker": speaker,
             "text": clean_text,
-            "timestamp": datetime.datetime.now().isoformat()
+            "timestamp": datetime.datetime.now().isoformat(),
+            "source": source
         }
 
         self.transcript.append(message)
 
+        # Immediate DB persistence of new transcript turn
+        try:
+            await self.repo.save_session(self.session_id, {"transcript": self.transcript})
+        except Exception as save_err:
+            logger.debug(f"Immediate transcript save warning: {save_err}")
+
         # Trigger concurrent background processing (non-blocking, <5ms return)
-        asyncio.create_task(self._update_all_background_llm_tasks(message, last_question, websocket))
+        if is_final:
+            message["_llm_evaluated"] = True
+            asyncio.create_task(self._update_all_background_llm_tasks(message, last_question, websocket))
 
         return message
 

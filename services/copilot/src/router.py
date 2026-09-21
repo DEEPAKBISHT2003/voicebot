@@ -4,7 +4,7 @@ import datetime
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from loguru import logger
-from typing import Dict, Any, List, Literal
+from typing import Dict, Any, List, Literal, Optional
 
 from services.copilot.src.api.deps import get_copilot_repo, get_copilot_sessions
 from services.copilot.src.services.repository import CopilotRepository
@@ -372,13 +372,23 @@ async def get_copilot_status(
             if not assistance or not assistance.get("suggested_follow_up_questions"):
                 assistance = final_rep.get("assistance", assistance)
 
+        raw_transcript = engine.get_transcript() if engine else sess.get("transcript", [])
+        normalized_transcript = []
+        for idx, entry in enumerate(raw_transcript):
+            e_copy = dict(entry)
+            t_id = e_copy.get("turn_id") if e_copy.get("turn_id") is not None else (idx + 1)
+            e_copy.setdefault("turn_id", t_id)
+            e_copy.setdefault("id", f"{session_id}-turn-{t_id}")
+            e_copy.setdefault("source", "teams_native")
+            normalized_transcript.append(e_copy)
+
         is_act = False if (final_rep or sess.get("service_off")) else sess.get("is_active", True)
         return {
             "session_id": session_id,
             "is_active": is_act,
             "service_off": sess.get("service_off", False),
             "status": sess.get("status", "ready"),
-            "transcript": engine.get_transcript() if engine else sess.get("transcript", []),
+            "transcript": normalized_transcript,
             "intelligence": intelligence,
             "assistance": assistance,
             "final_report": final_rep,
@@ -400,12 +410,22 @@ async def get_copilot_status(
                 intelligence = db_session.get("intelligence", {})
                 assistance = db_session.get("assistance", {})
 
+            raw_transcript = db_session.get("transcript", [])
+            normalized_transcript = []
+            for idx, entry in enumerate(raw_transcript):
+                e_copy = dict(entry)
+                t_id = e_copy.get("turn_id") if e_copy.get("turn_id") is not None else (idx + 1)
+                e_copy.setdefault("turn_id", t_id)
+                e_copy.setdefault("id", f"{session_id}-turn-{t_id}")
+                e_copy.setdefault("source", "teams_native")
+                normalized_transcript.append(e_copy)
+
             return {
                 "session_id": session_id,
                 "is_active": False,
                 "service_off": is_service_off,
                 "status": "Service Off" if is_service_off else "Session completed.",
-                "transcript": db_session.get("transcript", []),
+                "transcript": normalized_transcript,
                 "intelligence": intelligence,
                 "assistance": assistance,
                 "final_report": final_report,
@@ -585,3 +605,141 @@ async def join_meeting(
     except Exception as e:
         logger.error(f"[TeamsBot] Failed to spawn: {type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+class NativeCaptionEventRequest(BaseModel):
+    event_type: str = "native_caption"
+    session_id: Optional[str] = None
+    event_id: Optional[str] = None
+    speaker_name: Optional[str] = "Unknown"
+    text: str
+    detected_at: Optional[str] = None
+    source: str = "teams_native"
+    is_final: Optional[bool] = None
+    finality: Optional[str] = "unknown"
+    caption_sequence: Optional[int] = None
+    dom_action: Optional[str] = "updated"
+
+
+@router.post("/{session_id}/native-captions")
+async def post_native_caption(
+    session_id: str,
+    req: NativeCaptionEventRequest,
+    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions)
+):
+    """
+    HTTP REST fallback endpoint for Teams Native Live Caption transport.
+    Validates the session, schema, logs the event, and appends to in-memory runtime and disk artifacts.
+    CRITICAL: Does NOT invoke engine.add_message() and does NOT trigger evaluation or candidate scoring.
+    """
+    import uuid
+    import json
+
+    # Guard against inactive, completed, or Service Off sessions
+    sess = active_sessions.get(session_id)
+    is_service_off = os.path.exists(os.path.join("interviews", session_id, "service_off.flag"))
+    if sess:
+        is_service_off = is_service_off or sess.get("service_off", False)
+        is_completed = bool(sess.get("final_report")) or (sess.get("is_active") is False)
+    else:
+        is_completed = is_service_off
+
+    if is_service_off or is_completed:
+        raise HTTPException(
+            status_code=403 if is_service_off else 400,
+            detail="Session is inactive or marked Service Off. Native caption rejected."
+        )
+
+    text = req.text.strip() if req.text else ""
+    if not text:
+        return {"status": "skipped", "reason": "empty_text"}
+
+    raw_speaker = (req.speaker_name or "").strip() or "Unknown"
+    detected_at_str = req.detected_at
+    received_at_dt = datetime.datetime.now(datetime.timezone.utc)
+    received_at_str = received_at_dt.isoformat()
+
+    latency_ms = None
+    if detected_at_str:
+        try:
+            detected_dt = datetime.datetime.fromisoformat(detected_at_str.replace("Z", "+00:00"))
+            latency_ms = max(0.0, (received_at_dt - detected_dt).total_seconds() * 1000.0)
+        except Exception:
+            pass
+
+    event_record = {
+        "event_type": "native_caption",
+        "session_id": session_id,
+        "event_id": req.event_id or str(uuid.uuid4()),
+        "speaker_name": raw_speaker,
+        "text": text,
+        "detected_at": detected_at_str or received_at_str,
+        "received_at": received_at_str,
+        "latency_ms": round(latency_ms, 2) if latency_ms is not None else None,
+        "source": "teams_native",
+        "is_final": req.is_final,
+        "finality": req.finality or "unknown",
+        "caption_sequence": req.caption_sequence,
+        "dom_action": req.dom_action or "updated",
+    }
+
+    if sess:
+        sess.setdefault("native_captions", []).append(event_record)
+        aggregator = sess.get("turn_aggregator")
+        if aggregator:
+            try:
+                newly_fin = aggregator.process_raw_event(event_record)
+                logical_agg = sess.get("logical_aggregator")
+                eng = sess.get("engine")
+                disp_ids = sess.get("dispatched_seq_ids")
+                if logical_agg and eng and disp_ids is not None:
+                    for strat in ("strategy_c_quiescence_1500ms", "strategy_b_dom_removal"):
+                        for fseq in newly_fin.get(strat, []):
+                            if fseq.sequence_id not in disp_ids:
+                                disp_ids.add(fseq.sequence_id)
+                                completed_turns = logical_agg.process_finalized_sequence(fseq)
+                                for turn in completed_turns:
+                                    import asyncio
+                                    import time as _time
+                                    async def _dispatch_turn(t=turn):
+                                        last_msg = await eng.add_message(
+                                            speaker=t.speaker_name,
+                                            text=t.text,
+                                            source="teams_native",
+                                            allow_merge=False,
+                                            turn_id=t.logical_turn_id
+                                        )
+                                        sess["transcript"] = eng.get_transcript()
+                                        sess["last_speech_time"] = _time.time()
+                                        if sess.get("engine") and sess["engine"].on_update_callback:
+                                            await sess["engine"].on_update_callback(last_msg)
+                                    asyncio.create_task(_dispatch_turn())
+            except Exception as agg_err:
+                logger.warning(f"[NativeHTTP] Error processing event in turn_aggregator: {agg_err}")
+
+        for sub_ws in list(sess.get("native_caption_websockets", set())):
+            try:
+                import asyncio
+                asyncio.create_task(sub_ws.send_text(json.dumps(event_record)))
+            except Exception:
+                pass
+
+    session_dir = os.path.join("interviews", session_id)
+    os.makedirs(session_dir, exist_ok=True)
+    captions_file_path = os.path.join(session_dir, "native_captions.jsonl")
+    with open(captions_file_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(event_record) + "\n")
+
+    poc_dir = os.path.join("interviews", "phase2i_poc")
+    os.makedirs(poc_dir, exist_ok=True)
+    with open(os.path.join(poc_dir, "native_captions.jsonl"), "a", encoding="utf-8") as pf:
+        pf.write(json.dumps(event_record) + "\n")
+
+    lat_disp = f"{latency_ms:.1f}ms" if latency_ms is not None else "N/A"
+    logger.info(
+        f"[TEAMS_NATIVE_HTTP] speaker='{raw_speaker}' text='{text}' "
+        f"seq={req.caption_sequence} detected_at='{detected_at_str}' received_at='{received_at_str}' latency={lat_disp}"
+    )
+
+    return {"status": "recorded", "event_id": event_record["event_id"]}
+

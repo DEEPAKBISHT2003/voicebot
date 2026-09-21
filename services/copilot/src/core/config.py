@@ -37,8 +37,6 @@ class Settings:
     GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
     GROQ_COPILOT_MODEL: str = os.getenv("GROQ_COPILOT_MODEL", "llama-3.1-8b-instant")
 
-    # Deepgram
-    DEEPGRAM_API_KEY: str = os.getenv("DEEPGRAM_API_KEY", "")
 
     @classmethod
     def validate(cls) -> None:

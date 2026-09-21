@@ -11,31 +11,24 @@ except ImportError:
         from pipecat.pipeline.runner import PipelineParams, PipelineRunner as PipelineWorker
     except ImportError:
         from pipecat.pipeline.pipeline import PipelineParams, PipelineWorker
-from pipecat.services.deepgram.stt import DeepgramSTTService
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketTransport, FastAPIWebsocketParams
 from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 
 from services.copilot.src.core.config import Settings
 from services.copilot.src.pipeline.serializer import RawPCMAudioSerializer
-from services.copilot.src.pipeline.accumulator import TranscriptAccumulator
 
 
 class CopilotPipelineBuilder:
-    """Builds and manages Pipecat STT Audio Observer Pipelines for Copilot sessions."""
-    def __init__(self, deepgram_api_key: Optional[str] = None):
-        self.deepgram_api_key = deepgram_api_key or Settings.DEEPGRAM_API_KEY
+    """Builds and manages Pipecat Audio Recording Pipelines for Copilot sessions (Deepgram STT removed)."""
+    def __init__(self):
+        pass
 
     def build_observer_pipeline(
         self,
         websocket: Any,
-        session_id: str,
-        transcript_callback: Optional[Callable[[dict], Any]] = None
-    ) -> Optional[Tuple[Pipeline, PipelineWorker]]:
-        """Constructs an STT audio processing pipeline using FastAPIWebsocketTransport."""
-        if not self.deepgram_api_key:
-            logger.warning("[CopilotPipeline] DEEPGRAM_API_KEY is not configured. Audio STT pipeline disabled.")
-            return None
-
+        session_id: str
+    ) -> Optional[Tuple[Pipeline, PipelineWorker, AudioBufferProcessor]]:
+        """Constructs an audio recording pipeline using FastAPIWebsocketTransport and AudioBufferProcessor."""
         try:
             transport = FastAPIWebsocketTransport(
                 websocket=websocket,
@@ -47,17 +40,6 @@ class CopilotPipelineBuilder:
                     serializer=RawPCMAudioSerializer(sample_rate=16000),
                 )
             )
-
-            stt = DeepgramSTTService(
-                api_key=self.deepgram_api_key,
-                settings=DeepgramSTTService.Settings(
-                    endpointing=400,
-                    diarize=True,
-                    smart_format=True
-                )
-            )
-
-            accumulator = TranscriptAccumulator(callback=transcript_callback)
 
             # Audio buffer processor for recording audio (16kHz mono PCM)
             audio_buffer = AudioBufferProcessor(
@@ -83,12 +65,10 @@ class CopilotPipelineBuilder:
                 except Exception as e:
                     logger.error(f"[CopilotPipeline] Failed to save audio recording: {e}")
 
-            # Audio buffer placed immediately after transport.input() to capture all incoming PCM frames
+            # Audio buffer captures all incoming PCM frames for recording.wav persistence
             pipeline = Pipeline([
                 transport.input(),
-                audio_buffer,
-                stt,
-                accumulator
+                audio_buffer
             ])
 
             worker = PipelineWorker(
@@ -104,9 +84,10 @@ class CopilotPipelineBuilder:
                 )
             )
 
-            logger.info(f"[CopilotPipeline] Successfully built audio observer pipeline for session: {session_id}")
+            logger.info(f"[CopilotPipeline] Successfully built audio recording pipeline for session: {session_id}")
             return pipeline, worker, audio_buffer
 
         except Exception as err:
             logger.error(f"[CopilotPipeline] Failed to build observer pipeline: {err}")
             return None
+

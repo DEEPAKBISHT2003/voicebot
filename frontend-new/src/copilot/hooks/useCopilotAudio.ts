@@ -25,11 +25,97 @@ export interface CopilotEvaluation {
 }
 
 export interface CopilotTranscriptEntry {
-  speaker: 'Interviewer' | 'Candidate' | 'System';
+  id?: string;
+  turn_id?: number;
+  sequence_id?: number;
+  speaker: string;
+  speaker_name?: string;
   text: string;
   timestamp: string;
   evaluation?: CopilotEvaluation;
+  source?: string;
 }
+
+export const getTranscriptEntryKey = (entry: CopilotTranscriptEntry): string => {
+  if (entry.id) return String(entry.id);
+  if (entry.turn_id !== undefined && entry.turn_id !== null) return `turn-${entry.turn_id}`;
+  if (entry.sequence_id !== undefined && entry.sequence_id !== null) return `seq-${entry.sequence_id}`;
+  const speakerStr = (entry.speaker || entry.speaker_name || 'spk').trim().toLowerCase();
+  const timeStr = (entry.timestamp || 'ts').trim();
+  const textSnippet = (entry.text || '').trim().toLowerCase();
+  return `fp-${speakerStr}-${timeStr}-${textSnippet}`;
+};
+
+export const reconcileTranscript = (
+  existing: CopilotTranscriptEntry[],
+  serverTranscript: CopilotTranscriptEntry[]
+): CopilotTranscriptEntry[] => {
+  if (!serverTranscript || !Array.isArray(serverTranscript)) return existing;
+  if (serverTranscript.length === 0) return existing;
+
+  const existingMap = new Map<string, CopilotTranscriptEntry>();
+  existing.forEach((entry) => {
+    existingMap.set(getTranscriptEntryKey(entry), entry);
+  });
+
+  const result: CopilotTranscriptEntry[] = [];
+  const seenKeys = new Set<string>();
+
+  for (const serverEntry of serverTranscript) {
+    const key = getTranscriptEntryKey(serverEntry);
+    seenKeys.add(key);
+    const prev = existingMap.get(key);
+    if (prev) {
+      result.push({ ...prev, ...serverEntry });
+    } else {
+      result.push(serverEntry);
+    }
+  }
+
+  for (const clientEntry of existing) {
+    const key = getTranscriptEntryKey(clientEntry);
+    if (!seenKeys.has(key)) {
+      result.push(clientEntry);
+      seenKeys.add(key);
+    }
+  }
+
+  // Identity check to avoid redundant state updates and auto-scroll jitter
+  if (
+    result.length === existing.length &&
+    result.every((item, i) => {
+      const ex = existing[i];
+      return (
+        getTranscriptEntryKey(item) === getTranscriptEntryKey(ex) &&
+        item.text === ex.text &&
+        item.speaker === ex.speaker
+      );
+    })
+  ) {
+    return existing;
+  }
+
+  return result;
+};
+
+export const appendSingleTurn = (
+  existing: CopilotTranscriptEntry[],
+  singleTurn: CopilotTranscriptEntry
+): CopilotTranscriptEntry[] => {
+  const turnKey = getTranscriptEntryKey(singleTurn);
+  const existingIdx = existing.findIndex((e) => getTranscriptEntryKey(e) === turnKey);
+
+  if (existingIdx !== -1) {
+    const updated = [...existing];
+    updated[existingIdx] = { ...updated[existingIdx], ...singleTurn };
+    return updated;
+  } else {
+    return [...existing, singleTurn];
+  }
+};
+
+export const deduplicateTranscript = reconcileTranscript;
+
 
 export interface CopilotTimelinePhase {
   topic: string;
@@ -135,11 +221,13 @@ export const useCopilotAudio = (sessionId: string | null) => {
   };
 
   const socketRef = useRef<WebSocket | null>(null);
+  const shouldReconnectRef = useRef<boolean>(false);
+  const reconnectTimeoutRef = useRef<any>(null);
 
   const updateState = (data: any) => {
     if (!data) return;
-    if (data.transcript) {
-      setTranscript(data.transcript);
+    if (data.transcript && Array.isArray(data.transcript)) {
+      setTranscript((prev) => reconcileTranscript(prev, data.transcript));
     }
     if (data.intelligence) {
       try {
@@ -168,6 +256,11 @@ export const useCopilotAudio = (sessionId: string | null) => {
 
   const startConnection = async () => {
     if (!sessionId) return;
+    shouldReconnectRef.current = true;
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
     setStatus('connecting');
     setError(null);
 
@@ -188,6 +281,19 @@ export const useCopilotAudio = (sessionId: string | null) => {
           if (data.type === 'copilot_update') {
             console.log('[CopilotWS] Received structured state update:', data);
             updateState(data);
+          } else if (data.type === 'transcript') {
+            console.log('[CopilotWS] Received single transcript turn:', data);
+            const singleTurn: CopilotTranscriptEntry = {
+              id: data.id,
+              turn_id: data.turn_id,
+              sequence_id: data.sequence_id,
+              speaker: data.speaker_name || data.speaker || 'Unknown',
+              speaker_name: data.speaker_name || data.speaker,
+              text: data.text || '',
+              timestamp: data.timestamp || new Date().toISOString(),
+              source: data.source || 'teams_native'
+            };
+            setTranscript((prev) => appendSingleTurn(prev, singleTurn));
           }
         } catch (err) {
           console.error('[CopilotWS] Failed to parse message frame:', err);
@@ -202,7 +308,17 @@ export const useCopilotAudio = (sessionId: string | null) => {
 
       ws.onclose = () => {
         console.log('[CopilotWS] Connection closed');
-        setStatus((prev) => (prev === 'error' ? 'error' : 'disconnected'));
+        if (shouldReconnectRef.current) {
+          setStatus('connecting');
+          reconnectTimeoutRef.current = setTimeout(() => {
+            if (shouldReconnectRef.current) {
+              console.log('[CopilotWS] Attempting WebSocket reconnect...');
+              startConnection();
+            }
+          }, 2000);
+        } else {
+          setStatus((prev) => (prev === 'error' ? 'error' : 'disconnected'));
+        }
       };
     } catch (err: any) {
       console.error('[CopilotWS] Setup error:', err);
@@ -212,6 +328,11 @@ export const useCopilotAudio = (sessionId: string | null) => {
   };
 
   const stopConnection = () => {
+    shouldReconnectRef.current = false;
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
     if (socketRef.current) {
       const state = socketRef.current.readyState;
       if (state === WebSocket.OPEN || state === WebSocket.CONNECTING) {
@@ -223,7 +344,7 @@ export const useCopilotAudio = (sessionId: string | null) => {
   };
 
   // Helper to send manually input/transcribed statements to backend session engine
-  const sendMessage = (speaker: 'Interviewer' | 'Candidate' | 'System', text: string) => {
+  const sendMessage = (speaker: string, text: string) => {
     if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
       const payload = JSON.stringify({ speaker, text });
       socketRef.current.send(payload);

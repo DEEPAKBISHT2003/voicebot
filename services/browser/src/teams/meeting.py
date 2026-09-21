@@ -223,6 +223,7 @@ class TeamsMeeting:
         self.debug_dir = os.path.join(os.getcwd(), "interviews", session_id)
         os.makedirs(self.debug_dir, exist_ok=True)
         self.service_off_flag_path = os.path.join(self.debug_dir, "service_off.flag")
+        self.captions_enabled = False
 
     async def dismiss_media_prompt_if_present(self) -> bool:
         """Detects and dismisses the 'Continue without audio or video' confirmation modal if shown by Teams."""
@@ -248,9 +249,17 @@ class TeamsMeeting:
 
     async def open_and_select_web(self) -> None:
         """Navigate to meeting URL, save landing screenshot, and select Web Join."""
-        logger.info("[TeamsBot] Opening meeting URL...")
-        await self.page.goto(self.meeting_url)
-        logger.info("[TeamsBot] Teams page loaded")
+        for goto_attempt in range(1, 4):
+            try:
+                logger.info(f"[TeamsBot] Opening meeting URL (attempt {goto_attempt}/3)...")
+                await self.page.goto(self.meeting_url, timeout=35000)
+                logger.info("[TeamsBot] Teams page loaded")
+                break
+            except Exception as ge:
+                logger.warning(f"[TeamsBot] page.goto failed on attempt {goto_attempt}: {ge}")
+                if goto_attempt == 3:
+                    raise
+                await asyncio.sleep(2.0)
 
         await asyncio.sleep(5.0)  # Allow landing page to load fully
 
@@ -329,12 +338,33 @@ class TeamsMeeting:
         try:
             logger.info("[TeamsBot] Waiting for credentials page to load (can take up to 45-60s)...")
 
-            target_name_input = None
+            # Stage 01: Pre-join detection with retries for Teams loading glitches
             start_wait = asyncio.get_event_loop().time()
-            max_wait_sec = self.prejoin_timeout_ms / 1000.0
-            last_reclick_time = 0
+            last_reclick_time = start_wait
+            last_reload_time = start_wait
+            max_wait_sec = 90.0
+            target_name_input = None
+
+            logger.info(f"[TeamsBot] Waiting for pre-join screen (timeout={max_wait_sec}s)...")
 
             while (asyncio.get_event_loop().time() - start_wait) < max_wait_sec:
+                # 0. Check for Teams "Oops, app failed to load!" error page
+                for target in [self.page] + self.page.frames:
+                    try:
+                        retry_btn = target.locator(
+                            "button:has-text('Retry'), [aria-label*='Retry' i], button:has-text('Clear cache and retry')"
+                        ).first
+                        if await retry_btn.is_visible(timeout=300):
+                            logger.warning("[TeamsBot] Detected Teams 'Oops, app failed to load!' screen. Clicking Retry...")
+                            try:
+                                await retry_btn.click(timeout=2000, force=True)
+                            except Exception:
+                                await retry_btn.evaluate("el => el.click()")
+                            await asyncio.sleep(3.0)
+                            break
+                    except Exception:
+                        pass
+
                 # 1. Check for Teams Meeting Passcode input field across all frames
                 for target in [self.page] + self.page.frames:
                     try:
@@ -584,6 +614,220 @@ class TeamsMeeting:
             except Exception:
                 pass
 
+    async def enable_native_captions(self, attempt: int = 1) -> bool:
+        """
+        Attempts to enable Teams Native Live Captions via the More menu after admission.
+        Uses accessible, role, text, and data-tid selectors with full DOM logging and debug screenshots.
+        """
+        logger.info(f"[TeamsCaptions] Attempting to enable Teams Native Live Captions (attempt={attempt})...")
+        try:
+            # 1. Check if caption container already exists and has size
+            container_visible = await self.page.evaluate('''() => {
+                const c = document.querySelector('div[data-tid="closed-caption-renderer-wrapper"], div[aria-label="Live Captions"]');
+                return !!(c && c.offsetHeight > 0);
+            }''')
+            if container_visible:
+                logger.info("[TeamsCaptions] Caption container is already active and visible.")
+                return True
+
+            # 2. Locate More Actions button in main page or frames
+            more_selectors = (
+                "button#callingButtons-showMoreBtn, "
+                "button[data-tid='more-actions-button'], "
+                "button[aria-label*='More' i], "
+                "button:has-text('More')"
+            )
+            more_btn = None
+            target_page = self.page
+            for frame in [self.page] + self.page.frames:
+                try:
+                    el = frame.locator(more_selectors).first
+                    if await el.is_visible(timeout=500):
+                        more_btn = el
+                        target_page = frame
+                        break
+                except Exception:
+                    pass
+
+            if not more_btn:
+                logger.warning(f"[TeamsCaptions] Could not find More button on attempt {attempt}.")
+                return False
+
+            # Click More button
+            try:
+                await more_btn.click(timeout=3000, force=True)
+            except Exception:
+                await more_btn.evaluate("el => el.click()")
+
+            await asyncio.sleep(1.2)
+
+            # Save debug screenshot of open menu
+            try:
+                await self.page.screenshot(path=os.path.join(self.debug_dir, f"debug_more_menu_attempt_{attempt}.png"))
+            except Exception:
+                pass
+
+            # Inspect all menu items in popup
+            menu_info = await self.page.evaluate('''() => {
+                const all = Array.from(document.querySelectorAll('[role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], button.fui-MenuItem, div.fui-MenuItem'));
+                return all.map(el => ({
+                    id: el.id,
+                    text: (el.innerText || "").trim().replace(/\\n/g, " "),
+                    ariaLabel: el.getAttribute('aria-label') || "",
+                    dataTid: el.getAttribute('data-tid') || ""
+                })).filter(x => x.text || x.ariaLabel || x.dataTid);
+            }''')
+            logger.info(f"[TeamsCaptions] Discovered {len(menu_info)} items in More menu: {[m['text'] for m in menu_info]}")
+
+            # 3. Look for captions directly in open menu
+            cc_selectors = (
+                "[role*='menuitem']:has-text('Captions'), "
+                "[role*='menuitem']:has-text('live captions'), "
+                "[role*='menuitem']:has-text('Turn on live captions'), "
+                "[role*='menuitem']:has-text('Show live captions'), "
+                "button#closed-captions-button, "
+                "[data-tid='closed-captions-button'], "
+                "[aria-label*='captions' i]"
+            )
+            cc_el = target_page.locator(cc_selectors).first
+            if await cc_el.is_visible(timeout=1000):
+                logger.info("[TeamsCaptions] Found Live Captions toggle in menu. Clicking...")
+                try:
+                    await cc_el.click(timeout=3000, force=True)
+                except Exception:
+                    await cc_el.evaluate("el => el.click()")
+                await asyncio.sleep(1.5)
+                # Check if clicking opened a submenu (e.g. "Turn on live captions" inside Captions)
+                try:
+                    await self.page.screenshot(path=os.path.join(self.debug_dir, f"debug_after_cc_click_attempt_{attempt}.png"))
+                except Exception:
+                    pass
+                submenu_items = await self.page.evaluate('''() => {
+                    const all = Array.from(document.querySelectorAll('[role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]'));
+                    return all.map(el => (el.innerText || "").trim()).filter(Boolean);
+                }''')
+                logger.info(f"[TeamsCaptions] Menu items after CC click: {submenu_items}")
+
+                sub_turn_on = target_page.locator(
+                    "[role*='menuitem']:has-text('Turn on'), "
+                    "[role*='menuitem']:has-text('Turn on live captions'), "
+                    "[role*='menuitem']:has-text('Turn on captions'), "
+                    "[role*='menuitem']:has-text('English'), "
+                    "[role*='menuitemcheckbox']"
+                ).first
+                if await sub_turn_on.is_visible(timeout=1000):
+                    logger.info("[TeamsCaptions] Found submenu toggle item. Clicking...")
+                    try:
+                        await sub_turn_on.click(timeout=3000, force=True)
+                    except Exception:
+                        await sub_turn_on.evaluate("el => el.click()")
+                    await asyncio.sleep(1.5)
+
+                try:
+                    await self.page.keyboard.press("Escape")
+                except Exception:
+                    pass
+                return True
+
+            # 4. If not directly in menu, check for "Language and speech" submenu
+            lang_selectors = (
+                "[role*='menuitem']:has-text('Language and speech'), "
+                "[role*='menuitem']:has-text('Language'), "
+                "[aria-label*='Language and speech' i]"
+            )
+            lang_el = target_page.locator(lang_selectors).first
+            if await lang_el.is_visible(timeout=1000):
+                logger.info("[TeamsCaptions] Found 'Language and speech' submenu. Opening...")
+                try:
+                    await lang_el.click(timeout=3000, force=True)
+                except Exception:
+                    await lang_el.evaluate("el => el.click()")
+                await asyncio.sleep(1.0)
+
+                # Now look for captions in submenu
+                sub_cc = target_page.locator(cc_selectors).first
+                if await sub_cc.is_visible(timeout=2000):
+                    logger.info("[TeamsCaptions] Found Live Captions toggle in submenu! Clicking...")
+                    try:
+                        await sub_cc.click(timeout=3000, force=True)
+                    except Exception:
+                        await sub_cc.evaluate("el => el.click()")
+                    await asyncio.sleep(2.0)
+                    return True
+
+            logger.warning(f"[TeamsCaptions] Neither Live Captions nor Language submenu found on attempt {attempt}.")
+            try:
+                await self.page.keyboard.press("Escape")
+            except Exception:
+                pass
+            return False
+
+        except Exception as e:
+            logger.warning(f"[TeamsCaptions] Exception while attempting to enable captions: {e}")
+            return False
+
+    async def start_native_captions_task(self) -> None:
+        """
+        Background task started once IN_MEETING is confirmed:
+        1. Waits for in-meeting toolbar to stabilize.
+        2. Tries to enable Live Captions with retries.
+        3. Injects native_captions.js with session parameters.
+        """
+        logger.info("[TeamsCaptions] Background native captions task started.")
+        try:
+            await asyncio.sleep(5.0)
+
+            enabled = False
+            for attempt in range(1, 6):
+                logger.info(f"[TeamsCaptions] Enable captions attempt {attempt}/5...")
+                enabled = await self.enable_native_captions(attempt=attempt)
+                if enabled:
+                    logger.info(f"[TeamsCaptions] Live Captions successfully enabled on attempt {attempt}!")
+                    break
+                await asyncio.sleep(3.5)
+
+            # Read native_captions.js template
+            js_path = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), "..", "browser_js", "native_captions.js")
+            )
+            if not os.path.exists(js_path):
+                logger.error(f"[TeamsCaptions] native_captions.js not found at {js_path}")
+                return
+
+            with open(js_path, "r", encoding="utf-8") as f:
+                js_content = f.read()
+
+            # Determine WS and HTTP URLs
+            ws_base = self.browser_ws_url.split("?")[0] if self.browser_ws_url else f"ws://localhost:8000/api/ws/copilot/{self.session_id}"
+            if not ws_base.endswith(self.session_id):
+                ws_base = f"ws://localhost:8000/api/ws/copilot/{self.session_id}"
+            ws_url = f"{ws_base}?mode=native_captions"
+
+            http_base = ws_base.replace("ws://", "http://").replace("wss://", "https://")
+            http_url = http_base.replace("/api/ws/copilot/", "/api/copilot/") + "/native-captions"
+
+            formatted_js = (
+                js_content
+                .replace("%SESSION_ID%", self.session_id)
+                .replace("%WS_URL%", ws_url)
+                .replace("%HTTP_URL%", http_url)
+            )
+
+            # Inject into page and all frames
+            logger.info(f"[TeamsCaptions] Injecting native_captions.js into page (ws={ws_url})...")
+            await self.page.evaluate(formatted_js)
+            for frame in self.page.frames:
+                try:
+                    await frame.evaluate(formatted_js)
+                except Exception:
+                    pass
+
+            self.captions_enabled = True
+            logger.info("[TeamsCaptions] Native captions injection completed.")
+
+        except Exception as e:
+            logger.warning(f"[TeamsCaptions] Error in start_native_captions_task: {e}")
+
     async def leave_meeting(self) -> bool:
         """
         Attempts to gracefully leave the Teams meeting by locating and clicking the Leave / Hang up button.
@@ -591,6 +835,18 @@ class TeamsMeeting:
         """
         logger.info("[TeamsBot] SERVICE OFF: Attempting to click Teams Leave button...")
         try:
+            # Teardown native captions observer and WebSocket
+            try:
+                await self.page.evaluate("window.__stopMiaCaptions__ && window.__stopMiaCaptions__()")
+                for frame in self.page.frames:
+                    try:
+                        await frame.evaluate("window.__stopMiaCaptions__ && window.__stopMiaCaptions__()")
+                    except Exception:
+                        pass
+                logger.info("[TeamsCaptions] Cleaned up native captions observer on meeting leave.")
+            except Exception:
+                pass
+
             # Check if meeting is already disconnected
             is_in, state_name, _ = await is_really_in_meeting(self.page)
             if state_name == "DISCONNECTED":
@@ -637,6 +893,7 @@ class TeamsMeeting:
         has_been_admitted = False
         ws_triggered = False
         diagnostics_launched = False
+        captions_task_launched = False
         last_screenshot_state = None
 
         while True:
@@ -716,6 +973,11 @@ class TeamsMeeting:
                 diagnostics_launched = True
                 asyncio.create_task(run_in_meeting_diagnostics(self.page))
 
+            # Launch non-blocking background native captions task once IN_MEETING
+            if current_state == "IN_MEETING" and not captions_task_launched:
+                captions_task_launched = True
+                asyncio.create_task(self.start_native_captions_task())
+
             # Check if IN_MEETING has remained stable for >= 2 consecutive checks
             if consecutive_in_meeting >= 2:
                 if self.mia_join_only:
@@ -756,4 +1018,8 @@ class TeamsMeeting:
             # Autonomous Shutdown Detection
             if current_state == "DISCONNECTED":
                 logger.info("[TeamsBot] Teams meeting ended or disconnected. Exiting browser...")
+                try:
+                    await self.page.evaluate("window.__stopMiaCaptions__ && window.__stopMiaCaptions__()")
+                except Exception:
+                    pass
                 break

@@ -58,6 +58,13 @@ tmp/
 *.png
 *.jpg
 *.jpeg
+*.webm
+*.webp
+*.flac
+*.m4a
+*.ogg
+.tempmediaStorage/
+.user_uploaded/
 
 # ─── Database & Docker Volumes ─────────────────────────────
 *.db
@@ -111,6 +118,7 @@ teams_bot_profile/
 # ─── IDE, Editor & OS ──────────────────────────────────────
 .vscode/
 .idea/
+.gemini/
 *.suo
 *.ntvs*
 *.njsproj
@@ -159,6 +167,7 @@ docss.zip
 scripts/capture_*
 scripts/check_*
 scripts/cleanup_*
+scripts/compile_*
 scripts/full_diag.sh
 scripts/inspect_*
 scripts/join_meeting.json

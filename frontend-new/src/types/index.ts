@@ -1,7 +1,13 @@
 export interface TranscriptEntry {
   role?: 'user' | 'assistant';
   speaker?: string;
+  speaker_name?: string;
   text: string;
+  id?: string;
+  turn_id?: number;
+  sequence_id?: number;
+  timestamp?: string;
+  source?: string;
 }
 
 export interface InterviewSession {
