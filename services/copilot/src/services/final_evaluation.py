@@ -7,7 +7,7 @@ from services.copilot.src.core.config import Settings
 
 
 def clean_json_loads(text: str) -> dict:
-    """Safely parse JSON responses that may be wrapped in markdown codeblocks."""
+    """Safely parse JSON responses that may be wrapped in markdown codeblocks or missing a closing brace."""
     clean_text = text.strip()
     if clean_text.startswith("```"):
         lines = clean_text.splitlines()
@@ -16,7 +16,19 @@ def clean_json_loads(text: str) -> dict:
         if lines and lines[-1].startswith("```"):
             lines = lines[:-1]
         clean_text = "\n".join(lines).strip()
-    return json.loads(clean_text)
+
+    try:
+        return json.loads(clean_text)
+    except (json.JSONDecodeError, ValueError) as err:
+        # If the root object was not closed (e.g. LLM omitted trailing closing braces)
+        open_b = clean_text.count("{")
+        close_b = clean_text.count("}")
+        if open_b > close_b and clean_text.startswith("{"):
+            try:
+                return json.loads(clean_text + ("}" * (open_b - close_b)))
+            except Exception:
+                pass
+        raise err
 
 
 class FinalEvaluationService:
@@ -149,7 +161,22 @@ class FinalEvaluationService:
             "5. Evaluate Holistic Competency across exactly 4 dimensions: "
             "'technical_depth', 'practical_experience', 'problem_solving', and 'communication_clarity'.\n"
             "6. Every dimension score must be an integer between 0 and 100 with an evidence-grounded summary.\n"
-            "7. Return ONLY valid JSON matching the specified schema. No markdown code blocks, no additional prose."
+            "7. STRICT JSON QUOTATION RULE: Return strictly valid RFC 8259 JSON. "
+            "When quoting, citing, or referencing candidate words, phrases, tech terms, or project names inside string values, "
+            "ALWAYS use single quotation marks (e.g. 'term', 'project name') or omit quotes. "
+            "NEVER use unescaped double quotation marks inside any string value.\n"
+            "8. TOP-LEVEL STRUCTURE: Output a single root JSON object '{ ... }'. "
+            "The root object MUST have exactly these top-level keys:\n"
+            "   - 'holistic_competency'\n"
+            "   - 'strengths'\n"
+            "   - 'development_areas'\n"
+            "   - 'jd_analysis'\n"
+            "   - 'resume_validation'\n"
+            "   - 'question_analysis'\n"
+            "   - 'conversation_summary'\n"
+            "   - 'observer_notes'\n"
+            "Do NOT nest 'strengths', 'development_areas', 'jd_analysis', etc. inside 'holistic_competency'.\n"
+            "Ensure the root JSON object ends with the final closing brace '}'."
         )
 
         user_prompt = f"""Target Job Description:
@@ -161,56 +188,44 @@ Candidate Resume:
 Interview Evidence (Full Transcript & Confirmed Q&A):
 {evidence_text}
 
-Output a single JSON object with EXACTLY the following structure:
+Output a single JSON object with EXACTLY this top-level schema:
 {{
-    "holistic_competency": {{
-        "dimensions": {{
-            "technical_depth": {{
-                "score": <0-100 integer>,
-                "summary": "<Concise evidence-grounded assessment of conceptual mastery & technical correctness>"
-            }},
-            "practical_experience": {{
-                "score": <0-100 integer>,
-                "summary": "<Concise assessment of hands-on implementation, production debugging & tools>"
-            }},
-            "problem_solving": {{
-                "score": <0-100 integer>,
-                "summary": "<Concise assessment of analytical approach, edge-case handling & trade-off reasoning>"
-            }},
-            "communication_clarity": {{
-                "score": <0-100 integer>,
-                "summary": "<Concise assessment of clarity, structured delivery, technical phrasing & conciseness>"
-            }}
-        }}
-    }},
-    "strengths": [
-        "<Concise, evidence-grounded strength demonstrated during interview>",
-        "<Second concise strength>"
-    ],
-    "development_areas": [
-        "<Concise, evidence-grounded knowledge gap or improvement area observed>",
-        "<Second concise development area>"
-    ],
-    "jd_analysis": {{
-        "covered_skills": ["<Skill from JD demonstrated in interview>"],
-        "remaining_skills": ["<Skill from JD not demonstrated or not assessed>"],
-        "summary": "<Concise summary of alignment between candidate demonstrated skills and target role requirements>"
-    }},
-    "resume_validation": {{
-        "verified_projects": ["<Project from resume discussed and supported by interview answers>"],
-        "unverified_projects": ["<Project from resume not discussed or insufficiently explored>"],
-        "summary": "<Concise summary of candidate claimed background consistency with interview performance>"
-    }},
-    "question_analysis": [
-        {{
-            "pair_id": "<Existing pair_id matching confirmed Q&A>",
-            "observations": "<Concise observation on the candidate's response to this specific question>"
-        }}
-    ],
-    "conversation_summary": "<Executive 2-3 sentence overview of the interview conversation flow and candidate performance>",
-    "observer_notes": [
-        "<Key objective observation about interview demeanor, responsiveness, or notable highlights>"
-    ]
+  "holistic_competency": {{
+    "dimensions": {{
+      "technical_depth": {{ "score": <0-100 integer>, "summary": "<Concise assessment>" }},
+      "practical_experience": {{ "score": <0-100 integer>, "summary": "<Concise assessment>" }},
+      "problem_solving": {{ "score": <0-100 integer>, "summary": "<Concise assessment>" }},
+      "communication_clarity": {{ "score": <0-100 integer>, "summary": "<Concise assessment>" }}
+    }}
+  }},
+  "strengths": [
+    "<Concise strength>",
+    "<Second concise strength>"
+  ],
+  "development_areas": [
+    "<Concise development area>",
+    "<Second concise development area>"
+  ],
+  "jd_analysis": {{
+    "covered_skills": [],
+    "remaining_skills": [],
+    "summary": "<Concise summary>"
+  }},
+  "resume_validation": {{
+    "verified_projects": [],
+    "unverified_projects": [],
+    "summary": "<Concise summary>"
+  }},
+  "question_analysis": [
+    {{
+      "pair_id": "<Existing pair_id matching confirmed Q&A>",
+      "observations": "<Concise observation on response>"
+    }}
+  ],
+  "conversation_summary": "<Executive 2-3 sentence overview>",
+  "observer_notes": [
+    "<Key objective observation>"
+  ]
 }}
 """
 
@@ -233,9 +248,10 @@ Output a single JSON object with EXACTLY the following structure:
                         "role": "user",
                         "content": (
                             "Your previous response could not be parsed as valid JSON. "
-                            "Return ONLY valid JSON matching the required schema. "
-                            "Do not include markdown fences, commentary, explanations, "
-                            "or unescaped quotation marks inside JSON strings."
+                            "Return ONLY valid RFC 8259 JSON matching the required schema. "
+                            "Do not include markdown fences, commentary, or unescaped double quotes inside strings. "
+                            "Use single quotes '...' when quoting candidate speech or terms. "
+                            "Ensure the output is a single root object with all 8 top-level keys ending with '}'."
                         )
                     })
 
