@@ -468,25 +468,62 @@ async def finalize_copilot_report(
 
     # 2. Check active memory
     if session_id in active_sessions:
-        bot_process = active_sessions[session_id].get("bot_process")
+        sess = active_sessions[session_id]
+
+        # Idempotency check: if report already finalized for active session, return it
+        if sess.get("final_report"):
+            logger.info(f"Returning already finalized report for active session {session_id}")
+            sess["is_active"] = False
+            return sess["final_report"]
+
+        engine = sess["engine"]
+
+        # Capture and commit any pending speech/turns from aggregators before terminating bot
+        try:
+            turn_agg = sess.get("turn_aggregator")
+            logical_agg = sess.get("logical_aggregator")
+            if turn_agg and logical_agg:
+                flushed_seqs = turn_agg.finalize_all_pending()
+                for s_list in flushed_seqs.values():
+                    for fseq in s_list:
+                        turns = logical_agg.process_finalized_sequence(fseq)
+                        for t in turns:
+                            await engine.add_message(
+                                speaker=t.speaker_name,
+                                text=t.text,
+                                source="teams_native",
+                                allow_merge=False,
+                                turn_id=t.logical_turn_id,
+                                is_final=True
+                            )
+                final_turns = logical_agg.flush()
+                for t in final_turns:
+                    await engine.add_message(
+                        speaker=t.speaker_name,
+                        text=t.text,
+                        source="teams_native",
+                        allow_merge=False,
+                        turn_id=t.logical_turn_id,
+                        is_final=True
+                    )
+                sess["transcript"] = engine.get_transcript()
+        except Exception as flush_err:
+            logger.warning(f"[Finalize] Error flushing pending turns before bot termination: {flush_err}")
+
+        # Safely terminate bot process now that caption buffers are flushed
+        bot_process = sess.get("bot_process")
         if bot_process and bot_process.poll() is None:
             logger.info(f"[TeamsBot] Terminating bot process for session {session_id} on finalize (PID: {bot_process.pid})")
             try:
                 bot_process.terminate()
             except Exception:
                 pass
-        active_sessions[session_id]["bot_process"] = None
+        sess["bot_process"] = None
 
-        # Idempotency check: if report already finalized for active session, return it
-        if active_sessions[session_id].get("final_report"):
-            logger.info(f"Returning already finalized report for active session {session_id}")
-            active_sessions[session_id]["is_active"] = False
-            return active_sessions[session_id]["final_report"]
-
-        engine = active_sessions[session_id]["engine"]
         res = await engine.finalize_report()
-        active_sessions[session_id]["is_active"] = False
-        active_sessions[session_id]["final_report"] = res
+        if res and res.get("is_finalized"):
+            sess["is_active"] = False
+            sess["final_report"] = res
         return res
     else:
         if not db_session:
@@ -498,7 +535,8 @@ async def finalize_copilot_report(
             db_session.get("transcript", []),
             jd=db_session.get("jd", ""),
             resume=db_session.get("resume", ""),
-            custom_prompt=db_session.get("custom_prompt", "")
+            custom_prompt=db_session.get("custom_prompt", ""),
+            confirmed_qa_pairs=db_session.get("confirmed_qa_pairs", [])
         )
         res = await engine.finalize_report()
         return res

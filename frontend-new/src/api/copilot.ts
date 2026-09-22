@@ -1,5 +1,6 @@
 import copilotApi from './copilot-axios';
 import type { TranscriptEntry } from '../types';
+import type { CopilotFinalReport } from '../types/copilot-report';
 
 export interface StartCopilotRequest {
   jd: string;
@@ -20,7 +21,7 @@ export interface CopilotStatusResponse {
   status: string;
   transcript: TranscriptEntry[];
   custom_prompt?: string;
-  final_report?: any;
+  final_report?: CopilotFinalReport | null;
   intelligence?: any;
   assistance?: any;
 }
@@ -45,8 +46,8 @@ export const getCopilotStatus = async (sessionId: string): Promise<CopilotStatus
   return res.data;
 };
 
-export const finalizeCopilotReport = async (sessionId: string): Promise<any> => {
-  const res = await copilotApi.post(`/copilot/${sessionId}/finalize`);
+export const finalizeCopilotReport = async (sessionId: string): Promise<CopilotFinalReport> => {
+  const res = await copilotApi.post<CopilotFinalReport>(`/copilot/${sessionId}/finalize`);
   return res.data;
 };
 

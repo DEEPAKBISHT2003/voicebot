@@ -12,6 +12,8 @@ from services.copilot.src.services.evaluation import CandidateEvaluationService
 from services.copilot.src.engine.intelligence import ConversationIntelligenceEngine
 from services.copilot.src.engine.copilot import AICopilotEngine
 from services.copilot.src.services.role_identifier import ConversationalRoleIdentifier
+from services.copilot.src.services.final_evaluation import FinalEvaluationService
+from services.copilot.src.services.final_score import calculate_final_score
 
 
 def clean_json_loads(text: str) -> dict:
@@ -132,6 +134,11 @@ class CopilotSessionEngine:
         self.evaluated_qa_ids: Set[str] = set()
         self.active_evaluation_tasks: Dict[str, asyncio.Task] = {}
         self.active_websocket: Any = None
+
+        # Phase 3D: Finalization Lifecycle & Score State
+        self._finalization_lock = asyncio.Lock()
+        self.final_report: Optional[Dict[str, Any]] = None
+        self.is_finalized: bool = False
 
         # Restore persisted confirmed_qa_pairs from disk cache if not passed directly
         if not self.confirmed_qa_pairs:
@@ -1036,10 +1043,12 @@ class CopilotSessionEngine:
         self.qa_checkpoint_task.add_done_callback(self.background_tasks.discard)
         logger.info(f"[QA_CHECKPOINT] Started 15-second checkpoint loop for session {self.session_id}")
 
-    def stop_qa_checkpoint(self):
+    def stop_qa_checkpoint(self, cancel_evaluations: bool = True):
         """
         Stops and cancels the 15-second Q/A checkpoint loop cleanly.
         Idempotent.
+        When cancel_evaluations is False (e.g. during finalization), active Phase 2V
+        accuracy evaluation tasks are preserved to be drained rather than cancelled.
         """
         self.qa_checkpoint_running = False
         if self.qa_checkpoint_task and not self.qa_checkpoint_task.done():
@@ -1047,11 +1056,12 @@ class CopilotSessionEngine:
             logger.info(f"[QA_CHECKPOINT] Cancelled checkpoint task for session {self.session_id}")
         self.qa_checkpoint_task = None
 
-        # Phase 2V: Clean up any active evaluation tasks safely
-        for qa_id, task in list(self.active_evaluation_tasks.items()):
-            if not task.done():
-                task.cancel()
-        self.active_evaluation_tasks.clear()
+        # Phase 2V: Clean up any active evaluation tasks safely if requested
+        if cancel_evaluations:
+            for qa_id, task in list(self.active_evaluation_tasks.items()):
+                if not task.done():
+                    task.cancel()
+            self.active_evaluation_tasks.clear()
 
     async def _run_qa_checkpoint_loop(self, websocket: Any = None):
         """
@@ -1654,12 +1664,10 @@ Or when no complete Q/A exists:
                             "type": "qa_evaluated",
                             "session_id": self.session_id,
                             "qa_id": qa_id,
-                            "accuracy_score": score,
-                            "question": question,
-                            "answer": answer
+                            "accuracy_score": score
                         })
                     except Exception as ws_err:
-                        logger.debug(f"[Phase2V] Direct WebSocket send error: {ws_err}")
+                        logger.debug(f"[Phase2V] Direct websocket send error: {ws_err}")
 
                 # Notify registered on_update_callback
                 if getattr(self, "on_update_callback", None):
@@ -1686,50 +1694,132 @@ Or when no complete Q/A exists:
         return await self.generate_initial_suggestions()
 
     async def finalize_report(self) -> Dict[str, Any]:
-        """Compiles and finalizes post-session evaluation metrics and summary dossier."""
-        self.stop_qa_checkpoint()
-        try:
-            self.intelligence = await self.intelligence_engine.analyze(
-                transcript=self.transcript,
-                jd=self.jd,
-                resume=self.resume
-            )
-            self.assistance = await self.copilot_assistant.generate_assistance(
-                transcript=self.transcript,
-                jd=self.jd,
-                resume=self.resume,
-                custom_prompt=self.custom_prompt
-            )
-            if self.initial_suggestions:
-                self.assistance["initial_suggestions"] = list(self.initial_suggestions)
-            if self.scenario_questions:
-                self.assistance["scenario_questions"] = list(self.scenario_questions)
-                self.assistance["suggested_practical_questions"] = list(self.scenario_questions)
-            if self.verification_questions:
-                self.assistance["verification_questions"] = list(self.verification_questions)
+        """
+        Phase 3D: Compiles and finalizes post-session evaluation metrics, holistic competency,
+        and deterministic 70/30 overall score dossier.
 
-            report_data = {
+        Guarantees:
+        - Concurrency protection: Session-scoped lock prevents duplicate simultaneous executions.
+        - Idempotency: Returns existing cached final report if already finalized (zero duplicate LLM calls).
+        - No lost answers: Executes final QA checkpoint cycle before shutting down checkpointing.
+        - Non-destructive draining: Awaits all pending Phase 2V evaluation tasks without cancelling them.
+        - Authoritative synthesis: Uses Phase 3B FinalEvaluationService on full transcript (no transcript[-20:]).
+        - Deterministic scoring: Uses Phase 3C calculate_final_score (70% QA average + 30% Holistic).
+        - Failure handling: Failure in LLM or persistence does not mark session finalized or fabricate scores.
+        """
+        async with self._finalization_lock:
+            # 1. Idempotency Check: If already finalized in-memory, return cached final_report immediately
+            if self.final_report and getattr(self, "is_finalized", False):
+                logger.info(f"[Finalize] Returning cached final_report for session {self.session_id}")
+                return self.final_report
+
+            # 2. Stop 15-second background checkpoint timer (do not cancel in-flight evaluations)
+            self.stop_qa_checkpoint(cancel_evaluations=False)
+
+            # 3. Final QA Checkpoint Evaluation (catches questions/answers from the latest speech)
+            try:
+                logger.info(f"[Finalize] Running final Q/A checkpoint cycle for session {self.session_id}")
+                await self.run_qa_checkpoint_cycle()
+            except Exception as checkpoint_err:
+                logger.warning(f"[Finalize] Error during final QA checkpoint cycle: {checkpoint_err}")
+
+            # 4. Wait for all pending Phase 2V evaluation tasks to complete (DO NOT CANCEL)
+            while True:
+                pending_evals = [t for t in self.active_evaluation_tasks.values() if not t.done()]
+                if not pending_evals:
+                    break
+                logger.info(f"[Finalize] Awaiting {len(pending_evals)} in-flight Phase 2V accuracy evaluation(s)...")
+                await asyncio.gather(*pending_evals, return_exceptions=True)
+
+            # 5. Call Phase 3B FinalEvaluationService on complete interview evidence
+            try:
+                final_eval_service = FinalEvaluationService()
+                eval_result = await final_eval_service.evaluate_final_interview(
+                    transcript=self.transcript,
+                    jd=self.jd,
+                    resume=self.resume,
+                    confirmed_qa_pairs=self.confirmed_qa_pairs,
+                    custom_prompt=self.custom_prompt
+                )
+            except Exception as eval_err:
+                logger.error(f"[Finalize] FinalEvaluationService failed for session {self.session_id}: {eval_err}")
+                eval_result = None
+
+            if not eval_result:
+                logger.error(f"[Finalize] Final evaluation synthesis returned None for session {self.session_id}. Session will NOT be marked finalized.")
+                return {
+                    "error": "Final evaluation synthesis failed. Session remains eligible for retry.",
+                    "is_finalized": False,
+                    "session_id": str(self.session_id)
+                }
+
+            # 6. Call Phase 3C Deterministic Final Score Engine (70% QA + 30% Holistic)
+            score_result = calculate_final_score(
+                confirmed_qa_pairs=self.confirmed_qa_pairs,
+                holistic_competency=eval_result.get("holistic_competency")
+            )
+
+            # 7. Assemble Complete Final Report Contract
+            evaluated_at = datetime.datetime.now().isoformat()
+            final_report_data = {
+                "session_id": str(self.session_id),
+                "evaluated_at": evaluated_at,
+                "is_finalized": True,
+                "executive_summary": {
+                    "overall_score": score_result.get("overall_score"),
+                    "qa_accuracy_average": score_result.get("qa_accuracy_average"),
+                    "holistic_competency_score": score_result.get("holistic_competency_score"),
+                    "qa_evaluated_count": score_result.get("qa_evaluated_count"),
+                    "score_status": score_result.get("score_status")
+                },
+                "holistic_competency": eval_result.get("holistic_competency", {}),
+                "qa_accuracy_average": score_result.get("qa_accuracy_average"),
+                "overall_score": score_result.get("overall_score"),
+                "confirmed_qa_pairs": eval_result.get("question_analysis") or self.confirmed_qa_pairs,
+                "question_analysis": eval_result.get("question_analysis", []),
+                "strengths": eval_result.get("strengths", []),
+                "development_areas": eval_result.get("development_areas", []),
+                "jd_analysis": eval_result.get("jd_analysis", {}),
+                "resume_validation": eval_result.get("resume_validation", {}),
+                "conversation_summary": eval_result.get("conversation_summary", ""),
+                "observer_notes": eval_result.get("observer_notes", []),
+                "evidence": {
+                    "transcript": self.transcript,
+                    "confirmed_qa_pairs": self.confirmed_qa_pairs
+                },
+                # Backwards-compatibility fields for frontend until Phase 3E
                 "transcript": self.transcript,
                 "intelligence": self.intelligence,
-                "assistance": self.assistance,
-                "confirmed_qa_pairs": self.confirmed_qa_pairs
+                "assistance": self.assistance
             }
-            await self.repo.save_session(self.session_id, {
-                "transcript": self.transcript,
-                "final_report": report_data,
-                "intelligence": self.intelligence,
-                "assistance": self.assistance,
-                "confirmed_qa_pairs": self.confirmed_qa_pairs,
-                "is_finalized": True
-            })
-            logger.info(f"Finalized post-interview evaluation report for session {self.session_id}")
-        except Exception as e:
-            logger.error(f"Failed to finalize report for session {self.session_id}: {e}")
-        return {
-            "transcript": self.transcript,
-            "intelligence": self.intelligence,
-            "assistance": self.assistance
-        }
+
+            # 8. Persist to PostgreSQL and Disk Cache
+            try:
+                await self.repo.save_session(self.session_id, {
+                    "transcript": self.transcript,
+                    "final_report": final_report_data,
+                    "confirmed_qa_pairs": self.confirmed_qa_pairs,
+                    "is_finalized": True
+                })
+                logger.info(f"[Finalize] Persisted final evaluation report to repo for session {self.session_id}")
+            except Exception as repo_err:
+                logger.error(f"[Finalize] Failed to persist final report for session {self.session_id}: {repo_err}")
+                return {
+                    "error": f"Failed to persist final report: {repo_err}",
+                    "is_finalized": False,
+                    "session_id": str(self.session_id)
+                }
+
+            # 9. Cache in Engine Memory
+            self.final_report = final_report_data
+            self.is_finalized = True
+
+            logger.info(
+                f"[Finalize] Successfully finalized session {self.session_id}. "
+                f"Overall Score: {score_result.get('overall_score')}% "
+                f"(QA Avg: {score_result.get('qa_accuracy_average')}%, Holistic: {score_result.get('holistic_competency_score')}%)"
+            )
+            return final_report_data
 
 
 

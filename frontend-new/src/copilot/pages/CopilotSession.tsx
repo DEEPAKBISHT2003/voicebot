@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { useCopilotAudio, getTranscriptEntryKey, type CopilotTranscriptEntry } from '../hooks/useCopilotAudio';
 import { stopCopilot, serviceOffCopilot, getCopilotStatus, finalizeCopilotReport } from '../../api/copilot';
+import type { CopilotFinalReport } from '../../types/copilot-report';
 
 export const getSpeakerDisplayName = (
   rawSpeaker?: string,
@@ -55,7 +56,6 @@ export const CopilotSession: React.FC = () => {
     error,
     transcript,
     intelligence,
-    assistance,
     questions,
     previousAnswer,
     togglePinQuestion,
@@ -65,6 +65,8 @@ export const CopilotSession: React.FC = () => {
   } = useCopilotAudio(id || null);
 
   const [uiMode, setUiMode] = useState<'live' | 'report'>('live');
+  const [finalReport, setFinalReport] = useState<CopilotFinalReport | null>(null);
+  const [finalizationError, setFinalizationError] = useState<string | null>(null);
 
   // Simulation mode check & audio control states
   const searchParams = new URLSearchParams(window.location.search);
@@ -98,9 +100,12 @@ export const CopilotSession: React.FC = () => {
         if (!isMounted || !res) return;
 
         updateState(res);
+        if (res.final_report && res.final_report.is_finalized === true) {
+          setFinalReport(res.final_report);
+        }
         const active = (res as any).is_active;
         const serviceOff = (res as any).service_off || res.status === 'Service Off';
-        const hasReport = Boolean((res as any).final_report);
+        const hasReport = Boolean(res.final_report && res.final_report.is_finalized === true);
 
         if (hasReport || serviceOff || active === false) {
           setIsCompletedSession(true);
@@ -247,9 +252,12 @@ export const CopilotSession: React.FC = () => {
         const res = await getCopilotStatus(id);
         if (res) {
           updateState(res);
+          if (res.final_report && res.final_report.is_finalized === true) {
+            setFinalReport(res.final_report);
+          }
           const active = (res as any).is_active;
           const serviceOff = (res as any).service_off || res.status === 'Service Off';
-          const hasReport = Boolean((res as any).final_report);
+          const hasReport = Boolean(res.final_report && res.final_report.is_finalized === true);
 
           if (serviceOff) {
             setIsServiceOff(true);
@@ -300,99 +308,6 @@ export const CopilotSession: React.FC = () => {
     navigate('/');
   };
 
-  // Helper to calculate candidate average score from latest evaluations
-  const getCandidateScore = () => {
-    const candidateMessages = transcript.filter(m => (m.speaker === 'Candidate' || Boolean(m.evaluation)) && m.evaluation);
-    if (candidateMessages.length === 0) return 'N/A';
-
-    let totalAccuracy = 0;
-    let count = 0;
-    candidateMessages.forEach(m => {
-      const accuracy = m.evaluation?.technical_accuracy?.rating;
-      if (accuracy !== undefined && accuracy > 0) {
-        totalAccuracy += accuracy;
-        count++;
-      }
-    });
-
-    return count > 0 ? `${Math.round(totalAccuracy / count)}%` : 'N/A';
-  };
-
-  // Helper to calculate average score for custom metric keys
-  const getAverageMetric = (key: 'technical_accuracy' | 'confidence' | 'completeness' | 'practical_knowledge' | 'communication' | 'production_experience') => {
-    const candidateMessages = transcript.filter(m => (m.speaker === 'Candidate' || Boolean(m.evaluation)) && m.evaluation);
-    if (candidateMessages.length === 0) return 0;
-
-    let total = 0;
-    let count = 0;
-    candidateMessages.forEach(m => {
-      // Safely access evaluation fields dynamically
-      const val = (m.evaluation as any)?.[key]?.rating;
-      if (val !== undefined && val > 0) {
-        total += val;
-        count++;
-      }
-    });
-    return count > 0 ? Math.round(total / count) : 0;
-  };
-
-  // Helper to collect all unique knowledge gaps from candidate evaluations
-  const getUniqueGaps = () => {
-    const gaps = new Set<string>();
-    transcript.forEach(m => {
-      m.evaluation?.knowledge_gaps?.forEach(g => gaps.add(g));
-    });
-    return Array.from(gaps);
-  };
-
-  // Helper to collect all unique missing concepts from candidate evaluations
-  const getUniqueMissingConcepts = () => {
-    const concepts = new Set<string>();
-    transcript.forEach(m => {
-      m.evaluation?.missing_concepts?.forEach(c => concepts.add(c));
-    });
-    return Array.from(concepts);
-  };
-
-  // Helper to calculate recommended hiring decision and rationale
-  const getHiringRecommendation = () => {
-    const scoreStr = getCandidateScore();
-    if (scoreStr === 'N/A') {
-      return {
-        decision: 'No Decision',
-        rationale: 'Insufficient response evaluations gathered during this session to formulate a talent recommendation.',
-        color: 'text-muted-gray bg-gray-50 border-gray-200'
-      };
-    }
-    const score = parseInt(scoreStr);
-    if (score >= 85) {
-      return {
-        decision: 'Strong Hire',
-        rationale: 'Candidate demonstrated exceptional core mastery, strong accuracy scores, and minimal conceptual missing points.',
-        color: 'text-green-700 bg-green-50 border-green-200 shadow-sm'
-      };
-    }
-    if (score >= 70) {
-      return {
-        decision: 'Hire',
-        rationale: 'Candidate has healthy competency levels across primary skill vectors with minor development areas.',
-        color: 'text-blue-700 bg-blue-50 border-blue-200 shadow-sm'
-      };
-    }
-    if (score >= 50) {
-      return {
-        decision: 'Borderline Review',
-        rationale: 'Candidate showed uneven response quality with notable gaps in practical design or concept understanding.',
-        color: 'text-amber-700 bg-amber-50 border-amber-200 shadow-sm'
-      };
-    }
-    return {
-      decision: 'No Hire',
-      rationale: 'Significant competency deficiencies, repeated knowledge gaps, and low communication or accuracy scores observed.',
-      color: 'text-red-700 bg-red-50 border-red-200 shadow-sm'
-    };
-  };
-
   return (
     <div className="space-y-6">
       {/* Top Header Controls */}
@@ -439,20 +354,27 @@ export const CopilotSession: React.FC = () => {
               <button
                 onClick={async () => {
                   if (!id) return;
-                  if (intelligence.covered_skills.length > 0 || isCompletedSession) {
+                  if (finalReport && finalReport.is_finalized === true) {
                     setUiMode('report');
                     return;
                   }
                   setIsGeneratingReport(true);
+                  setFinalizationError(null);
                   try {
                     const finalRes = await finalizeCopilotReport(id);
-                    if (finalRes) {
+                    if (finalRes && finalRes.is_finalized === true) {
+                      setFinalReport(finalRes);
                       updateState(finalRes);
+                      setUiMode('report');
+                    } else {
+                      // Failed or unconfirmed finalization: do not enter report mode, do not overwrite existing valid report
+                      const errMsg = finalRes?.error || 'Final evaluation synthesis failed. Session remains eligible for retry.';
+                      console.warn('[Finalize] Report finalization failed or unconfirmed:', errMsg);
+                      setFinalizationError(errMsg);
                     }
-                    setUiMode('report');
-                  } catch (err) {
+                  } catch (err: any) {
                     console.error('Failed to compile final report:', err);
-                    setUiMode('report');
+                    setFinalizationError(err?.message || 'Failed to compile final report. Please retry.');
                   } finally {
                     setIsGeneratingReport(false);
                   }
@@ -539,9 +461,17 @@ export const CopilotSession: React.FC = () => {
         </div>
       </div>
 
-      {error && (
-        <div className="p-3 bg-red-50 border border-red-200 text-red-600 rounded-lg text-xs font-semibold">
-          Error: {error}
+      {(error || finalizationError) && (
+        <div className="p-3 bg-red-50 border border-red-200 text-red-600 rounded-lg text-xs font-semibold flex items-center justify-between">
+          <span>Error: {finalizationError || error}</span>
+          {finalizationError && (
+            <button
+              onClick={() => setFinalizationError(null)}
+              className="text-red-600 hover:text-red-800 text-xs font-bold underline ml-2 cursor-pointer"
+            >
+              Dismiss
+            </button>
+          )}
         </div>
       )}
 
@@ -1068,84 +998,130 @@ export const CopilotSession: React.FC = () => {
       ) : (
         <div className="space-y-8 animate-fade-in pb-12">
           {/* Dossier Header */}
-          <div className="bg-secondary p-6 rounded-xl border border-border-gray shadow-sm">
-            <h1 className="text-xl font-black text-primary uppercase tracking-wider mb-1">Candidate Technical Assessment Dossier</h1>
-            <p className="text-xs text-muted-gray">This report is finalized and compiled for hiring manager review. Session: {id}</p>
+          <div className="bg-secondary p-6 rounded-xl border border-border-gray shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div>
+              <h1 className="text-xl font-black text-primary uppercase tracking-wider mb-1">
+                Candidate Technical Assessment Dossier
+              </h1>
+              <p className="text-xs text-muted-gray">
+                Authoritative evaluation compiled for hiring team review • Session: <span className="font-mono text-primary font-bold">{id}</span>
+                {finalReport?.evaluated_at && (
+                  <span className="ml-2 font-medium">• Finalized: {new Date(finalReport.evaluated_at).toLocaleString()}</span>
+                )}
+              </p>
+            </div>
+            {finalReport?.is_finalized && (
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-green-50 text-green-700 border border-green-200 rounded-lg text-xs font-black uppercase tracking-wider self-start sm:self-auto">
+                <CheckCircle className="h-3.5 w-3.5" />
+                Verified & Finalized
+              </span>
+            )}
           </div>
 
-          {/* Hiring Summary Grid */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Card 1: Recommended Hiring Decision */}
-            {(() => {
-              const rec = getHiringRecommendation();
-              return (
-                <div className="bg-secondary rounded-xl p-5 border border-border-gray shadow-sm flex flex-col justify-between">
-                  <div>
-                    <span className="text-[10px] font-bold text-muted-gray uppercase tracking-wider block mb-1">Recommended Hiring Decision</span>
-                    <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-sm border font-extrabold ${rec.color} mt-1`}>
-                      {rec.decision}
-                    </span>
-                  </div>
-                  <p className="text-xs text-muted-gray mt-4 leading-relaxed font-medium">{rec.rationale}</p>
-                </div>
-              );
-            })()}
-
-            {/* Card 2: Overall Candidate Score */}
+          {/* Top Score Cards Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {/* Card 1: Overall Score */}
             <div className="bg-secondary rounded-xl p-5 border border-border-gray shadow-sm flex flex-col justify-between text-center">
               <div>
-                <span className="text-[10px] font-bold text-muted-gray uppercase tracking-wider block mb-1">Overall Candidate Score</span>
-                <span className="text-5xl font-black text-primary block my-3">{getCandidateScore()}</span>
+                <span className="text-[10px] font-bold text-muted-gray uppercase tracking-wider block mb-1">
+                  Overall Candidate Score
+                </span>
+                <span className="text-5xl font-black text-primary block my-3" data-testid="overall-score">
+                  {typeof finalReport?.overall_score === 'number'
+                    ? `${finalReport.overall_score}%`
+                    : 'Insufficient Evidence'}
+                </span>
               </div>
-              <span className="text-xs text-muted-gray font-medium">Aggregated mean accuracy across evaluated candidate answers</span>
+              <span className="text-xs text-muted-gray font-medium">
+                {finalReport?.scoring_formula || '70% Q&A Accuracy + 30% Holistic Competency'}
+              </span>
             </div>
 
-            {/* Card 3: JD Alignment Progress */}
-            <div className="bg-secondary rounded-xl p-5 border border-border-gray shadow-sm flex flex-col justify-between">
+            {/* Card 2: Q&A Accuracy */}
+            <div className="bg-secondary rounded-xl p-5 border border-border-gray shadow-sm flex flex-col justify-between text-center">
               <div>
-                <span className="text-[10px] font-bold text-muted-gray uppercase tracking-wider block mb-1">JD Alignment Coverage</span>
-                <span className="text-2xl font-black text-primary block mt-1">{intelligence.interview_progress.percentage || 0}% Match</span>
+                <span className="text-[10px] font-bold text-muted-gray uppercase tracking-wider block mb-1">
+                  Q&A Accuracy Average
+                </span>
+                <span className="text-5xl font-black text-primary block my-3" data-testid="qa-accuracy">
+                  {typeof finalReport?.qa_accuracy_average === 'number'
+                    ? `${finalReport.qa_accuracy_average}%`
+                    : 'N/A'}
+                </span>
               </div>
-              <div className="space-y-2 mt-4">
-                <div className="w-full h-3 bg-white rounded-full overflow-hidden border border-border-gray p-0.5">
-                  <div
-                    className="h-full bg-primary rounded-full transition-all duration-500"
-                    style={{ width: `${intelligence.interview_progress.percentage || 0}%` }}
-                  />
-                </div>
-                <span className="text-[10px] text-muted-gray block font-medium">Discussion covered {intelligence.covered_skills.length} of {intelligence.covered_skills.length + intelligence.remaining_skills.length} required skill areas</span>
+              <span className="text-xs text-muted-gray font-medium">
+                Arithmetic mean of {finalReport?.qa_evaluated_count ?? (finalReport?.question_analysis?.filter(q => typeof q.accuracy_score === 'number').length || 0)} evaluated Q&A pairs
+              </span>
+            </div>
+
+            {/* Card 3: Holistic Competency */}
+            <div className="bg-secondary rounded-xl p-5 border border-border-gray shadow-sm flex flex-col justify-between text-center">
+              <div>
+                <span className="text-[10px] font-bold text-muted-gray uppercase tracking-wider block mb-1">
+                  Holistic Competency
+                </span>
+                <span className="text-5xl font-black text-primary block my-3" data-testid="holistic-score">
+                  {typeof finalReport?.holistic_competency?.score === 'number'
+                    ? `${finalReport.holistic_competency.score}%`
+                    : 'N/A'}
+                </span>
               </div>
+              <span className="text-xs text-muted-gray font-medium">
+                Synthesized across 4 core competency vectors
+              </span>
             </div>
           </div>
 
-          {/* Core Competency Ratings Scorecard */}
+          {/* Neutral Hiring Decision Card */}
+          <div className="bg-secondary rounded-xl p-5 border border-border-gray shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <span className="text-[10px] font-bold text-muted-gray uppercase tracking-wider block mb-1">
+                Hiring Recommendation
+              </span>
+              <span className="inline-flex items-center gap-2 px-3 py-1 rounded-lg text-sm border font-extrabold text-muted-gray bg-gray-50 border-gray-200" data-testid="hiring-decision">
+                Decision not yet configured
+              </span>
+            </div>
+            <p className="text-xs text-muted-gray leading-relaxed font-medium max-w-xl">
+              Awaiting organizational evaluation criteria configuration. No hiring decision is inferred from the candidate's scores.
+            </p>
+          </div>
+
+          {/* Core Competency Dimensions Scorecard */}
           <div className="bg-secondary rounded-xl p-6 border border-border-gray shadow-sm space-y-4">
-            <h2 className="text-xs font-bold text-primary uppercase tracking-wider border-b border-border-gray pb-2">Core Competency Dimensions</h2>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <h2 className="text-xs font-bold text-primary uppercase tracking-wider border-b border-border-gray pb-2">
+              Holistic Competency Dimensions
+            </h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               {[
-                { name: 'Technical Accuracy', key: 'technical_accuracy' as const, desc: 'Conceptual validity & correctness of technical explanations' },
-                { name: 'Confidence & Assurance', key: 'confidence' as const, desc: 'Speed and presence of responses without hesitation' },
-                { name: 'Answer Completeness', key: 'completeness' as const, desc: 'Coverage of all facets and sub-points of questions' },
-                { name: 'Practical Knowledge', key: 'practical_knowledge' as const, desc: 'Familiarity with concrete implementations vs abstract theory' },
-                { name: 'Communication Clarity', key: 'communication' as const, desc: 'Clarity, phrasing, and structured delivery of technical topics' },
-                { name: 'Production Experience', key: 'production_experience' as const, desc: 'Evidence of running, scaling, and maintaining in production' },
+                { name: 'Technical Depth', key: 'technical_depth' as const, desc: 'Architectural understanding, depth of core technologies, and systems design' },
+                { name: 'Practical Experience', key: 'practical_experience' as const, desc: 'Production deployment, real-world troubleshooting, and concrete implementation' },
+                { name: 'Problem Solving', key: 'problem_solving' as const, desc: 'Algorithmic reasoning, analytical trade-off analysis, and debugging' },
+                { name: 'Communication Clarity', key: 'communication_clarity' as const, desc: 'Structured articulation, clarity of explanations, and precision' },
               ].map((metric) => {
-                const score = getAverageMetric(metric.key);
-                const scoreColor = score >= 80 ? 'text-green-600' : score >= 50 ? 'text-amber-600' : 'text-red-600';
+                const dim = finalReport?.holistic_competency?.dimensions?.[metric.key];
+                const score = dim?.score;
+                const hasScore = typeof score === 'number';
+                const scoreColor = hasScore
+                  ? (score >= 80 ? 'text-green-600' : score >= 50 ? 'text-amber-600' : 'text-red-600')
+                  : 'text-muted-gray';
                 return (
-                  <div key={metric.key} className="space-y-1.5 p-3.5 bg-white rounded-lg border border-border-gray shadow-sm">
-                    <div className="flex justify-between items-center text-xs font-bold">
-                      <span className="text-primary">{metric.name}</span>
-                      <span className={scoreColor}>{score}%</span>
+                  <div key={metric.key} className="space-y-1.5 p-3.5 bg-white rounded-lg border border-border-gray shadow-sm flex flex-col justify-between" data-testid={`dimension-${metric.key}`}>
+                    <div>
+                      <div className="flex justify-between items-center text-xs font-bold">
+                        <span className="text-primary">{metric.name}</span>
+                        <span className={scoreColor}>{hasScore ? `${score}%` : 'N/A'}</span>
+                      </div>
+                      <div className="w-full h-1.5 bg-secondary rounded-full overflow-hidden border border-border-gray/50 p-0.5 mt-2">
+                        <div
+                          className={`h-full rounded-full ${hasScore ? (score >= 80 ? 'bg-green-500' : score >= 50 ? 'bg-amber-500' : 'bg-red-500') : 'bg-gray-300'}`}
+                          style={{ width: `${hasScore ? score : 0}%` }}
+                        />
+                      </div>
                     </div>
-                    <div className="w-full h-1.5 bg-secondary rounded-full overflow-hidden border border-border-gray/50 p-0.5">
-                      <div
-                        className={`h-full rounded-full ${score >= 80 ? 'bg-green-500' : score >= 50 ? 'bg-amber-500' : 'bg-red-500'
-                          }`}
-                        style={{ width: `${score}%` }}
-                      />
-                    </div>
-                    <p className="text-[10px] text-muted-gray leading-tight mt-1">{metric.desc}</p>
+                    <p className="text-[10px] text-muted-gray leading-tight mt-2 italic">
+                      {dim?.summary || metric.desc}
+                    </p>
                   </div>
                 );
               })}
@@ -1160,29 +1136,15 @@ export const CopilotSession: React.FC = () => {
                 <CheckCircle className="h-4 w-4 text-green-600" />
                 Candidate Strengths
               </h3>
-              <div className="space-y-3 text-xs text-primary leading-relaxed">
-                {intelligence.covered_skills.length > 0 && (
-                  <div>
-                    <span className="text-[10px] font-bold text-muted-gray uppercase block mb-1">Demonstrated Skill Mastery</span>
-                    <ul className="list-disc list-inside space-y-1">
-                      {intelligence.covered_skills.map((s, idx) => (
-                        <li key={idx}>Fluent explanation and response validation in <strong>{s}</strong></li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {intelligence.resume_projects_covered.length > 0 && (
-                  <div className="pt-2">
-                    <span className="text-[10px] font-bold text-muted-gray uppercase block mb-1">Verified Resume Accomplishments</span>
-                    <ul className="list-disc list-inside space-y-1">
-                      {intelligence.resume_projects_covered.map((p, idx) => (
-                        <li key={idx}>Confirmed hands-on role and contribution on project: <strong>{p}</strong></li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {intelligence.covered_skills.length === 0 && intelligence.resume_projects_covered.length === 0 && (
-                  <p className="text-xs text-muted-gray italic">No significant strengths demonstrated during evaluations.</p>
+              <div className="space-y-3 text-xs text-primary leading-relaxed" data-testid="strengths-list">
+                {finalReport?.strengths && finalReport.strengths.length > 0 ? (
+                  <ul className="list-disc list-inside space-y-2">
+                    {finalReport.strengths.map((s, idx) => (
+                      <li key={idx} className="leading-relaxed font-medium">{s}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-xs text-muted-gray italic">No specific strengths documented in final evaluation.</p>
                 )}
               </div>
             </div>
@@ -1193,29 +1155,15 @@ export const CopilotSession: React.FC = () => {
                 <Compass className="h-4 w-4 text-amber-600" />
                 Development Areas & Gaps
               </h3>
-              <div className="space-y-4 text-xs text-primary">
-                {getUniqueGaps().length > 0 && (
-                  <div>
-                    <span className="text-[10px] font-bold text-muted-gray uppercase block mb-1">Identified Knowledge Gaps</span>
-                    <div className="flex flex-wrap gap-1.5 mt-1">
-                      {getUniqueGaps().map((gap, idx) => (
-                        <span key={idx} className="px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded text-[10px] font-semibold">{gap}</span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {getUniqueMissingConcepts().length > 0 && (
-                  <div>
-                    <span className="text-[10px] font-bold text-muted-gray uppercase block mb-1">Omitted JD Core Concepts</span>
-                    <div className="flex flex-wrap gap-1.5 mt-1">
-                      {getUniqueMissingConcepts().map((concept, idx) => (
-                        <span key={idx} className="px-2 py-0.5 bg-red-50 text-red-700 border border-red-200 rounded text-[10px] font-semibold">{concept}</span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {getUniqueGaps().length === 0 && getUniqueMissingConcepts().length === 0 && (
-                  <p className="text-xs text-muted-gray italic">Candidate covered all topics successfully without major gap flags.</p>
+              <div className="space-y-3 text-xs text-primary leading-relaxed" data-testid="development-areas-list">
+                {finalReport?.development_areas && finalReport.development_areas.length > 0 ? (
+                  <ul className="list-disc list-inside space-y-2">
+                    {finalReport.development_areas.map((d, idx) => (
+                      <li key={idx} className="leading-relaxed font-medium">{d}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-xs text-muted-gray italic">No development areas highlighted in final evaluation.</p>
                 )}
               </div>
             </div>
@@ -1224,106 +1172,114 @@ export const CopilotSession: React.FC = () => {
           {/* Validation Matrix Section */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* JD Skills Coverage Panel */}
-            <div className="bg-secondary rounded-xl p-5 border border-border-gray shadow-sm space-y-4">
+            <div className="bg-secondary rounded-xl p-5 border border-border-gray shadow-sm space-y-4" data-testid="jd-analysis">
               <h3 className="font-bold text-primary flex items-center gap-2 text-xs uppercase tracking-wider border-b border-border-gray pb-2.5">
                 <BookOpen className="h-4 w-4 text-primary" />
                 JD Skill Requirements Matrix
               </h3>
+              {finalReport?.jd_analysis?.summary && (
+                <p className="text-xs text-muted-gray italic leading-relaxed">{finalReport.jd_analysis.summary}</p>
+              )}
               <div className="grid grid-cols-2 gap-4 text-xs">
                 <div>
-                  <span className="text-[10px] font-bold text-green-600 uppercase block mb-2 tracking-wider">Discussed / Validated</span>
+                  <span className="text-[10px] font-bold text-green-600 uppercase block mb-2 tracking-wider">Discussed / Covered</span>
                   <div className="space-y-1.5">
-                    {intelligence.covered_skills.map((skill, idx) => (
+                    {(finalReport?.jd_analysis?.covered_skills || []).map((skill, idx) => (
                       <div key={idx} className="flex items-center gap-1.5 font-bold text-green-700">
                         <CheckCircle className="h-3.5 w-3.5 text-green-600 shrink-0" />
                         {skill}
                       </div>
                     ))}
-                    {intelligence.covered_skills.length === 0 && <span className="text-muted-gray italic">No skills covered</span>}
+                    {(!finalReport?.jd_analysis?.covered_skills || finalReport.jd_analysis.covered_skills.length === 0) && (
+                      <span className="text-muted-gray italic">No skills covered</span>
+                    )}
                   </div>
                 </div>
                 <div>
-                  <span className="text-[10px] font-bold text-amber-600 uppercase block mb-2 tracking-wider">Remaining / Uncovered</span>
+                  <span className="text-[10px] font-bold text-amber-600 uppercase block mb-2 tracking-wider">Remaining / Unassessed</span>
                   <div className="space-y-1.5 text-muted-gray font-medium">
-                    {intelligence.remaining_skills.map((skill, idx) => (
+                    {(finalReport?.jd_analysis?.remaining_skills || []).map((skill, idx) => (
                       <div key={idx} className="flex items-center gap-1.5">
                         <div className="h-3.5 w-3.5 rounded-full border border-border-gray shrink-0" />
                         {skill}
                       </div>
                     ))}
-                    {intelligence.remaining_skills.length === 0 && <span className="text-green-600 italic">All skills discussed!</span>}
+                    {(!finalReport?.jd_analysis?.remaining_skills || finalReport.jd_analysis.remaining_skills.length === 0) && (
+                      <span className="text-green-600 italic">All skills assessed</span>
+                    )}
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* Resume Validation Matrix */}
-            <div className="bg-secondary rounded-xl p-5 border border-border-gray shadow-sm space-y-4">
+            {/* Resume Experience Validation */}
+            <div className="bg-secondary rounded-xl p-5 border border-border-gray shadow-sm space-y-4" data-testid="resume-validation">
               <h3 className="font-bold text-primary flex items-center gap-2 text-xs uppercase tracking-wider border-b border-border-gray pb-2.5">
                 <Briefcase className="h-4 w-4 text-primary" />
                 Resume Experience Validation
               </h3>
+              {finalReport?.resume_validation?.summary && (
+                <p className="text-xs text-muted-gray italic leading-relaxed">{finalReport.resume_validation.summary}</p>
+              )}
               <div className="grid grid-cols-2 gap-4 text-xs">
                 <div>
                   <span className="text-[10px] font-bold text-green-600 uppercase block mb-2 tracking-wider">Verified Projects</span>
                   <div className="space-y-1.5">
-                    {intelligence.resume_projects_covered.map((proj, idx) => (
+                    {(finalReport?.resume_validation?.verified_projects || []).map((proj, idx) => (
                       <div key={idx} className="flex items-center gap-1.5 font-bold text-green-700">
                         <CheckCircle className="h-3.5 w-3.5 text-green-600 shrink-0" />
                         {proj}
                       </div>
                     ))}
-                    {intelligence.resume_projects_covered.length === 0 && <span className="text-muted-gray italic">No projects verified</span>}
+                    {(!finalReport?.resume_validation?.verified_projects || finalReport.resume_validation.verified_projects.length === 0) && (
+                      <span className="text-muted-gray italic">No projects verified</span>
+                    )}
                   </div>
                 </div>
                 <div>
                   <span className="text-[10px] font-bold text-muted-gray uppercase block mb-2 tracking-wider">Unverified Projects</span>
                   <div className="space-y-1.5 text-muted-gray font-medium">
-                    {intelligence.resume_projects_remaining.map((proj, idx) => (
+                    {(finalReport?.resume_validation?.unverified_projects || []).map((proj, idx) => (
                       <div key={idx} className="flex items-center gap-1.5">
                         <div className="h-3.5 w-3.5 rounded-full border border-border-gray shrink-0" />
                         {proj}
                       </div>
                     ))}
-                    {intelligence.resume_projects_remaining.length === 0 && <span className="text-green-600 italic">All projects verified!</span>}
+                    {(!finalReport?.resume_validation?.unverified_projects || finalReport.resume_validation.unverified_projects.length === 0) && (
+                      <span className="text-green-600 italic">All projects verified</span>
+                    )}
                   </div>
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Timeline & Notes Panel */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Timeline */}
-            <div className="lg:col-span-1 bg-secondary rounded-xl p-5 border border-border-gray shadow-sm space-y-4">
+          {/* Conversation Summary & Observer Notes */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Conversation Summary */}
+            <div className="bg-secondary rounded-xl p-5 border border-border-gray shadow-sm space-y-4" data-testid="conversation-summary">
               <h3 className="font-bold text-primary flex items-center gap-2 text-xs uppercase tracking-wider border-b border-border-gray pb-2.5">
                 <Activity className="h-4 w-4 text-primary" />
-                Conversation Timeline
+                Conversation Summary
               </h3>
-              {intelligence.covered_skills.length === 0 ? (
-                <p className="text-xs text-muted-gray italic">No topics logged in timeline.</p>
+              {finalReport?.conversation_summary ? (
+                <p className="text-xs text-primary leading-relaxed bg-white p-4 rounded-lg border border-border-gray font-medium">
+                  {finalReport.conversation_summary}
+                </p>
               ) : (
-                <div className="relative border-l border-border-gray pl-4 ml-2 space-y-4 text-xs">
-                  {intelligence.covered_skills.map((skill, idx) => (
-                    <div key={idx} className="relative">
-                      <div className="absolute -left-[21px] mt-1 h-2.5 w-2.5 rounded-full bg-primary border-2 border-white" />
-                      <span className="text-[10px] font-bold text-muted-gray block">Phase {idx + 1}</span>
-                      <span className="font-bold text-primary">{skill} discussion</span>
-                    </div>
-                  ))}
-                </div>
+                <p className="text-xs text-muted-gray italic">No conversation summary recorded.</p>
               )}
             </div>
 
-            {/* Notes */}
-            <div className="lg:col-span-2 bg-secondary rounded-xl p-5 border border-border-gray shadow-sm space-y-4">
+            {/* Observer Notes */}
+            <div className="bg-secondary rounded-xl p-5 border border-border-gray shadow-sm space-y-4" data-testid="observer-notes">
               <h3 className="font-bold text-primary flex items-center gap-2 text-xs uppercase tracking-wider border-b border-border-gray pb-2.5">
                 <FileText className="h-4 w-4 text-primary" />
                 Interviewer Observer Notes
               </h3>
-              {assistance.interview_notes && assistance.interview_notes.length > 0 ? (
+              {finalReport?.observer_notes && finalReport.observer_notes.length > 0 ? (
                 <ul className="space-y-2 bg-white rounded-lg p-4 border border-border-gray text-xs text-primary list-disc list-inside font-medium">
-                  {assistance.interview_notes.map((note, idx) => (
+                  {finalReport.observer_notes.map((note, idx) => (
                     <li key={idx} className="leading-relaxed mb-1">{note}</li>
                   ))}
                 </ul>
@@ -1334,13 +1290,93 @@ export const CopilotSession: React.FC = () => {
           </div>
 
           {/* Question-by-Question Deep Analysis */}
-          <div className="flex flex-col bg-secondary rounded-xl border border-border-gray p-6 space-y-4 shadow-sm">
-            <h3 className="font-bold text-primary flex items-center gap-2 text-sm border-b border-border-gray pb-3">
-              <MessageSquare className="h-4 w-4 text-primary" />
-              Detailed Question-by-Question Analysis
+          {(() => {
+            const qaList = (finalReport?.question_analysis && finalReport.question_analysis.length > 0)
+              ? finalReport.question_analysis
+              : (finalReport?.confirmed_qa_pairs || []);
+
+            return (
+              <div className="flex flex-col bg-secondary rounded-xl border border-border-gray p-6 space-y-4 shadow-sm" data-testid="question-analysis">
+                <h3 className="font-bold text-primary flex items-center justify-between text-sm border-b border-border-gray pb-3">
+                  <span className="flex items-center gap-2">
+                    <MessageSquare className="h-4 w-4 text-primary" />
+                    Detailed Question-by-Question Analysis
+                  </span>
+                  {qaList.length > 0 && (
+                    <span className="text-xs font-bold text-muted-gray">
+                      {qaList.length} Confirmed Q&A {qaList.length === 1 ? 'Pair' : 'Pairs'}
+                    </span>
+                  )}
+                </h3>
+
+                {qaList.length > 0 ? (
+                  <div className="space-y-4">
+                    {qaList.map((qa, idx) => {
+                      const hasScore = typeof qa.accuracy_score === 'number';
+                      const scoreBadgeColor = hasScore
+                        ? (qa.accuracy_score! >= 80
+                            ? 'bg-green-50 text-green-700 border-green-200'
+                            : qa.accuracy_score! >= 60
+                            ? 'bg-amber-50 text-amber-700 border-amber-200'
+                            : 'bg-red-50 text-red-700 border-red-200')
+                        : 'bg-gray-50 text-muted-gray border-gray-200';
+
+                      return (
+                        <div key={qa.qa_id || qa.pair_id || `qa-${idx}`} className="bg-white rounded-xl p-5 border border-border-gray shadow-sm space-y-3">
+                          <div className="flex justify-between items-start gap-4">
+                            <div className="space-y-1 flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px] font-bold text-muted-gray uppercase tracking-wider">
+                                  Question {idx + 1}
+                                </span>
+                                <span className="text-[10px] font-mono text-muted-gray bg-secondary px-1.5 py-0.5 rounded border border-border-gray/40">
+                                  {qa.qa_id || qa.pair_id}
+                                </span>
+                              </div>
+                              <p className="text-xs font-bold text-primary leading-relaxed">{qa.question}</p>
+                            </div>
+                            <div className={`px-2.5 py-1 rounded-lg text-xs font-black border uppercase tracking-wider shrink-0 ${scoreBadgeColor}`}>
+                              {hasScore ? `${qa.accuracy_score}% Accuracy` : 'Accuracy: N/A'}
+                            </div>
+                          </div>
+
+                          <div className="bg-secondary/40 p-3.5 rounded-lg border border-border-gray/50 space-y-1">
+                            <span className="text-[10px] font-bold text-muted-gray uppercase block tracking-wider">Candidate Response</span>
+                            <p className="text-xs text-primary leading-relaxed font-medium">{qa.answer}</p>
+                          </div>
+
+                          {qa.observations && (
+                            <div className="bg-blue-50/50 p-3 rounded-lg border border-blue-100 text-xs text-blue-900 leading-relaxed">
+                              <strong className="font-bold text-blue-950">Evaluation Note: </strong>
+                              {qa.observations}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="p-8 text-center text-muted-gray italic text-xs bg-white rounded-lg border border-border-gray">
+                    No confirmed Q&A pairs recorded for this session.
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* Complete Interview Transcript Section */}
+          <div className="flex flex-col bg-secondary rounded-xl border border-border-gray p-6 space-y-4 shadow-sm" data-testid="full-transcript">
+            <h3 className="font-bold text-primary flex items-center justify-between text-sm border-b border-border-gray pb-3">
+              <span className="flex items-center gap-2">
+                <FileText className="h-4 w-4 text-primary" />
+                Complete Interview Transcript
+              </span>
+              <span className="text-xs font-bold text-muted-gray">
+                {transcript.length} {transcript.length === 1 ? 'Turn' : 'Turns'}
+              </span>
             </h3>
 
-            <div className="space-y-6 max-h-[700px] overflow-y-auto pr-1">
+            <div className="space-y-4 max-h-[700px] overflow-y-auto pr-1">
               {transcript.map((msg) => {
                 const isSystem = msg.speaker === 'System';
 
@@ -1355,200 +1391,37 @@ export const CopilotSession: React.FC = () => {
                 }
 
                 const displayName = getSpeakerDisplayName(msg.speaker || msg.speaker_name, transcript);
-                const isCandidate = msg.speaker === 'Candidate' || Boolean(msg.evaluation);
+                const isCandidate = msg.speaker === 'Candidate' || msg.speaker_role === 'candidate';
 
                 return (
                   <div
                     key={getTranscriptEntryKey(msg)}
-                    className={`flex flex-col gap-2 ${isCandidate ? 'items-start' : 'items-end'}`}
+                    className={`flex flex-col gap-1 ${isCandidate ? 'items-start' : 'items-end'}`}
                   >
                     <span className="text-[10px] font-bold text-muted-gray px-1">
                       {displayName}
                     </span>
 
-                    <div className={`group relative rounded-xl p-3.5 max-w-[90%] border shadow-sm transition-all ${isCandidate
+                    <div className={`group relative rounded-xl p-3.5 max-w-[90%] border shadow-sm transition-all ${
+                      isCandidate
                         ? 'bg-white border-border-gray text-primary'
                         : 'bg-primary text-white border-primary/30'
-                      }`}>
+                    }`}>
                       <p className="text-xs leading-relaxed">{msg.text}</p>
-                      <span className={`block text-[9px] mt-1.5 text-right ${isCandidate ? 'text-muted-gray' : 'text-primary-foreground/75'
-                        }`}>
+                      <span className={`block text-[9px] mt-1.5 text-right ${
+                        isCandidate ? 'text-muted-gray' : 'text-primary-foreground/75'
+                      }`}>
                         {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
                       </span>
                     </div>
-
-                    {/* Question evaluation metrics expanded inline */}
-                    {isCandidate && msg.evaluation && (
-                      <div className="w-full bg-white rounded-lg p-4 border border-border-gray shadow-inner text-xs space-y-3 mt-1">
-                        <div className="flex flex-col gap-1.5 pb-2 border-b border-border-gray/50">
-                          {msg.evaluation.question_asker && (
-                            <div className="flex justify-between items-center text-[10px]">
-                              <span className="text-muted-gray font-semibold">Asked By:</span>
-                              <span className="font-bold text-primary px-1.5 py-0.5 bg-secondary rounded border border-border-gray/30">{msg.evaluation.question_asker}</span>
-                            </div>
-                          )}
-                          {msg.evaluation.answerer && (
-                            <div className="flex justify-between items-center text-[10px]">
-                              <span className="text-muted-gray font-semibold">Answered By:</span>
-                              <span className="font-bold text-primary px-1.5 py-0.5 bg-secondary rounded border border-border-gray/30">{msg.evaluation.answerer}</span>
-                            </div>
-                          )}
-                          {msg.evaluation.is_complete !== undefined && (
-                            <div className="flex justify-between items-center text-[10px]">
-                              <span className="text-muted-gray font-semibold">Answer Complete:</span>
-                              <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${msg.evaluation.is_complete
-                                  ? 'text-green-600 bg-green-50 border-green-200'
-                                  : 'text-amber-600 bg-amber-50 border-amber-200'
-                                }`}>
-                                {msg.evaluation.is_complete ? 'YES' : 'NO'}
-                              </span>
-                            </div>
-                          )}
-                          {msg.evaluation.follow_up_required !== undefined && (
-                            <div className="flex justify-between items-center text-[10px]">
-                              <span className="text-muted-gray font-semibold">Follow-up Required:</span>
-                              <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${msg.evaluation.follow_up_required
-                                  ? 'text-red-600 bg-red-50 border-red-200 animate-pulse'
-                                  : 'text-green-600 bg-green-50 border-green-200'
-                                }`}>
-                                {msg.evaluation.follow_up_required ? 'YES' : 'NO'}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-
-                        {msg.evaluation.follow_up_required && msg.evaluation.follow_up_reason && (
-                          <div className="bg-red-50 border border-red-200 rounded-lg p-2 text-[10px] text-red-700 leading-normal font-medium">
-                            <strong>Follow-up Note:</strong> {msg.evaluation.follow_up_reason}
-                          </div>
-                        )}
-
-                        <div className="grid grid-cols-2 gap-3 pt-1">
-                          {/* Technical accuracy */}
-                          {msg.evaluation.technical_accuracy && (
-                            <div className="p-2 bg-secondary rounded-lg border border-border-gray/60 space-y-1">
-                              <div className="flex justify-between items-center text-[10px]">
-                                <span className="font-bold text-primary">Technical Accuracy</span>
-                                <span className="font-black text-primary">{msg.evaluation.technical_accuracy.rating}%</span>
-                              </div>
-                              <div className="w-full h-1 bg-white rounded-full overflow-hidden border border-border-gray p-0.5">
-                                <div className="h-full bg-primary rounded-full" style={{ width: `${msg.evaluation.technical_accuracy.rating}%` }} />
-                              </div>
-                              {msg.evaluation.technical_accuracy.comment && (
-                                <p className="text-[9px] text-muted-gray leading-tight italic">{msg.evaluation.technical_accuracy.comment}</p>
-                              )}
-                            </div>
-                          )}
-
-                          {/* Confidence */}
-                          {msg.evaluation.confidence && (
-                            <div className="p-2 bg-secondary rounded-lg border border-border-gray/60 space-y-1">
-                              <div className="flex justify-between items-center text-[10px]">
-                                <span className="font-bold text-primary">Confidence</span>
-                                <span className="font-black text-primary">{msg.evaluation.confidence.rating}%</span>
-                              </div>
-                              <div className="w-full h-1 bg-white rounded-full overflow-hidden border border-border-gray p-0.5">
-                                <div className="h-full bg-green-500 rounded-full" style={{ width: `${msg.evaluation.confidence.rating}%` }} />
-                              </div>
-                              {msg.evaluation.confidence.comment && (
-                                <p className="text-[9px] text-muted-gray leading-tight italic">{msg.evaluation.confidence.comment}</p>
-                              )}
-                            </div>
-                          )}
-
-                          {/* Completeness */}
-                          {msg.evaluation.completeness && (
-                            <div className="p-2 bg-secondary rounded-lg border border-border-gray/60 space-y-1">
-                              <div className="flex justify-between items-center text-[10px]">
-                                <span className="font-bold text-primary">Completeness</span>
-                                <span className="font-black text-primary">{msg.evaluation.completeness.rating}%</span>
-                              </div>
-                              <div className="w-full h-1 bg-white rounded-full overflow-hidden border border-border-gray p-0.5">
-                                <div className="h-full bg-blue-500 rounded-full" style={{ width: `${msg.evaluation.completeness.rating}%` }} />
-                              </div>
-                              {msg.evaluation.completeness.comment && (
-                                <p className="text-[9px] text-muted-gray leading-tight italic">{msg.evaluation.completeness.comment}</p>
-                              )}
-                            </div>
-                          )}
-
-                          {/* Practical Skill */}
-                          {msg.evaluation.practical_knowledge && (
-                            <div className="p-2 bg-secondary rounded-lg border border-border-gray/60 space-y-1">
-                              <div className="flex justify-between items-center text-[10px]">
-                                <span className="font-bold text-primary">Practical Knowledge</span>
-                                <span className="font-black text-primary">{msg.evaluation.practical_knowledge.rating}%</span>
-                              </div>
-                              <div className="w-full h-1 bg-white rounded-full overflow-hidden border border-border-gray p-0.5">
-                                <div className="h-full bg-purple-500 rounded-full" style={{ width: `${msg.evaluation.practical_knowledge.rating}%` }} />
-                              </div>
-                              {msg.evaluation.practical_knowledge.comment && (
-                                <p className="text-[9px] text-muted-gray leading-tight italic">{msg.evaluation.practical_knowledge.comment}</p>
-                              )}
-                            </div>
-                          )}
-
-                          {/* Communication */}
-                          {msg.evaluation.communication && (
-                            <div className="p-2 bg-secondary rounded-lg border border-border-gray/60 space-y-1">
-                              <div className="flex justify-between items-center text-[10px]">
-                                <span className="font-bold text-primary">Communication</span>
-                                <span className="font-black text-primary">{msg.evaluation.communication.rating}%</span>
-                              </div>
-                              <div className="w-full h-1 bg-white rounded-full overflow-hidden border border-border-gray p-0.5">
-                                <div className="h-full bg-amber-500 rounded-full" style={{ width: `${msg.evaluation.communication.rating}%` }} />
-                              </div>
-                              {msg.evaluation.communication.comment && (
-                                <p className="text-[9px] text-muted-gray leading-tight italic">{msg.evaluation.communication.comment}</p>
-                              )}
-                            </div>
-                          )}
-
-                          {/* Production experience */}
-                          {msg.evaluation.production_experience && (
-                            <div className="p-2 bg-secondary rounded-lg border border-border-gray/60 space-y-1">
-                              <div className="flex justify-between items-center text-[10px]">
-                                <span className="font-bold text-primary">Production Experience</span>
-                                <span className="font-black text-primary">{msg.evaluation.production_experience.rating}%</span>
-                              </div>
-                              <div className="w-full h-1 bg-white rounded-full overflow-hidden border border-border-gray p-0.5">
-                                <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${msg.evaluation.production_experience.rating}%` }} />
-                              </div>
-                              {msg.evaluation.production_experience.comment && (
-                                <p className="text-[9px] text-muted-gray leading-tight italic">{msg.evaluation.production_experience.comment}</p>
-                              )}
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Concept lists */}
-                        <div className="flex flex-col gap-2 pt-2 border-t border-border-gray/50">
-                          {msg.evaluation.missing_concepts && msg.evaluation.missing_concepts.length > 0 && (
-                            <div>
-                              <span className="text-[9px] font-bold text-muted-gray uppercase block mb-1">Omitted Concepts</span>
-                              <div className="flex flex-wrap gap-1">
-                                {msg.evaluation.missing_concepts.map((concept, idx) => (
-                                  <span key={idx} className="px-2 py-0.5 bg-red-50 text-red-600 rounded text-[9px] font-semibold border border-red-100">{concept}</span>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                          {msg.evaluation.knowledge_gaps && msg.evaluation.knowledge_gaps.length > 0 && (
-                            <div>
-                              <span className="text-[9px] font-bold text-muted-gray uppercase block mb-1 font-semibold">Identified Gaps</span>
-                              <div className="flex flex-wrap gap-1">
-                                {msg.evaluation.knowledge_gaps.map((gap, idx) => (
-                                  <span key={idx} className="px-2 py-0.5 bg-amber-50 text-amber-600 rounded text-[9px] font-semibold border border-amber-100">{gap}</span>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )}
                   </div>
                 );
               })}
+              {transcript.length === 0 && (
+                <div className="p-8 text-center text-muted-gray italic text-xs bg-white rounded-lg border border-border-gray">
+                  No transcript entries recorded for this session.
+                </div>
+              )}
             </div>
           </div>
         </div>
