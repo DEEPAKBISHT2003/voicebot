@@ -391,6 +391,7 @@ async def get_copilot_status(
             "transcript": normalized_transcript,
             "intelligence": intelligence,
             "assistance": assistance,
+            "confirmed_qa_pairs": getattr(engine, "confirmed_qa_pairs", []) if engine else sess.get("confirmed_qa_pairs", []),
             "final_report": final_rep,
             "custom_prompt": sess.get("custom_prompt", "")
         }
@@ -428,6 +429,7 @@ async def get_copilot_status(
                 "transcript": normalized_transcript,
                 "intelligence": intelligence,
                 "assistance": assistance,
+                "confirmed_qa_pairs": db_session.get("confirmed_qa_pairs", []),
                 "final_report": final_report,
                 "custom_prompt": db_session.get("custom_prompt", "")
             }

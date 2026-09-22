@@ -165,6 +165,9 @@ You must output ONLY valid JSON matching this schema. Do not output markdown cod
 
     def _get_empty_state(self) -> dict:
         return {
+            "initial_suggestions": [],
+            "dynamic_suggestions": [],
+            "scenario_questions": [],
             "suggested_follow_up_questions": [],
             "suggested_practical_questions": [],
             "missing_concepts": [],
@@ -173,3 +176,259 @@ You must output ONLY valid JSON matching this schema. Do not output markdown cod
             "interview_notes": [],
             "current_candidate_understanding": ""
         }
+
+    async def generate_initial_suggestions(
+        self,
+        jd: str = "",
+        resume: str = ""
+    ) -> List[str]:
+        """
+        Phase 2S: Generates exactly 2 initial interview question suggestions based on
+        the Job Description and Candidate Resume before conversational dialogue begins.
+        """
+        prompt = f"""You are an expert technical interviewer assistant.
+Based on the Job Description and Candidate Resume below, generate EXACTLY 2 initial interview question suggestions for the interviewer to start the interview.
+
+Input:
+- Job Description:
+{jd.strip() if jd else "N/A"}
+
+- Candidate Resume:
+{resume.strip() if resume else "N/A"}
+
+Rules:
+1. Generate EXACTLY 2 useful interview questions.
+2. Questions must be relevant to the Job Description.
+3. Questions must be informed by the candidate's Resume (projects, background, technical skills).
+4. Questions should help assess the candidate's technical depth and suitability.
+5. Avoid duplicate questions.
+6. Avoid generic filler (e.g. do NOT suggest "Can you hear me?" or "Tell me about yourself").
+7. Do not answer the questions.
+8. Output ONLY valid JSON matching this schema:
+{{
+  "initial_suggestions": [
+    "...",
+    "..."
+  ]
+}}
+"""
+        try:
+            chat_completion = await self.client.chat.completions.create(
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                model=self.model,
+                response_format={"type": "json_object"}
+            )
+            response_text = chat_completion.choices[0].message.content
+            result = clean_json_loads(response_text)
+            raw_questions = result.get("initial_suggestions", [])
+            if not isinstance(raw_questions, list):
+                raw_questions = []
+
+            # Filter valid non-empty string suggestions
+            valid_questions = [
+                str(q).strip() for q in raw_questions
+                if q and isinstance(q, str) and str(q).strip()
+            ]
+
+            # Enforce EXACTLY 2 suggestions (if > 2, keep first 2)
+            if len(valid_questions) > 2:
+                valid_questions = valid_questions[:2]
+
+            logger.info(f"[Phase2S] Generated {len(valid_questions)} initial suggestions: {valid_questions}")
+            return valid_questions
+        except Exception as e:
+            logger.error(f"[Phase2S] Error generating initial suggestions: {e}")
+            return []
+
+    async def generate_dynamic_suggestions(
+        self,
+        jd: str = "",
+        resume: str = "",
+        interviewer_question: str = "",
+        candidate_answer: str = ""
+    ) -> List[str]:
+        """
+        Phase 2T: Generates exactly 2 dynamic interview question suggestions following
+        a valid interviewer-question + candidate-answer pair:
+        - Suggestion 1: Based on JD + Resume (What else should we explore from candidate's background that is relevant to the JD?).
+        - Suggestion 2: Based on actual interviewer question + candidate answer (What is a useful follow-up drilling down into what the candidate just said?).
+        """
+        prompt = f"""You are an expert technical co-pilot assisting an interviewer in real-time.
+An interviewer just asked a question, and the candidate gave an answer.
+Generate EXACTLY 2 interview question suggestions for the interviewer's next step.
+
+Input:
+- Job Description:
+{jd.strip() if jd else "N/A"}
+
+- Candidate Resume:
+{resume.strip() if resume else "N/A"}
+
+- Preceding Interviewer Question:
+{interviewer_question.strip() if interviewer_question else "N/A"}
+
+- Candidate Answer:
+{candidate_answer.strip() if candidate_answer else "N/A"}
+
+Rules:
+1. You must generate EXACTLY 2 questions in the "suggestions" array:
+   - Suggestion 1 (JD + Resume based): A question exploring an important skill, project, or topic from the candidate's resume that is relevant to the Job Description, ensuring comprehensive coverage of the candidate's background.
+   - Suggestion 2 (Conversation follow-up based): A targeted, deep follow-up question drilling down into the specific answer the candidate just gave, probing technical accuracy, implementation trade-offs, or potential gaps.
+2. The questions must be tailored to the interviewer to ask. Do NOT answer the questions.
+3. Do NOT suggest generic questions like "Tell me more" or "What else did you do?".
+4. Return ONLY valid JSON matching this schema:
+{{
+  "suggestions": [
+    "<Suggestion 1: JD + Resume based question>",
+    "<Suggestion 2: Follow-up to candidate answer>"
+  ]
+}}
+"""
+        try:
+            chat_completion = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                response_format={"type": "json_object"}
+            )
+            response_text = chat_completion.choices[0].message.content
+            result = clean_json_loads(response_text)
+            if isinstance(result, list):
+                raw_questions = result
+            elif isinstance(result, dict):
+                raw_questions = result.get("suggestions") or result.get("dynamic_suggestions") or []
+            else:
+                raw_questions = []
+
+            if not isinstance(raw_questions, list):
+                raw_questions = []
+
+            # Filter valid non-empty string suggestions
+            valid_questions = [
+                str(q).strip() for q in raw_questions
+                if q and isinstance(q, str) and str(q).strip()
+            ]
+
+            # Enforce EXACTLY 2 suggestions
+            if len(valid_questions) > 2:
+                valid_questions = valid_questions[:2]
+            elif len(valid_questions) < 1:
+                valid_questions.append("Can you elaborate on your experience from your resume relevant to this position?")
+                valid_questions.append("Could you dive deeper into the technical implementation and trade-offs of what you just described?")
+            elif len(valid_questions) == 1:
+                valid_questions.append("Could you dive deeper into the technical implementation and trade-offs of what you just described?")
+
+            logger.info(f"[Phase2T] Generated {len(valid_questions)} dynamic suggestions: {valid_questions}")
+            return valid_questions
+        except Exception as e:
+            logger.error(f"[Phase2T] Error generating dynamic suggestions: {e}")
+            return [
+                "Can you elaborate on your experience from your resume relevant to this position?",
+                "Could you dive deeper into the technical implementation and trade-offs of what you just described?"
+            ]
+
+    async def generate_static_scenario_verification_questions(
+        self,
+        jd: str = "",
+        resume: str = ""
+    ) -> Dict[str, List[str]]:
+        """
+        Phase 2X: Generates EXACTLY 5 Scenario questions and EXACTLY 5 Verification questions
+        based purely on the Job Description and Candidate Resume.
+        
+        DO NOT pass transcript, conversation history, or any live context.
+        Validation:
+        - scenario_questions: exactly 5 valid non-empty strings
+        - verification_questions: exactly 5 valid non-empty strings
+        - If fewer than 5 valid strings for either, fail generation (return empty sets).
+        - If more than 5 valid strings, enforce first 5.
+        """
+        prompt = f"""You are an expert technical interviewer assistant.
+Based on the Job Description and Candidate Resume below, generate EXACTLY 5 Scenario questions and EXACTLY 5 Verification questions for the interview.
+
+Input:
+- Job Description:
+{jd.strip() if jd else "N/A"}
+
+- Candidate Resume:
+{resume.strip() if resume else "N/A"}
+
+Rules:
+1. Generate EXACTLY 5 Scenario questions:
+   - Practical problem-solving, real-world troubleshooting, system architecture, or hands-on implementation challenges directly relevant to the JD and candidate's claimed skills.
+2. Generate EXACTLY 5 Verification questions:
+   - Targeted technical questions that verify the authenticity, depth, tools, and project experiences claimed on the candidate's resume against the requirements of the JD.
+3. Every question must be a non-empty, actionable question for the interviewer to ask.
+4. Do NOT answer the questions.
+5. Do NOT include generic filler.
+6. Output ONLY valid JSON matching this schema:
+{{
+  "scenario_questions": [
+    "...",
+    "...",
+    "...",
+    "...",
+    "..."
+  ],
+  "verification_questions": [
+    "...",
+    "...",
+    "...",
+    "...",
+    "..."
+  ]
+}}
+"""
+        try:
+            chat_completion = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                response_format={"type": "json_object"}
+            )
+            response_text = chat_completion.choices[0].message.content
+            result = clean_json_loads(response_text)
+            if not isinstance(result, dict):
+                logger.error("[Phase2X] LLM response is not a dict")
+                return {"scenario_questions": [], "verification_questions": []}
+
+            raw_scenarios = result.get("scenario_questions", [])
+            raw_verifications = result.get("verification_questions", [])
+
+            if not isinstance(raw_scenarios, list) or not isinstance(raw_verifications, list):
+                logger.error("[Phase2X] scenario_questions or verification_questions is not a list")
+                return {"scenario_questions": [], "verification_questions": []}
+
+            valid_scenarios = [
+                str(q).strip() for q in raw_scenarios
+                if q and isinstance(q, str) and str(q).strip()
+            ]
+            valid_verifications = [
+                str(q).strip() for q in raw_verifications
+                if q and isinstance(q, str) and str(q).strip()
+            ]
+
+            # Validation: EXACTLY 5 required for both categories.
+            # 0-4 or 6+ questions in either category must be rejected completely.
+            if len(valid_scenarios) != 5 or len(valid_verifications) != 5:
+                logger.error(
+                    f"[Phase2X] Failed validation: got {len(valid_scenarios)} scenario and "
+                    f"{len(valid_verifications)} verification questions. Exactly 5 required each."
+                )
+                return {"scenario_questions": [], "verification_questions": []}
+
+            logger.info("[Phase2X] Successfully generated exactly 5 Scenario and 5 Verification questions")
+            return {
+                "scenario_questions": valid_scenarios,
+                "verification_questions": valid_verifications
+            }
+        except Exception as e:
+            logger.error(f"[Phase2X] Error generating static scenario & verification questions: {e}")
+            return {"scenario_questions": [], "verification_questions": []}
+

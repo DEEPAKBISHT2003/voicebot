@@ -57,6 +57,7 @@ export const CopilotSession: React.FC = () => {
     intelligence,
     assistance,
     questions,
+    previousAnswer,
     togglePinQuestion,
     startConnection,
     stopConnection,
@@ -625,6 +626,50 @@ export const CopilotSession: React.FC = () => {
               </div>
             </div>
           </div> */}
+
+          {/* Phase 2W: Previous Answer Accuracy Live Indicator */}
+          <div className="bg-secondary rounded-xl p-4 border border-border-gray shadow-sm space-y-3">
+            <div className="flex items-center justify-between border-b border-border-gray/50 pb-2">
+              <div className="flex items-center gap-2">
+                <Activity className="h-4 w-4 text-primary shrink-0" />
+                <span className="text-xs font-bold text-primary uppercase tracking-wider">
+                  Previous Answer Accuracy
+                </span>
+              </div>
+              {!previousAnswer && (
+                <span className="text-xs text-muted-gray italic">
+                  Waiting for completed answer...
+                </span>
+              )}
+            </div>
+
+            {previousAnswer && (
+              <div className="space-y-2 text-sm">
+                {previousAnswer.question && (
+                  <div className="flex items-start gap-2">
+                    <span className="font-bold text-primary uppercase text-xs tracking-wider shrink-0 mt-0.5">q:</span>
+                    <p className="text-primary italic">"{previousAnswer.question}"</p>
+                  </div>
+                )}
+
+                {previousAnswer.answer && (
+                  <div className="flex items-start gap-2">
+                    <span className="font-bold text-muted-gray uppercase text-xs tracking-wider shrink-0 mt-0.5">a:</span>
+                    <p className="text-muted-gray">"{previousAnswer.answer}"</p>
+                  </div>
+                )}
+
+                <div className="flex justify-end pt-1">
+                  <div className="flex items-center gap-1.5 font-bold">
+                    <span className="text-xs uppercase text-muted-gray tracking-wider">score:</span>
+                    <span className="text-base font-black text-primary px-2.5 py-0.5 rounded bg-white border border-border-gray shadow-xs">
+                      {previousAnswer.score}%
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
 
           {/* Pinned Questions Section (if any question is pinned) */}
           {(() => {

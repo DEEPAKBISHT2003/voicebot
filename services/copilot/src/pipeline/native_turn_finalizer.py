@@ -249,12 +249,19 @@ class NativeTurnAggregator:
                 dom_action=dom_action
             )
         else:
+            prev_text = self.sequences[seq_id].current_text
             self.sequences[seq_id].add_update(
                 text=raw_text,
                 detected_at=detected_at,
                 received_at=received_at,
                 dom_action=dom_action
             )
+            # Lossless Sync: When newer or changed text arrives for an existing sequence,
+            # un-finalize it from all quiescence strategies so it remains updateable
+            # and eligible to re-quiesce with the latest text snapshot.
+            if raw_text != prev_text:
+                for q_strat in self.QUIESCENCE_THRESHOLDS_MS.keys():
+                    self._finalized_seq_ids[q_strat].discard(seq_id)
 
         self._last_active_seq_id = seq_id
         self._last_speaker = raw_speaker

@@ -164,6 +164,8 @@ docs
 docss.zip
 
 # ─── Scratch & Diagnostic Test Scripts ─────────────────
+scratch_*.py
+scratch/
 scripts/capture_*
 scripts/check_*
 scripts/cleanup_*
@@ -177,3 +179,7 @@ scripts/run_full_diag.sh
 scripts/start_session.json
 scripts/test_*
 AGENTS.md
+
+# ─── Diagnostic & Phase 2 Test Suites ──────────────────
+tests/test_phase2*.py
+tests/unit/test_phase2*.py

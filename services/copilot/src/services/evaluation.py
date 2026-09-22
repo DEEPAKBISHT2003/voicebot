@@ -1,4 +1,6 @@
+import asyncio
 import json
+from typing import Optional, Dict, Any
 from openai import AsyncOpenAI
 from loguru import logger
 from services.copilot.src.core.config import Settings
@@ -98,3 +100,122 @@ You must output ONLY valid JSON matching this schema. Do not output markdown cod
             "missing_concepts": [],
             "knowledge_gaps": []
         }
+
+    async def evaluate_accuracy(
+        self,
+        question: str,
+        answer: str,
+        resume: str = ""
+    ) -> Optional[dict]:
+        """
+        Phase 2V: Evaluates a confirmed candidate answer against the interviewer's question
+        and the candidate's resume (NO JOB DESCRIPTION).
+
+        Calculates deterministic weighted accuracy score:
+            accuracy_score = round(
+                question_relevance * 0.30
+                + technical_correctness * 0.30
+                + resume_match * 0.25
+                + completeness * 0.15
+            )
+        Clamped to 0-100.
+        Returns ONLY:
+            {"accuracy_score": N}
+        or None on failure / invalid input.
+        """
+        if not question or not question.strip() or not answer or not answer.strip():
+            logger.warning("[Phase2V] evaluate_accuracy called with empty question or answer.")
+            return None
+
+        prompt = f"""You are an expert technical interview evaluator.
+
+Evaluate the candidate's answer against the interviewer's question and the candidate's resume.
+
+Do NOT use or assume any job description.
+
+Evaluate these four dimensions:
+
+1. Question Relevance — 0 to 100
+   How directly does the candidate answer the interviewer's question?
+
+2. Technical/Factual Correctness — 0 to 100
+   Are the technical concepts, facts, reasoning, terminology, and principles correct?
+
+3. Resume/Experience Match — 0 to 100
+   Is the candidate's claimed experience consistent with the candidate's resume?
+   The answer does not need to literally appear in the resume.
+   Evaluate whether the claimed experience is consistent with the documented background.
+
+4. Completeness — 0 to 100
+   Does the candidate sufficiently address the important aspects of the question?
+   Do not judge completeness simply by answer length.
+
+Interviewer Question:
+{question.strip()}
+
+Candidate Answer:
+{answer.strip()}
+
+Candidate Resume:
+{resume.strip() if resume and resume.strip() else "None provided"}
+
+Return ONLY valid JSON:
+
+{{
+    "question_relevance": 0,
+    "technical_correctness": 0,
+    "resume_match": 0,
+    "completeness": 0
+}}
+
+No explanation.
+No feedback.
+No additional fields.
+"""
+        try:
+            chat_completion = await asyncio.wait_for(
+                self.client.chat.completions.create(
+                    messages=[
+                        {"role": "user", "content": prompt}
+                    ],
+                    model=self.model,
+                    response_format={"type": "json_object"}
+                ),
+                timeout=12.0
+            )
+            response_text = chat_completion.choices[0].message.content
+            parsed = clean_json_loads(response_text)
+
+            # Verify all 4 required sub-score fields exist
+            required_keys = ["question_relevance", "technical_correctness", "resume_match", "completeness"]
+            if not all(k in parsed for k in required_keys):
+                logger.error(f"[Phase2V] Missing required sub-scores in LLM response: {parsed}")
+                return None
+
+            try:
+                relevance = max(0, min(100, int(parsed["question_relevance"])))
+                technical = max(0, min(100, int(parsed["technical_correctness"])))
+                resume_match = max(0, min(100, int(parsed["resume_match"])))
+                completeness = max(0, min(100, int(parsed["completeness"])))
+            except (ValueError, TypeError) as parse_err:
+                logger.error(f"[Phase2V] Invalid non-integer sub-scores in LLM response: {parse_err}")
+                return None
+
+            # Deterministic weighted scoring
+            accuracy_score = round(
+                relevance * 0.30
+                + technical * 0.30
+                + resume_match * 0.25
+                + completeness * 0.15
+            )
+            accuracy_score = max(0, min(100, int(accuracy_score)))
+
+            logger.info(
+                f"[Phase2V] Evaluated Q+A accuracy: {accuracy_score}% "
+                f"(relevance={relevance}, technical={technical}, resume_match={resume_match}, completeness={completeness})"
+            )
+            return {"accuracy_score": accuracy_score}
+
+        except Exception as e:
+            logger.error(f"[Phase2V] Error during evaluate_accuracy: {e}")
+            return None

@@ -30,6 +30,7 @@ export interface CopilotTranscriptEntry {
   sequence_id?: number;
   speaker: string;
   speaker_name?: string;
+  speaker_role?: 'candidate' | 'interviewer' | 'unknown' | string;
   text: string;
   timestamp: string;
   evaluation?: CopilotEvaluation;
@@ -138,6 +139,9 @@ export interface CopilotIntelligence {
 }
 
 export interface CopilotAssistance {
+  initial_suggestions?: string[];
+  dynamic_suggestions?: string[];
+  scenario_questions?: string[];
   suggested_follow_up_questions: string[];
   suggested_practical_questions: string[];
   missing_concepts: string[];
@@ -153,6 +157,12 @@ export interface CopilotQuestionItem {
   text: string;
   isPinned: boolean;
   timestamp: number;
+}
+
+export interface PreviousAnswerEvaluation {
+  score: number;
+  question: string;
+  answer: string;
 }
 
 export const useCopilotAudio = (sessionId: string | null) => {
@@ -171,6 +181,9 @@ export const useCopilotAudio = (sessionId: string | null) => {
     interview_progress: { total_skills: 0, covered_count: 0, percentage: 0 }
   });
   const [assistance, setAssistance] = useState<CopilotAssistance>({
+    initial_suggestions: [],
+    dynamic_suggestions: [],
+    scenario_questions: [],
     suggested_follow_up_questions: [],
     suggested_practical_questions: [],
     missing_concepts: [],
@@ -183,6 +196,10 @@ export const useCopilotAudio = (sessionId: string | null) => {
   // Cumulative questions state with pinning support
   const [questions, setQuestions] = useState<CopilotQuestionItem[]>([]);
 
+  // Phase 2W: Single live previous-answer accuracy score (0-100) and evaluation details
+  const [previousAnswerAccuracy, setPreviousAnswerAccuracy] = useState<number | null>(null);
+  const [previousAnswer, setPreviousAnswer] = useState<PreviousAnswerEvaluation | null>(null);
+
   const togglePinQuestion = (id: string) => {
     setQuestions((prev) =>
       prev.map((q) => (q.id === id ? { ...q, isPinned: !q.isPinned } : q))
@@ -191,18 +208,21 @@ export const useCopilotAudio = (sessionId: string | null) => {
 
   const processIncomingQuestions = (assist: CopilotAssistance) => {
     setQuestions((prev) => {
-      const existingTexts = new Set(prev.map((q) => q.text.trim().toLowerCase()));
-      const newItems: CopilotQuestionItem[] = [];
+      // 1. Follow-up questions (DYNAMIC - append new questions as they arrive)
+      const existingFollowUpTexts = new Set(
+        prev.filter((q) => q.type === 'Follow-up').map((q) => q.text.trim().toLowerCase())
+      );
+      const newFollowUps: CopilotQuestionItem[] = [];
 
-      const addItems = (list: string[] | undefined, type: 'Follow-up' | 'Verification' | 'Scenario') => {
+      const addFollowUps = (list: string[] | undefined) => {
         if (!Array.isArray(list)) return;
         list.forEach((text) => {
           const trimmed = text.trim();
-          if (trimmed && !existingTexts.has(trimmed.toLowerCase())) {
-            existingTexts.add(trimmed.toLowerCase());
-            newItems.push({
-              id: `${type}-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
-              type,
+          if (trimmed && !existingFollowUpTexts.has(trimmed.toLowerCase())) {
+            existingFollowUpTexts.add(trimmed.toLowerCase());
+            newFollowUps.push({
+              id: `Follow-up-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+              type: 'Follow-up',
               text: trimmed,
               isPinned: false,
               timestamp: Date.now()
@@ -211,12 +231,63 @@ export const useCopilotAudio = (sessionId: string | null) => {
         });
       };
 
-      addItems(assist.suggested_follow_up_questions, 'Follow-up');
-      addItems(assist.verification_questions, 'Verification');
-      addItems(assist.suggested_practical_questions, 'Scenario');
+      addFollowUps(assist.initial_suggestions);
+      addFollowUps(assist.dynamic_suggestions);
+      addFollowUps(assist.suggested_follow_up_questions);
 
-      if (newItems.length === 0) return prev;
-      return [...prev, ...newItems];
+      const currentFollowUps = [...prev.filter((q) => q.type === 'Follow-up'), ...newFollowUps];
+
+      // 2. Verification questions (STATIC - exactly 5, locked once established)
+      const existingVerifications = prev.filter((q) => q.type === 'Verification');
+      let finalVerifications = existingVerifications;
+
+      if (existingVerifications.length !== 5 && Array.isArray(assist.verification_questions)) {
+        const validVerifs = assist.verification_questions
+          .map((t) => (typeof t === 'string' ? t.trim() : ''))
+          .filter(Boolean);
+        if (validVerifs.length === 5) {
+          const pinnedMap = new Map(existingVerifications.map((q) => [q.text.toLowerCase(), q.isPinned]));
+          finalVerifications = validVerifs.map((text, idx) => ({
+            id: existingVerifications[idx]?.id || `Verification-${idx}-${Date.now()}`,
+            type: 'Verification' as const,
+            text,
+            isPinned: pinnedMap.get(text.toLowerCase()) || false,
+            timestamp: existingVerifications[idx]?.timestamp || Date.now()
+          }));
+        }
+      }
+
+      // 3. Scenario questions (STATIC - exactly 5, locked once established)
+      const existingScenarios = prev.filter((q) => q.type === 'Scenario');
+      let finalScenarios = existingScenarios;
+
+      const rawScenarios = assist.scenario_questions || assist.suggested_practical_questions;
+      if (existingScenarios.length !== 5 && Array.isArray(rawScenarios)) {
+        const validScenarios = rawScenarios
+          .map((t) => (typeof t === 'string' ? t.trim() : ''))
+          .filter(Boolean);
+        if (validScenarios.length === 5) {
+          const pinnedMap = new Map(existingScenarios.map((q) => [q.text.toLowerCase(), q.isPinned]));
+          finalScenarios = validScenarios.map((text, idx) => ({
+            id: existingScenarios[idx]?.id || `Scenario-${idx}-${Date.now()}`,
+            type: 'Scenario' as const,
+            text,
+            isPinned: pinnedMap.get(text.toLowerCase()) || false,
+            timestamp: existingScenarios[idx]?.timestamp || Date.now()
+          }));
+        }
+      }
+
+      // Check if anything changed
+      if (
+        newFollowUps.length === 0 &&
+        finalVerifications === existingVerifications &&
+        finalScenarios === existingScenarios
+      ) {
+        return prev;
+      }
+
+      return [...currentFollowUps, ...finalVerifications, ...finalScenarios];
     });
   };
 
@@ -251,6 +322,40 @@ export const useCopilotAudio = (sessionId: string | null) => {
         console.warn('[CopilotWS] Error parsing assistance JSON:', assistErr);
         setAssistance(data.assistance);
       }
+    } else if (
+      (data.dynamic_suggestions && Array.isArray(data.dynamic_suggestions)) ||
+      (data.scenario_questions && Array.isArray(data.scenario_questions)) ||
+      (data.verification_questions && Array.isArray(data.verification_questions))
+    ) {
+      processIncomingQuestions({
+        dynamic_suggestions: data.dynamic_suggestions,
+        scenario_questions: data.scenario_questions,
+        verification_questions: data.verification_questions,
+      } as any);
+    }
+
+    // Phase 2W: Hydrate latest previous answer accuracy if available from confirmed_qa_pairs
+    if (data.confirmed_qa_pairs && Array.isArray(data.confirmed_qa_pairs)) {
+      for (let i = data.confirmed_qa_pairs.length - 1; i >= 0; i--) {
+        const qa = data.confirmed_qa_pairs[i];
+        const score = qa?.accuracy_score;
+        if (typeof score === 'number' && score >= 0) {
+          setPreviousAnswerAccuracy(score);
+          setPreviousAnswer({
+            score,
+            question: qa.question || '',
+            answer: qa.answer || ''
+          });
+          break;
+        }
+      }
+    } else if (typeof data.previous_answer_accuracy === 'number') {
+      setPreviousAnswerAccuracy(data.previous_answer_accuracy);
+      setPreviousAnswer({
+        score: data.previous_answer_accuracy,
+        question: data.question || '',
+        answer: data.answer || ''
+      });
     }
   };
 
@@ -289,11 +394,22 @@ export const useCopilotAudio = (sessionId: string | null) => {
               sequence_id: data.sequence_id,
               speaker: data.speaker_name || data.speaker || 'Unknown',
               speaker_name: data.speaker_name || data.speaker,
+              speaker_role: data.speaker_role,
               text: data.text || '',
               timestamp: data.timestamp || new Date().toISOString(),
               source: data.source || 'teams_native'
             };
             setTranscript((prev) => appendSingleTurn(prev, singleTurn));
+          } else if (data.type === 'qa_evaluated') {
+            console.log('[CopilotWS] Received qa_evaluated event:', data);
+            if (typeof data.accuracy_score === 'number') {
+              setPreviousAnswerAccuracy(data.accuracy_score);
+              setPreviousAnswer({
+                score: data.accuracy_score,
+                question: data.question || '',
+                answer: data.answer || ''
+              });
+            }
           }
         } catch (err) {
           console.error('[CopilotWS] Failed to parse message frame:', err);
@@ -367,6 +483,8 @@ export const useCopilotAudio = (sessionId: string | null) => {
     intelligence,
     assistance,
     questions,
+    previousAnswer,
+    previousAnswerAccuracy,
     togglePinQuestion,
     startConnection,
     stopConnection,

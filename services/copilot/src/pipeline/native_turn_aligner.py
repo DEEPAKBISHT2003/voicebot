@@ -59,12 +59,14 @@ class LogicalTurn:
         is_candidate: Optional[bool] = None,
         raw_event_count: int = 1,
         source: str = "teams_native_logical",
-        last_received_at: Optional[datetime] = None
+        last_received_at: Optional[datetime] = None,
+        sequence_texts: Optional[Dict[int, str]] = None
     ):
         self.logical_turn_id = logical_turn_id
         self.speaker_name = speaker_name  # Preserves raw Teams display name
         self.text = text
         self.sequence_ids = list(sequence_ids)
+        self.sequence_texts = dict(sequence_texts) if sequence_texts is not None else ({sid: text for sid in self.sequence_ids} if text else {})
         self.first_seen_at = first_seen_at
         self.last_update_at = last_update_at
         self.finalized_at = finalized_at
@@ -157,13 +159,43 @@ class NativeLogicalTurnAggregator:
         if not finalized_seq.text or not finalized_seq.text.strip():
             return completed_turns
 
+        clean_seq_text = finalized_seq.text.strip()
+
+        # Lossless Sync Update Case 1: Sequence is already part of active logical turn
+        if self.active_turn is not None and finalized_seq.sequence_id in self.active_turn.sequence_ids:
+            self.active_turn.sequence_texts[finalized_seq.sequence_id] = clean_seq_text
+            self.active_turn.text = " ".join(
+                self.active_turn.sequence_texts[sid]
+                for sid in self.active_turn.sequence_ids
+                if self.active_turn.sequence_texts.get(sid)
+            ).strip()
+            self.active_turn.last_update_at = max(self.active_turn.last_update_at, finalized_seq.last_update_at)
+            self.active_turn.last_received_at = max(
+                getattr(self.active_turn, "last_received_at", ref_dt),
+                getattr(finalized_seq, "received_at", ref_dt)
+            )
+            self.active_turn.raw_event_count = max(self.active_turn.raw_event_count, finalized_seq.update_count)
+            return completed_turns
+
+        # Lossless Sync Update Case 2: Sequence belongs to an already-finalized logical turn (e.g. late Strategy B DOM removal)
+        for past_turn in reversed(self.finalized_logical_turns):
+            if finalized_seq.sequence_id in past_turn.sequence_ids:
+                past_turn.sequence_texts[finalized_seq.sequence_id] = clean_seq_text
+                past_turn.text = " ".join(
+                    past_turn.sequence_texts[sid]
+                    for sid in past_turn.sequence_ids
+                    if past_turn.sequence_texts.get(sid)
+                ).strip()
+                past_turn.last_update_at = max(past_turn.last_update_at, finalized_seq.last_update_at)
+                return [past_turn]
+
         # Check if there is an active logical turn
         if self.active_turn is None:
             is_cand = (self.candidate_speaker_name == finalized_seq.speaker_name) if self.candidate_speaker_name else None
             self.active_turn = LogicalTurn(
                 logical_turn_id=self._next_turn_id,
                 speaker_name=finalized_seq.speaker_name,
-                text=finalized_seq.text.strip(),
+                text=clean_seq_text,
                 sequence_ids=[finalized_seq.sequence_id],
                 first_seen_at=finalized_seq.first_seen_at,
                 last_update_at=finalized_seq.last_update_at,
@@ -171,7 +203,8 @@ class NativeLogicalTurnAggregator:
                 boundary_reason="pending",
                 is_candidate=is_cand,
                 raw_event_count=finalized_seq.update_count,
-                last_received_at=getattr(finalized_seq, "received_at", ref_dt)
+                last_received_at=getattr(finalized_seq, "received_at", ref_dt),
+                sequence_texts={finalized_seq.sequence_id: clean_seq_text}
             )
             return completed_turns
 
@@ -182,16 +215,14 @@ class NativeLogicalTurnAggregator:
 
             if gap_ms <= self.inactivity_threshold_ms:
                 # Natural pause within the same logical answer -> STITCH!
-                existing_text = self.active_turn.text
-                new_text = finalized_seq.text.strip()
-                if new_text.startswith(existing_text):
-                    self.active_turn.text = new_text
-                elif existing_text.startswith(new_text) or new_text in existing_text:
-                    pass
-                elif not existing_text.endswith(new_text):
-                    self.active_turn.text = f"{existing_text} {new_text}".strip()
                 if finalized_seq.sequence_id not in self.active_turn.sequence_ids:
                     self.active_turn.sequence_ids.append(finalized_seq.sequence_id)
+                self.active_turn.sequence_texts[finalized_seq.sequence_id] = clean_seq_text
+                self.active_turn.text = " ".join(
+                    self.active_turn.sequence_texts[sid]
+                    for sid in self.active_turn.sequence_ids
+                    if self.active_turn.sequence_texts.get(sid)
+                ).strip()
                 self.active_turn.last_update_at = max(self.active_turn.last_update_at, finalized_seq.last_update_at)
                 self.active_turn.last_received_at = max(getattr(self.active_turn, "last_received_at", ref_dt), getattr(finalized_seq, "received_at", ref_dt))
                 self.active_turn.raw_event_count += finalized_seq.update_count
@@ -208,7 +239,7 @@ class NativeLogicalTurnAggregator:
                 self.active_turn = LogicalTurn(
                     logical_turn_id=self._next_turn_id,
                     speaker_name=finalized_seq.speaker_name,
-                    text=finalized_seq.text.strip(),
+                    text=clean_seq_text,
                     sequence_ids=[finalized_seq.sequence_id],
                     first_seen_at=finalized_seq.first_seen_at,
                     last_update_at=finalized_seq.last_update_at,
@@ -216,7 +247,8 @@ class NativeLogicalTurnAggregator:
                     boundary_reason="pending",
                     is_candidate=is_cand,
                     raw_event_count=finalized_seq.update_count,
-                    last_received_at=getattr(finalized_seq, "received_at", ref_dt)
+                    last_received_at=getattr(finalized_seq, "received_at", ref_dt),
+                    sequence_texts={finalized_seq.sequence_id: clean_seq_text}
                 )
                 return completed_turns
 
@@ -232,7 +264,7 @@ class NativeLogicalTurnAggregator:
             self.active_turn = LogicalTurn(
                 logical_turn_id=self._next_turn_id,
                 speaker_name=finalized_seq.speaker_name,
-                text=finalized_seq.text.strip(),
+                text=clean_seq_text,
                 sequence_ids=[finalized_seq.sequence_id],
                 first_seen_at=finalized_seq.first_seen_at,
                 last_update_at=finalized_seq.last_update_at,
@@ -240,7 +272,8 @@ class NativeLogicalTurnAggregator:
                 boundary_reason="pending",
                 is_candidate=is_cand,
                 raw_event_count=finalized_seq.update_count,
-                last_received_at=getattr(finalized_seq, "received_at", ref_dt)
+                last_received_at=getattr(finalized_seq, "received_at", ref_dt),
+                sequence_texts={finalized_seq.sequence_id: clean_seq_text}
             )
             return completed_turns
 

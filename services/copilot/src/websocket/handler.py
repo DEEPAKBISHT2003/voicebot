@@ -53,6 +53,26 @@ async def websocket_endpoint(
             jd = db_session.get("jd", "")
             resume = db_session.get("resume", "")
             engine = CopilotSessionEngine(session_id, repo, db_session.get("transcript", []), jd=jd, resume=resume)
+            if db_session.get("initial_suggestions"):
+                engine.initial_suggestions = list(db_session["initial_suggestions"])
+                engine._initial_suggestions_generated = True
+                engine.assistance["initial_suggestions"] = list(db_session["initial_suggestions"])
+                if not engine.assistance.get("suggested_follow_up_questions"):
+                    engine.assistance["suggested_follow_up_questions"] = list(db_session["initial_suggestions"])
+            if db_session.get("dynamic_suggestions"):
+                engine.dynamic_suggestions = list(db_session["dynamic_suggestions"])
+                engine.assistance["dynamic_suggestions"] = list(db_session["dynamic_suggestions"])
+                engine.assistance["suggested_follow_up_questions"] = list(db_session["dynamic_suggestions"])
+            if db_session.get("scenario_questions") and db_session.get("verification_questions"):
+                sc_q = db_session["scenario_questions"]
+                ver_q = db_session["verification_questions"]
+                if len(sc_q) == 5 and len(ver_q) == 5:
+                    engine.scenario_questions = list(sc_q)
+                    engine.verification_questions = list(ver_q)
+                    engine.static_questions_generated = True
+                    engine.assistance["scenario_questions"] = list(sc_q)
+                    engine.assistance["suggested_practical_questions"] = list(sc_q)
+                    engine.assistance["verification_questions"] = list(ver_q)
             if isinstance(final_report, dict):
                 if "intelligence" in final_report and isinstance(final_report["intelligence"], dict):
                     engine.intelligence = final_report["intelligence"]
@@ -100,6 +120,26 @@ async def websocket_endpoint(
                 jd=db_session.get("jd", ""),
                 resume=db_session.get("resume", "")
             )
+            if db_session.get("initial_suggestions"):
+                sess["engine"].initial_suggestions = list(db_session["initial_suggestions"])
+                sess["engine"]._initial_suggestions_generated = True
+                sess["engine"].assistance["initial_suggestions"] = list(db_session["initial_suggestions"])
+                if not sess["engine"].assistance.get("suggested_follow_up_questions"):
+                    sess["engine"].assistance["suggested_follow_up_questions"] = list(db_session["initial_suggestions"])
+            if db_session.get("dynamic_suggestions"):
+                sess["engine"].dynamic_suggestions = list(db_session["dynamic_suggestions"])
+                sess["engine"].assistance["dynamic_suggestions"] = list(db_session["dynamic_suggestions"])
+                sess["engine"].assistance["suggested_follow_up_questions"] = list(db_session["dynamic_suggestions"])
+            if db_session.get("scenario_questions") and db_session.get("verification_questions"):
+                sc_q = db_session["scenario_questions"]
+                ver_q = db_session["verification_questions"]
+                if len(sc_q) == 5 and len(ver_q) == 5:
+                    sess["engine"].scenario_questions = list(sc_q)
+                    sess["engine"].verification_questions = list(ver_q)
+                    sess["engine"].static_questions_generated = True
+                    sess["engine"].assistance["scenario_questions"] = list(sc_q)
+                    sess["engine"].assistance["suggested_practical_questions"] = list(sc_q)
+                    sess["engine"].assistance["verification_questions"] = list(ver_q)
             sess["final_report"] = final_report
             if db_session.get("service_off", False):
                 sess["service_off"] = True
@@ -118,6 +158,8 @@ async def websocket_endpoint(
         sess["service_off"] = is_service_off
         sess["is_active"] = False
         sess["status"] = "Service Off" if is_service_off else "Session completed."
+        if sess.get("engine"):
+            sess["engine"].stop_qa_checkpoint()
         logger.info(f"[CopilotWS] Rejecting live WebSocket connection for completed session: {session_id}")
         try:
             eng = sess.get("engine")
@@ -182,6 +224,7 @@ async def websocket_endpoint(
                 "turn_id": turn_id_val,
                 "speaker": speaker_val,
                 "speaker_name": speaker_val,
+                "speaker_role": last_message.get("speaker_role", "unknown"),
                 "text": last_message.get("text", ""),
                 "timestamp": last_message.get("timestamp"),
                 "source": last_message.get("source", "teams_native")
@@ -195,13 +238,46 @@ async def websocket_endpoint(
         if dead_sockets:
             sess["dashboard_websockets"].difference_update(dead_sockets)
 
+    # Phase 2Y Patch: Helper function to broadcast qa_evaluated accuracy events to all connected dashboard clients
+    async def broadcast_qa_evaluated(qa_id: str, accuracy_score: int, question: str = "", answer: str = ""):
+        dashboards = set(sess.get("dashboard_websockets", set()))
+        if not dashboards:
+            logger.debug(f"[CopilotWS] No active dashboards to broadcast qa_evaluated for session {session_id}")
+            return
+        event_payload = {
+            "type": "qa_evaluated",
+            "session_id": session_id,
+            "qa_id": qa_id,
+            "accuracy_score": accuracy_score,
+            "question": question,
+            "answer": answer
+        }
+        dead_sockets = set()
+        for dash_ws in dashboards:
+            try:
+                await dash_ws.send_json(event_payload)
+            except Exception as ws_err:
+                logger.debug(f"[CopilotWS] Failed to broadcast qa_evaluated to dashboard client: {ws_err}")
+                dead_sockets.add(dash_ws)
+        if dead_sockets:
+            sess["dashboard_websockets"].difference_update(dead_sockets)
+
     if sess.get("engine"):
         sess["engine"].on_update_callback = broadcast_update
+        sess["engine"].on_qa_evaluated_callback = broadcast_qa_evaluated
+        # Phase 2U: Start 15-second LLM Q/A Checkpoint loop
+        sess["engine"].start_qa_checkpoint()
 
     # Audio Producer Branch (Teams Bot / Raw Audio Stream for recording.wav capture)
     if is_audio_producer:
         sess["status"] = "Listening to audio stream..."
         sess["last_speech_time"] = time.time()
+
+        # Phase 2S: Trigger initial suggestions when entering IN_MEETING (audio producer connected)
+        if sess.get("engine"):
+            asyncio.create_task(sess["engine"].generate_initial_suggestions())
+            # Phase 2X: Trigger static scenario & verification questions
+            asyncio.create_task(sess["engine"].generate_static_scenario_verification_questions())
 
         # Inactivity timeout monitor (default 15 mins / 900 seconds)
         timeout_sec = int(os.getenv("INACTIVITY_TIMEOUT_SECONDS", "900"))
@@ -308,6 +384,12 @@ async def websocket_endpoint(
         sess["native_caption_websockets"].add(websocket)
         logger.info(f"[CopilotWS] Native captions client connected (session={session_id})")
 
+        # Phase 2S: Trigger initial suggestions if not already initiated
+        if sess.get("engine"):
+            asyncio.create_task(sess["engine"].generate_initial_suggestions())
+            # Phase 2X: Trigger static scenario & verification questions
+            asyncio.create_task(sess["engine"].generate_static_scenario_verification_questions())
+
         # Native Captions Production Pipeline Components
         turn_aggregator: NativeTurnAggregator = sess.setdefault(
             "turn_aggregator",
@@ -318,6 +400,7 @@ async def websocket_endpoint(
             NativeLogicalTurnAggregator(session_id=session_id, inactivity_threshold_ms=3000.0)
         )
         dispatched_seq_ids: Set[int] = sess.setdefault("dispatched_seq_ids", set())
+        dispatched_seq_text: Dict[int, str] = sess.setdefault("dispatched_seq_text", {})
 
         session_dir = os.path.join("interviews", session_id)
         os.makedirs(session_dir, exist_ok=True)
@@ -333,38 +416,46 @@ async def websocket_endpoint(
                 return
             for strat in ("strategy_c_quiescence_800ms", "strategy_b_dom_removal"):
                 for fseq in newly_fin.get(strat, []):
-                    if fseq.sequence_id not in dispatched_seq_ids:
-                        dispatched_seq_ids.add(fseq.sequence_id)
-                        completed_turns = logical_aggregator.process_finalized_sequence(fseq)
-                        for turn in completed_turns:
-                            logger.info(f"[CopilotWS] Emitting completed turn: speaker='{turn.speaker_name}', text='{turn.text}'")
-                            last_msg = await eng.add_message(
-                                speaker=turn.speaker_name,
-                                text=turn.text,
-                                source="teams_native",
-                                allow_merge=False,
-                                turn_id=turn.logical_turn_id,
-                                is_final=True
-                            )
-                            sess["transcript"] = eng.get_transcript()
-                            sess["last_speech_time"] = time.time()
-                            await broadcast_update(last_msg)
+                    clean_text = fseq.text.strip() if fseq.text else ""
+                    if not clean_text:
+                        continue
+                    prev_text = dispatched_seq_text.get(fseq.sequence_id)
+                    if prev_text == clean_text:
+                        continue  # Identical text already processed, skip duplicate
 
-                        # Emit progressive update for active logical turn immediately (<1s display latency)
-                        if logical_aggregator.active_turn:
-                            active = logical_aggregator.active_turn
-                            logger.info(f"[CopilotWS] Emitting progressive turn: speaker='{active.speaker_name}', text='{active.text}'")
-                            last_msg = await eng.add_message(
-                                speaker=active.speaker_name,
-                                text=active.text,
-                                source="teams_native",
-                                allow_merge=False,
-                                turn_id=active.logical_turn_id,
-                                is_final=False
-                            )
-                            sess["transcript"] = eng.get_transcript()
-                            sess["last_speech_time"] = time.time()
-                            await broadcast_update(last_msg)
+                    dispatched_seq_text[fseq.sequence_id] = clean_text
+                    dispatched_seq_ids.add(fseq.sequence_id)
+
+                    completed_turns = logical_aggregator.process_finalized_sequence(fseq)
+                    for turn in completed_turns:
+                        logger.info(f"[CopilotWS] Emitting completed turn: speaker='{turn.speaker_name}', text='{turn.text}'")
+                        last_msg = await eng.add_message(
+                            speaker=turn.speaker_name,
+                            text=turn.text,
+                            source="teams_native",
+                            allow_merge=False,
+                            turn_id=turn.logical_turn_id,
+                            is_final=True
+                        )
+                        sess["transcript"] = eng.get_transcript()
+                        sess["last_speech_time"] = time.time()
+                        await broadcast_update(last_msg)
+
+                    # Emit progressive update for active logical turn immediately (<1s display latency)
+                    if logical_aggregator.active_turn:
+                        active = logical_aggregator.active_turn
+                        logger.info(f"[CopilotWS] Emitting progressive turn: speaker='{active.speaker_name}', text='{active.text}'")
+                        last_msg = await eng.add_message(
+                            speaker=active.speaker_name,
+                            text=active.text,
+                            source="teams_native",
+                            allow_merge=False,
+                            turn_id=active.logical_turn_id,
+                            is_final=False
+                        )
+                        sess["transcript"] = eng.get_transcript()
+                        sess["last_speech_time"] = time.time()
+                        await broadcast_update(last_msg)
 
         async def monitor_native_turn_inactivity():
             while True:
@@ -405,6 +496,8 @@ async def websocket_endpoint(
                 is_off = sess.get("service_off") or os.path.exists(os.path.join("interviews", session_id, "service_off.flag"))
                 if is_off or sess.get("is_active") is False or bool(sess.get("final_report")):
                     logger.info(f"[CopilotWS] Session {session_id} is inactive or Service Off. Closing native captions socket.")
+                    if sess.get("engine"):
+                        sess["engine"].stop_qa_checkpoint()
                     try:
                         await websocket.close(code=1000)
                     except Exception:
@@ -539,6 +632,8 @@ async def websocket_endpoint(
         # Send initial state frame to newly connected dashboard
         try:
             eng = sess["engine"]
+            if not getattr(eng, "static_questions_generated", False) and eng.jd and eng.resume:
+                asyncio.create_task(eng.generate_static_scenario_verification_questions())
             await websocket.send_json({
                 "type": "copilot_update",
                 "session_id": session_id,
