@@ -341,12 +341,12 @@ export const CopilotSession: React.FC = () => {
         <div className="flex items-center gap-3 self-end sm:self-auto">
           {uiMode === 'report' ? (
             <button
-              onClick={() => setUiMode('live')}
+              // onClick={() => setUiMode('live')}
               className="flex items-center gap-2 px-4 py-2 bg-white hover:bg-secondary text-primary text-xs font-bold rounded-lg border border-border-gray shadow-sm transition-all cursor-pointer"
               title="Switch to Live Console & Transcript view"
             >
-              <Mic className="h-4 w-4" />
-              Console & Logs View
+              {/* <Mic className="h-4 w-4" />
+              Console & Logs View */}
             </button>
           ) : (
             <>
@@ -400,7 +400,7 @@ export const CopilotSession: React.FC = () => {
               </button>
 
               {/* Status Indicator */}
-              {isServiceOff ? (
+              {/* {isServiceOff ? (
                 <div className="flex items-center gap-2 px-3 py-1.5 bg-red-50 rounded-lg border border-red-200 shadow-sm">
                   <span className="h-2.5 w-2.5 rounded-full bg-red-600" />
                   <span className="text-xs font-black uppercase text-red-700 tracking-wider">Service Disconnected</span>
@@ -417,9 +417,9 @@ export const CopilotSession: React.FC = () => {
                     }`} />
                   <span className="text-xs font-bold capitalize text-primary">{status === 'disconnected' ? 'On Hold' : status}</span>
                 </div>
-              )}
+              )} */}
 
-              {!isCompletedSession && !isServiceOff && (
+              {/* {!isCompletedSession && !isServiceOff && (
                 <>
                   {status === 'connected' ? (
                     <button
@@ -427,7 +427,7 @@ export const CopilotSession: React.FC = () => {
                       className="flex items-center gap-2 px-4 py-2 bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold rounded-lg border border-red-200 transition-colors"
                     >
                       <Power className="h-3.5 w-3.5" />
-                      Disconnect
+                      Disconnected
                     </button>
                   ) : (
                     <button
@@ -440,7 +440,7 @@ export const CopilotSession: React.FC = () => {
                     </button>
                   )}
                 </>
-              )}
+              )} */}
 
               {/* Dedicated SERVICE OFF / Disconnect Button */}
               <button
@@ -665,7 +665,7 @@ export const CopilotSession: React.FC = () => {
                   </h3>
                   <div className="flex-1 overflow-y-auto space-y-2.5 max-h-[350px] pr-1">
                     {status !== 'connected' ? (
-                      <p className="text-xs text-muted-gray text-center py-8">Offline</p>
+                      <p className="text-xs text-muted-gray text-center py-8">Disconnected</p>
                     ) : list.length === 0 ? (
                       <div className="h-full flex items-center justify-center text-center text-muted-gray py-8">
                         <p className="text-xs italic">No follow-up questions yet.</p>
@@ -717,7 +717,7 @@ export const CopilotSession: React.FC = () => {
                   </h3>
                   <div className="flex-1 overflow-y-auto space-y-2.5 max-h-[350px] pr-1">
                     {status !== 'connected' ? (
-                      <p className="text-xs text-muted-gray text-center py-8">Offline</p>
+                      <p className="text-xs text-muted-gray text-center py-8">Disconnected</p>
                     ) : list.length === 0 ? (
                       <div className="h-full flex items-center justify-center text-center text-muted-gray py-8">
                         <p className="text-xs italic">No verification questions yet.</p>
@@ -769,7 +769,7 @@ export const CopilotSession: React.FC = () => {
                   </h3>
                   <div className="flex-1 overflow-y-auto space-y-2.5 max-h-[350px] pr-1">
                     {status !== 'connected' ? (
-                      <p className="text-xs text-muted-gray text-center py-8">Offline</p>
+                      <p className="text-xs text-muted-gray text-center py-8">Disconnected</p>
                     ) : list.length === 0 ? (
                       <div className="h-full flex items-center justify-center text-center text-muted-gray py-8">
                         <p className="text-xs italic">No scenario questions yet.</p>
@@ -1032,9 +1032,9 @@ export const CopilotSession: React.FC = () => {
                     : 'Insufficient Evidence'}
                 </span>
               </div>
-              <span className="text-xs text-muted-gray font-medium">
+              {/* <span className="text-xs text-muted-gray font-medium">
                 {finalReport?.scoring_formula || '70% Q&A Accuracy + 30% Holistic Competency'}
-              </span>
+              </span> */}
             </div>
 
             {/* Card 2: Q&A Accuracy */}
@@ -1049,9 +1049,9 @@ export const CopilotSession: React.FC = () => {
                     : 'N/A'}
                 </span>
               </div>
-              <span className="text-xs text-muted-gray font-medium">
+              {/* <span className="text-xs text-muted-gray font-medium">
                 Arithmetic mean of {finalReport?.qa_evaluated_count ?? (finalReport?.question_analysis?.filter(q => typeof q.accuracy_score === 'number').length || 0)} evaluated Q&A pairs
-              </span>
+              </span> */}
             </div>
 
             {/* Card 3: Holistic Competency */}
@@ -1066,14 +1066,14 @@ export const CopilotSession: React.FC = () => {
                     : 'N/A'}
                 </span>
               </div>
-              <span className="text-xs text-muted-gray font-medium">
+              {/* <span className="text-xs text-muted-gray font-medium">
                 Synthesized across 4 core competency vectors
-              </span>
+              </span> */}
             </div>
           </div>
 
           {/* Neutral Hiring Decision Card */}
-          <div className="bg-secondary rounded-xl p-5 border border-border-gray shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          {/* <div className="bg-secondary rounded-xl p-5 border border-border-gray shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <span className="text-[10px] font-bold text-muted-gray uppercase tracking-wider block mb-1">
                 Hiring Recommendation
@@ -1085,7 +1085,7 @@ export const CopilotSession: React.FC = () => {
             <p className="text-xs text-muted-gray leading-relaxed font-medium max-w-xl">
               Awaiting organizational evaluation criteria configuration. No hiring decision is inferred from the candidate's scores.
             </p>
-          </div>
+          </div> */}
 
           {/* Core Competency Dimensions Scorecard */}
           <div className="bg-secondary rounded-xl p-6 border border-border-gray shadow-sm space-y-4">
