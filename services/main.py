@@ -106,10 +106,22 @@ async def ensure_copilot_schema():
     try:
         from tortoise import Tortoise
         conn = Tortoise.get_connection("default")
-        await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS final_report JSONB;")
-        logger.info("[DB] Verified copilot_sessions schema (final_report column present)")
+        dialect = getattr(conn.capabilities, "dialect", "")
+        if dialect == "sqlite":
+            _, rows = await conn.execute_query("PRAGMA table_info(copilot_sessions);")
+            if rows:
+                cols = [r["name"] for r in rows]
+                if "final_report" not in cols:
+                    await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN final_report JSON;")
+                    logger.info("[DB] Added final_report column to copilot_sessions (SQLite)")
+                else:
+                    logger.info("[DB] Verified copilot_sessions schema (final_report column present in SQLite)")
+        else:
+            await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS final_report JSONB;")
+            logger.info("[DB] Verified copilot_sessions schema (final_report column present)")
     except Exception as e:
         logger.warning(f"[DB] Schema migration check notice: {e}")
+
 
 
 @app.get("/health")

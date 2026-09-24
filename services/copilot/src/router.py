@@ -35,6 +35,10 @@ async def start_copilot(
         
         # Track session in active memory
         engine = CopilotSessionEngine(session_id, repo, [], jd=req.jd, resume=req.resume, custom_prompt=req.custom_prompt)
+        
+        # Phase 1: Pre-compile profile in background during initialization
+        asyncio.create_task(engine.precompile())
+
         active_sessions[session_id] = {
             "engine": engine,
             "status": "Connecting to audio stream...",

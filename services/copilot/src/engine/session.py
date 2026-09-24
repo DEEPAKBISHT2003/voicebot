@@ -12,8 +12,17 @@ from services.copilot.src.services.evaluation import CandidateEvaluationService
 from services.copilot.src.engine.intelligence import ConversationIntelligenceEngine
 from services.copilot.src.engine.copilot import AICopilotEngine
 from services.copilot.src.services.role_identifier import ConversationalRoleIdentifier
+from services.copilot.src.services.deterministic_role_classifier import DeterministicRoleClassifier
 from services.copilot.src.services.final_evaluation import FinalEvaluationService
 from services.copilot.src.services.final_score import calculate_final_score
+from services.copilot.src.services.precompiler import SessionPreCompiler, CompactProfile
+from services.copilot.src.services.qa_state_machine import QAStateMachine, QAState, qa_fsm_metrics, get_qa_fsm_metrics
+from services.copilot.src.services.unified_qa_worker import UnifiedQAWorker, compute_parity_metrics, unified_qa_production_metrics
+from services.copilot.src.services.final_evaluation_comparator import (
+    FinalEvaluationComparator,
+    optimized_final_eval_production_metrics,
+    get_optimized_final_eval_production_metrics
+)
 
 
 def clean_json_loads(text: str) -> dict:
@@ -47,8 +56,11 @@ class CopilotSessionEngine:
         self.custom_prompt = custom_prompt
         self.detected_speakers: Set[str] = set()
         self.session_speaker_roles: Dict[str, str] = {}
-        self.role_identifier = ConversationalRoleIdentifier()
+        self.role_identifier = DeterministicRoleClassifier()
         self._role_identification_in_progress: bool = False
+        # Incident INC-2026-0924-02: Turn buffering and deterministic role resolution
+        self._unresolved_role_buffer: List[Dict[str, Any]] = []
+        self._role_resolution_lock = asyncio.Lock()
         
         # Normalize and map transcript entries for backward-compatibility with interview role keys
         self.transcript: List[Dict[str, Any]] = []
@@ -130,6 +142,14 @@ class CopilotSessionEngine:
         self.client = AsyncOpenAI(api_key=Settings.DEEPSEEK_API_KEY, base_url=Settings.DEEPSEEK_BASE_URL)
         self.model = Settings.DEEPSEEK_MODEL
 
+        # Phase 3: Event-Driven QA State Machine
+        self.enable_qa_fsm: bool = getattr(Settings, "ENABLE_QA_FSM", True)
+        self.qa_fsm = QAStateMachine(
+            session_id=str(self.session_id),
+            silence_threshold=getattr(Settings, "QA_FSM_SILENCE_THRESHOLD", 3.0),
+            on_qa_completed=self._handle_fsm_completed_qa
+        )
+
         # Phase 2V: Answer Accuracy Evaluation State
         self.evaluated_qa_ids: Set[str] = set()
         self.active_evaluation_tasks: Dict[str, asyncio.Task] = {}
@@ -139,6 +159,20 @@ class CopilotSessionEngine:
         self._finalization_lock = asyncio.Lock()
         self.final_report: Optional[Dict[str, Any]] = None
         self.is_finalized: bool = False
+
+        # Phase 4A & 4B: UnifiedQAWorker Production & Shadow State
+        self.enable_unified_qa: bool = getattr(Settings, "ENABLE_UNIFIED_QA_WORKER", True)
+        self.enable_legacy_fallback: bool = getattr(Settings, "ENABLE_LEGACY_FALLBACK", True)
+        self.enable_unified_qa_shadow: bool = getattr(Settings, "ENABLE_UNIFIED_QA_WORKER_SHADOW", True)
+        self.unified_qa_worker = UnifiedQAWorker(client=self.client, model=self.model)
+        self.shadow_qa_comparisons: List[Dict[str, Any]] = []
+
+        # Phase 5A & 5B: Final Evaluation Production & Shadow State
+        self.enable_final_eval_shadow: bool = getattr(Settings, "ENABLE_FINAL_EVAL_SHADOW", True)
+        self.enable_optimized_final_eval: bool = getattr(Settings, "ENABLE_OPTIMIZED_FINAL_EVAL", True)
+        self.enable_legacy_final_eval_fallback: bool = getattr(Settings, "ENABLE_LEGACY_FINAL_EVAL_FALLBACK", True)
+        self.final_evaluation_comparator = FinalEvaluationComparator(client=self.client, model=self.model)
+        self.final_eval_shadow_comparisons: List[Dict[str, Any]] = []
 
         # Restore persisted confirmed_qa_pairs from disk cache if not passed directly
         if not self.confirmed_qa_pairs:
@@ -190,6 +224,113 @@ class CopilotSessionEngine:
                 except Exception:
                     pass
 
+        # Phase 1: Pre-compiled Session Profile State
+        self.compact_profile: Optional[CompactProfile] = None
+        self._precompile_lock = asyncio.Lock()
+
+        # Restore persisted compact_profile from disk cache if present
+        for target_dir in [os.path.join("interviews", str(self.session_id)), os.path.join(getattr(self.repo, "directory", "copilots"), str(self.session_id))]:
+            p = os.path.join(target_dir, "compact_profile.json")
+            if os.path.exists(p):
+                try:
+                    with open(p, "r", encoding="utf-8") as pf:
+                        cp_data = json.load(pf)
+                        self.compact_profile = CompactProfile(**cp_data)
+                        if len(self.compact_profile.initial_questions) >= 2 and not self.initial_suggestions:
+                            self.initial_suggestions = list(self.compact_profile.initial_questions[:2])
+                            self._initial_suggestions_generated = True
+                            self.assistance["initial_suggestions"] = list(self.initial_suggestions)
+                            if not self.assistance.get("suggested_follow_up_questions"):
+                                self.assistance["suggested_follow_up_questions"] = list(self.initial_suggestions)
+                        if len(self.compact_profile.scenario_questions) == 5 and not self.scenario_questions:
+                            self.scenario_questions = list(self.compact_profile.scenario_questions)
+                            self.assistance["scenario_questions"] = list(self.scenario_questions)
+                            self.assistance["suggested_practical_questions"] = list(self.scenario_questions)
+                        if len(self.compact_profile.verification_questions) == 5 and not self.verification_questions:
+                            self.verification_questions = list(self.compact_profile.verification_questions)
+                            self.assistance["verification_questions"] = list(self.verification_questions)
+                        if self.scenario_questions and self.verification_questions:
+                            self.static_questions_generated = True
+                        self.assistance["compact_profile"] = self.compact_profile.to_dict()
+                        break
+                except Exception as cp_err:
+                    logger.debug(f"[SessionEngine] Error reading compact_profile.json: {cp_err}")
+
+
+
+    def _are_roles_resolved(self) -> bool:
+        """
+        Checks if detected human speakers have resolved roles ('candidate' or 'interviewer').
+        Returns True if every detected human speaker has a confident role assigned.
+        """
+        human_speakers = [s for s in self.detected_speakers if s and s != "System"]
+        if not human_speakers:
+            return False
+        return all(self.session_speaker_roles.get(s) in ("candidate", "interviewer") for s in human_speakers)
+
+    async def _resolve_initial_roles(self) -> bool:
+        """
+        Attempts synchronous deterministic role resolution before feeding turns to QA FSM.
+        Returns True if roles are fully resolved.
+        """
+        human_speakers = sorted([s for s in self.detected_speakers if s and s != "System"])
+        if not human_speakers:
+            return False
+
+        async with self._role_resolution_lock:
+            if self._are_roles_resolved():
+                return True
+
+            try:
+                res = await self.role_identifier.identify_roles(
+                    transcript=self.transcript,
+                    participants=human_speakers,
+                    jd=self.jd,
+                    resume=self.resume,
+                    compact_profile=self.compact_profile
+                )
+                speakers_info = res.get("speakers", {})
+                newly_resolved = False
+                for spk, info in speakers_info.items():
+                    r = info.get("role")
+                    conf = info.get("confidence", 0.0)
+                    if r in ("candidate", "interviewer") and conf >= DeterministicRoleClassifier.CONFIDENCE_THRESHOLD:
+                        if self.session_speaker_roles.get(spk) != r:
+                            self.session_speaker_roles[spk] = r
+                            newly_resolved = True
+
+                if newly_resolved:
+                    # Backfill speaker_role in transcript turns
+                    for t in self.transcript:
+                        spk = t.get("speaker")
+                        if spk in self.session_speaker_roles:
+                            t["speaker_role"] = self.session_speaker_roles[spk]
+
+                return self._are_roles_resolved()
+            except Exception as err:
+                logger.error(f"[RoleResolution] Error during synchronous initial role resolution: {err}")
+            return False
+
+    async def _flush_unresolved_buffer(self) -> None:
+        """
+        Flushes buffered early turns into the QA FSM with updated roles.
+        Guarantees that no early turn is permanently discarded.
+        """
+        if not self._unresolved_role_buffer:
+            return
+
+        buffered = list(self._unresolved_role_buffer)
+        self._unresolved_role_buffer.clear()
+
+        for b_turn in buffered:
+            spk = b_turn.get("speaker")
+            if spk in self.session_speaker_roles:
+                b_turn["speaker_role"] = self.session_speaker_roles[spk]
+            if self.enable_qa_fsm and self.qa_fsm:
+                try:
+                    await self.qa_fsm.on_turn(b_turn)
+                except Exception as fsm_err:
+                    logger.error(f"[QA_FSM] Error replaying buffered turn {b_turn.get('turn_id')}: {fsm_err}")
 
     def should_identify_roles(self) -> bool:
         """
@@ -236,14 +377,15 @@ class CopilotSessionEngine:
                         transcript=self.transcript,
                         participants=human_speakers,
                         jd=self.jd,
-                        resume=self.resume
+                        resume=self.resume,
+                        compact_profile=self.compact_profile
                     )
                     speakers_map = role_result.get("speakers", {})
                     newly_resolved = False
                     for spk, info in speakers_map.items():
                         r = info.get("role", "unknown")
                         conf = info.get("confidence", 0.0)
-                        if r in ("candidate", "interviewer") and conf >= ConversationalRoleIdentifier.CONFIDENCE_THRESHOLD:
+                        if r in ("candidate", "interviewer") and conf >= DeterministicRoleClassifier.CONFIDENCE_THRESHOLD:
                             if self.session_speaker_roles.get(spk) != r:
                                 self.session_speaker_roles[spk] = r
                                 newly_resolved = True
@@ -261,6 +403,9 @@ class CopilotSessionEngine:
                         curr_spk = message.get("speaker")
                         if curr_spk in self.session_speaker_roles:
                             message["speaker_role"] = self.session_speaker_roles[curr_spk]
+
+                        # Flush any buffered turns with newly resolved roles
+                        await self._flush_unresolved_buffer()
 
                         # Phase 2U: Disconnected legacy Q/A trigger from role resolution.
                         # The 15-second checkpoint handles completed-Q/A detection semantically.
@@ -282,6 +427,13 @@ class CopilotSessionEngine:
 
             if websocket:
                 self.active_websocket = websocket
+
+            # Phase 4B: When UnifiedQAWorker is active, per-turn intelligence & copilot assistance LLMs
+            # are completely bypassed because UnifiedQAWorker produces comprehensive intelligence, assistance,
+            # and dynamic suggestions upon Q/A completion.
+            if self.enable_unified_qa:
+                logger.debug(f"[Phase4B] Bypassing per-turn intelligence & assistance LLM calls for session {self.session_id}")
+                return
 
             # Phase 2V: Disconnected candidate evaluation from raw candidate turns.
             # Raw candidate turns, fragments, or silence NO LONGER trigger evaluation.
@@ -463,10 +615,27 @@ class CopilotSessionEngine:
                 except Exception as save_err:
                     logger.debug(f"Immediate transcript save warning: {save_err}")
 
+                # Synchronous Initial Role Resolution with updated transcript
+                if not self._are_roles_resolved():
+                    await self._resolve_initial_roles()
+                    speaker_role = self.session_speaker_roles.get(speaker, "unknown")
+                    last_entry["speaker_role"] = speaker_role
+
                 if is_final:
                     bg_task = asyncio.create_task(self._update_all_background_llm_tasks(last_entry, last_q, websocket))
                     self.background_tasks.add(bg_task)
                     bg_task.add_done_callback(self.background_tasks.discard)
+
+                    if self.enable_qa_fsm and self.qa_fsm:
+                        if self._are_roles_resolved():
+                            await self._flush_unresolved_buffer()
+                            try:
+                                await self.qa_fsm.on_turn(last_entry)
+                            except Exception as fsm_err:
+                                logger.error(f"[QA_FSM] Error processing turn: {fsm_err}")
+                        else:
+                            if last_entry not in self._unresolved_role_buffer:
+                                self._unresolved_role_buffer.append(last_entry)
                 return last_entry
 
         # Retrieve the last interviewer question from transcript history
@@ -490,11 +659,28 @@ class CopilotSessionEngine:
                     await self.repo.save_session(self.session_id, {"transcript": self.transcript})
                 except Exception as save_err:
                     logger.debug(f"Immediate transcript save warning: {save_err}")
+                # Synchronous Initial Role Resolution with updated transcript
+                if not self._are_roles_resolved():
+                    await self._resolve_initial_roles()
+                    speaker_role = self.session_speaker_roles.get(speaker, "unknown")
+                    msg["speaker_role"] = speaker_role
+
                 if is_final and not msg.get("_llm_evaluated"):
                     msg["_llm_evaluated"] = True
                     bg_task = asyncio.create_task(self._update_all_background_llm_tasks(msg, last_question, websocket))
                     self.background_tasks.add(bg_task)
                     bg_task.add_done_callback(self.background_tasks.discard)
+
+                    if self.enable_qa_fsm and self.qa_fsm:
+                        if self._are_roles_resolved():
+                            await self._flush_unresolved_buffer()
+                            try:
+                                await self.qa_fsm.on_turn(msg)
+                            except Exception as fsm_err:
+                                logger.error(f"[QA_FSM] Error processing turn: {fsm_err}")
+                        else:
+                            if msg not in self._unresolved_role_buffer:
+                                self._unresolved_role_buffer.append(msg)
                 return msg
 
         message = {
@@ -515,12 +701,28 @@ class CopilotSessionEngine:
         except Exception as save_err:
             logger.debug(f"Immediate transcript save warning: {save_err}")
 
+        # Synchronous Initial Role Resolution with newly appended turn in transcript
+        if not self._are_roles_resolved():
+            await self._resolve_initial_roles()
+            speaker_role = self.session_speaker_roles.get(speaker, "unknown")
+            message["speaker_role"] = speaker_role
+
         # Trigger concurrent background processing (non-blocking, <5ms return)
         if is_final:
             message["_llm_evaluated"] = True
             bg_task = asyncio.create_task(self._update_all_background_llm_tasks(message, last_question, websocket))
             self.background_tasks.add(bg_task)
             bg_task.add_done_callback(self.background_tasks.discard)
+
+            if self.enable_qa_fsm and self.qa_fsm:
+                if self._are_roles_resolved():
+                    await self._flush_unresolved_buffer()
+                    try:
+                        await self.qa_fsm.on_turn(message)
+                    except Exception as fsm_err:
+                        logger.error(f"[QA_FSM] Error processing turn: {fsm_err}")
+                else:
+                    self._unresolved_role_buffer.append(message)
 
         return message
 
@@ -562,13 +764,91 @@ class CopilotSessionEngine:
         """Returns the exactly 5 static verification questions generated once per session."""
         return self.verification_questions
 
+    async def precompile(self) -> CompactProfile:
+        """
+        Phase 1: Pre-compiles JD and Resume into a CompactProfile.
+        Generates initial suggestions, scenario questions, and verification questions in 
+        a SINGLE consolidated LLM call, persisting artifacts to disk and repository.
+        """
+        if self.compact_profile is not None:
+            return self.compact_profile
+
+        async with self._precompile_lock:
+            if self.compact_profile is not None:
+                return self.compact_profile
+
+            # Check if compact_profile is already on disk
+            for target_dir in [os.path.join("interviews", str(self.session_id)), os.path.join(getattr(self.repo, "directory", "copilots"), str(self.session_id))]:
+                p = os.path.join(target_dir, "compact_profile.json")
+                if os.path.exists(p):
+                    try:
+                        with open(p, "r", encoding="utf-8") as pf:
+                            cp_data = json.load(pf)
+                            loaded = CompactProfile(**cp_data)
+                            if (
+                                len(loaded.initial_questions) >= 2
+                                and len(loaded.scenario_questions) == 5
+                                and len(loaded.verification_questions) == 5
+                            ):
+                                self.compact_profile = loaded
+                                break
+                    except Exception:
+                        pass
+
+            if self.compact_profile is None:
+                target_storage = getattr(self.repo, "directory", Settings.DEFAULT_STORAGE_DIR)
+                precompiler = SessionPreCompiler(client=self.client, model=self.model)
+                profile = await precompiler.compile_session(
+                    session_id=str(self.session_id),
+                    jd=self.jd,
+                    resume=self.resume,
+                    storage_dir=target_storage
+                )
+                self.compact_profile = profile
+
+            # Populate in-memory structures from compact profile
+            if len(self.compact_profile.initial_questions) >= 2:
+                self.initial_suggestions = list(self.compact_profile.initial_questions[:2])
+                self._initial_suggestions_generated = True
+                self.assistance["initial_suggestions"] = list(self.initial_suggestions)
+                if not self.assistance.get("suggested_follow_up_questions"):
+                    self.assistance["suggested_follow_up_questions"] = list(self.initial_suggestions)
+
+            if (
+                len(self.compact_profile.scenario_questions) == 5
+                and len(self.compact_profile.verification_questions) == 5
+            ):
+                self.scenario_questions = list(self.compact_profile.scenario_questions)
+                self.verification_questions = list(self.compact_profile.verification_questions)
+                self.static_questions_generated = True
+                self.assistance["scenario_questions"] = list(self.scenario_questions)
+                self.assistance["suggested_practical_questions"] = list(self.scenario_questions)
+                self.assistance["verification_questions"] = list(self.verification_questions)
+
+            self.assistance["compact_profile"] = self.compact_profile.to_dict()
+
+            # Save session update to repository
+            try:
+                await self.repo.save_session(str(self.session_id), {
+                    "compact_profile": self.compact_profile.to_dict(),
+                    "initial_suggestions": self.initial_suggestions,
+                    "scenario_questions": self.scenario_questions,
+                    "verification_questions": self.verification_questions,
+                    "assistance": self.assistance
+                })
+            except Exception as repo_err:
+                logger.warning(f"[PreCompiler] Failed saving precompiled profile to repository: {repo_err}")
+
+            return self.compact_profile
+
     async def generate_initial_suggestions(self) -> List[str]:
         """
-        Phase 2S: Generates exactly 2 initial interview question suggestions based on
+        Phase 2S / Phase 1: Generates exactly 2 initial interview question suggestions based on
         JD and Resume when the session enters active/IN_MEETING state.
         
         Guarantees:
         - Runs ONCE per session (generation_count = 1).
+        - Consolidated with static questions via SessionPreCompiler (1 LLM call total).
         - Checked against existing cache & persistence before calling LLM.
         - Exactly 2 suggestions returned.
         - Persisted to disk and database.
@@ -590,7 +870,7 @@ class CopilotSessionEngine:
             logger.info(f"[Phase2S] Session {self.session_id} is Service Off; skipping suggestion generation.")
             return self.initial_suggestions
 
-        session_dir = os.path.join("interviews", self.session_id)
+        session_dir = os.path.join("interviews", str(self.session_id))
         if os.path.exists(os.path.join(session_dir, "service_off.flag")):
             logger.info(f"[Phase2S] Service Off flag detected for session {self.session_id}; skipping suggestion generation.")
             return self.initial_suggestions
@@ -613,55 +893,22 @@ class CopilotSessionEngine:
             except Exception as load_err:
                 logger.warning(f"[Phase2S] Error loading persisted initial suggestions: {load_err}")
 
-        # Execute single LLM generation
+        # Execute consolidated pre-compilation (Phase 1)
         self._initial_suggestions_in_progress = True
         try:
             self.initial_suggestions_generation_count += 1
             logger.info(
-                f"[Phase2S] Generating initial suggestions for session {self.session_id} "
-                f"(count={self.initial_suggestions_generation_count}) with JD ({len(self.jd)} chars) & Resume ({len(self.resume)} chars)..."
+                f"[Phase1/Phase2S] Pre-compiling session for initial suggestions {self.session_id} "
+                f"(count={self.initial_suggestions_generation_count})..."
             )
-            suggestions = await self.copilot_assistant.generate_initial_suggestions(
-                jd=self.jd,
-                resume=self.resume
-            )
-
-            # Slicing / validation: exactly 2 suggestions
-            if len(suggestions) > 2:
-                suggestions = suggestions[:2]
-
-            self.initial_suggestions = suggestions
-            self._initial_suggestions_generated = True
-
-            # Populate in assistance structure
-            self.assistance["initial_suggestions"] = list(suggestions)
-            if not self.assistance.get("suggested_follow_up_questions"):
-                self.assistance["suggested_follow_up_questions"] = list(suggestions)
-
-            # Persist to disk and repository
-            try:
-                os.makedirs(session_dir, exist_ok=True)
-                with open(persisted_file, "w", encoding="utf-8") as pf:
-                    json.dump({
-                        "session_id": self.session_id,
-                        "initial_suggestions": self.initial_suggestions,
-                        "generation_count": self.initial_suggestions_generation_count,
-                        "generated_at": datetime.datetime.now().isoformat()
-                    }, pf, indent=2)
-            except Exception as disk_err:
-                logger.warning(f"[Phase2S] Failed writing initial_suggestions.json: {disk_err}")
-
-            try:
-                await self.repo.save_session(self.session_id, {
-                    "initial_suggestions": self.initial_suggestions,
-                    "assistance": self.assistance
-                })
-            except Exception as repo_err:
-                logger.warning(f"[Phase2S] Failed updating repo with initial suggestions: {repo_err}")
+            profile = await self.precompile()
+            if profile and profile.initial_questions:
+                self.initial_suggestions = profile.initial_questions[:2]
+                self._initial_suggestions_generated = True
 
             logger.info(
-                f"[Phase2S] Successfully finalized initial suggestions for session {self.session_id}: "
-                f"{self.initial_suggestions} (generation_count={self.initial_suggestions_generation_count})"
+                f"[Phase1/Phase2S] Successfully finalized initial suggestions for session {self.session_id}: "
+                f"{self.initial_suggestions}"
             )
 
             # Broadcast updated state to all connected dashboards
@@ -683,11 +930,12 @@ class CopilotSessionEngine:
 
     async def generate_static_scenario_verification_questions(self) -> Dict[str, List[str]]:
         """
-        Phase 2X: Generates exactly 5 Scenario questions and exactly 5 Verification questions
+        Phase 2X / Phase 1: Generates exactly 5 Scenario questions and exactly 5 Verification questions
         based purely on the Job Description and Candidate Resume.
         
         Guarantees:
         - Generated ONCE per session (static_questions_generation_count = 1).
+        - Consolidated with initial suggestions via SessionPreCompiler (1 LLM call total).
         - Checked against in-memory lock, existing cache & persistence before calling LLM.
         - Uses ONLY JD and Resume (no transcript or conversation history).
         - Exactly 5 Scenario + exactly 5 Verification questions locked.
@@ -744,67 +992,27 @@ class CopilotSessionEngine:
             except Exception as load_err:
                 logger.warning(f"[Phase2X] Error loading persisted static questions: {load_err}")
 
-        # Execute single LLM generation using ONLY JD and Resume
+        # Execute consolidated pre-compilation (Phase 1)
         self._static_questions_in_progress = True
         try:
             self.static_questions_generation_count += 1
             logger.info(
-                f"[Phase2X] Generating static scenario & verification questions for session {self.session_id} "
-                f"(count={self.static_questions_generation_count}) using ONLY JD ({len(self.jd)} chars) & Resume ({len(self.resume)} chars)..."
+                f"[Phase1/Phase2X] Pre-compiling session for static questions {self.session_id} "
+                f"(count={self.static_questions_generation_count})..."
             )
-            result = await self.copilot_assistant.generate_static_scenario_verification_questions(
-                jd=self.jd,
-                resume=self.resume
-            )
-            sc_q = result.get("scenario_questions", [])
-            ver_q = result.get("verification_questions", [])
-
-            # Validation: exactly 5 for both categories required
-            if len(sc_q) != 5 or len(ver_q) != 5:
-                logger.error(
-                    f"[Phase2X] Static question generation failed validation: received {len(sc_q)} scenario and {len(ver_q)} verification questions. "
-                    f"Must be exactly 5 each. Generation will not be marked successful."
-                )
-                return {
-                    "scenario_questions": [],
-                    "verification_questions": []
-                }
-
-            self.scenario_questions = list(sc_q)
-            self.verification_questions = list(ver_q)
-            self.static_questions_generated = True
-
-            # Populate in assistance structure and lock
-            self.assistance["scenario_questions"] = list(self.scenario_questions)
-            self.assistance["suggested_practical_questions"] = list(self.scenario_questions)
-            self.assistance["verification_questions"] = list(self.verification_questions)
-
-            # Persist to disk and repository
-            try:
-                os.makedirs(session_dir, exist_ok=True)
-                with open(persisted_file, "w", encoding="utf-8") as pf:
-                    json.dump({
-                        "session_id": str(self.session_id),
-                        "scenario_questions": self.scenario_questions,
-                        "verification_questions": self.verification_questions,
-                        "generation_count": self.static_questions_generation_count,
-                        "generated_at": datetime.datetime.now().isoformat()
-                    }, pf, indent=2)
-            except Exception as disk_err:
-                logger.warning(f"[Phase2X] Failed writing static_questions.json: {disk_err}")
-
-            try:
-                await self.repo.save_session(self.session_id, {
-                    "scenario_questions": self.scenario_questions,
-                    "verification_questions": self.verification_questions,
-                    "assistance": self.assistance
-                })
-            except Exception as repo_err:
-                logger.warning(f"[Phase2X] Failed updating repo with static questions: {repo_err}")
+            profile = await self.precompile()
+            if profile:
+                self.scenario_questions = list(profile.scenario_questions[:5])
+                self.verification_questions = list(profile.verification_questions[:5])
+                if len(self.scenario_questions) == 5 and len(self.verification_questions) == 5:
+                    self.static_questions_generated = True
+                    self.assistance["scenario_questions"] = list(self.scenario_questions)
+                    self.assistance["suggested_practical_questions"] = list(self.scenario_questions)
+                    self.assistance["verification_questions"] = list(self.verification_questions)
 
             logger.info(
-                f"[Phase2X] Successfully finalized static questions for session {self.session_id}: "
-                f"5 scenario, 5 verification (generation_count={self.static_questions_generation_count})"
+                f"[Phase1/Phase2X] Successfully finalized static questions for session {self.session_id}: "
+                f"5 scenario, 5 verification"
             )
 
             # Broadcast updated state to all connected dashboards
@@ -824,8 +1032,8 @@ class CopilotSessionEngine:
         except Exception as gen_err:
             logger.error(f"[Phase2X] Unexpected error generating static questions: {gen_err}")
             return {
-                "scenario_questions": [],
-                "verification_questions": []
+                "scenario_questions": list(self.scenario_questions),
+                "verification_questions": list(self.verification_questions)
             }
         finally:
             self._static_questions_in_progress = False
@@ -1022,17 +1230,107 @@ class CopilotSessionEngine:
     # Phase 2U: 15-Second LLM Q/A Checkpoint Engine
     # -------------------------------------------------------------
 
+    async def _handle_fsm_completed_qa(self, confirmed_qa_record: Dict[str, Any], websocket: Any = None) -> None:
+        """
+        Phase 3: Callback handler invoked when the deterministic QAStateMachine completes a Q/A pair.
+        Preserves 100% parity with legacy checkpoint flow for dynamic suggestions and accuracy evaluation.
+        """
+        pair_id = confirmed_qa_record.get("pair_id")
+        if pair_id in self.processed_qa_pairs:
+            logger.info(f"[QA_FSM_SKIP] session_id={self.session_id} pair_id={pair_id} reason=already_processed")
+            return
+
+        self.processed_qa_pairs.add(pair_id)
+        q_id = confirmed_qa_record.get("question_turn_id")
+        a_ids = confirmed_qa_record.get("answer_turn_ids", [])
+        self.last_processed_question_id = q_id
+        if a_ids:
+            self.last_processed_answer_id = a_ids[-1]
+
+        self.checkpoint_number += 1
+        confirmed_qa_record["checkpoint_number"] = self.checkpoint_number
+
+        # Update in-place if this question was already recorded (e.g. from earlier silence timeout), else append
+        existing_idx = next(
+            (i for i, qa in enumerate(self.confirmed_qa_pairs) if qa.get("question_turn_id") == q_id),
+            None
+        )
+        if existing_idx is not None:
+            self.confirmed_qa_pairs[existing_idx] = confirmed_qa_record
+        else:
+            self.confirmed_qa_pairs.append(confirmed_qa_record)
+
+        logger.info(
+            f"[QA_FSM_CONFIRMED] session_id={self.session_id} pair_id={pair_id} "
+            f"q_id={q_id} a_ids={a_ids} reason={confirmed_qa_record.get('reason')}"
+        )
+
+        # Persist confirmed_qa_pairs to disk and DB repository
+        try:
+            await self.repo.save_session(self.session_id, {
+                "confirmed_qa_pairs": self.confirmed_qa_pairs
+            })
+        except Exception as save_err:
+            logger.warning(f"[QA_FSM] Failed saving confirmed_qa_pairs: {save_err}")
+
+        # Phase 4B: Production Execution via UnifiedQAWorker or Legacy Pipeline Fallback
+        ws = websocket or getattr(self, "active_websocket", None)
+        if self.enable_unified_qa and self.unified_qa_worker:
+            qa_prod_task = asyncio.create_task(
+                self._execute_unified_qa_production_flow(
+                    pair_id=pair_id,
+                    q_id=q_id,
+                    a_ids=a_ids,
+                    confirmed_qa_record=confirmed_qa_record,
+                    websocket=ws
+                )
+            )
+            self.background_tasks.add(qa_prod_task)
+            qa_prod_task.add_done_callback(self.background_tasks.discard)
+        else:
+            await self._execute_legacy_post_qa_flow(
+                pair_id=pair_id,
+                q_id=q_id,
+                a_ids=a_ids,
+                confirmed_qa_record=confirmed_qa_record,
+                websocket=ws
+            )
+            if self.enable_unified_qa_shadow and self.unified_qa_worker:
+                shadow_task = asyncio.create_task(
+                    self._run_shadow_unified_qa_worker(
+                        pair_id=pair_id,
+                        question=confirmed_qa_record["question"],
+                        answer=confirmed_qa_record["answer"],
+                        confirmed_qa_record=confirmed_qa_record
+                    )
+                )
+                self.background_tasks.add(shadow_task)
+                shadow_task.add_done_callback(self.background_tasks.discard)
+
     def start_qa_checkpoint(self, websocket: Any = None):
         """
-        Starts the session-scoped 15-second Q/A checkpoint loop if not already running.
-        Idempotent: guarantees only one checkpoint loop runs per active session.
+        Starts QA completion tracking.
+        If ENABLE_QA_FSM is True, operates in event-driven mode (no 15s polling loop).
+        If ENABLE_QA_FSM is False, falls back to legacy 15s background polling loop.
         """
+        if websocket:
+            self.active_websocket = websocket
+
         # Guard: Service Off or completed session
         if getattr(self, "service_off", False):
             return
-        session_dir = os.path.join("interviews", self.session_id)
+        session_dir = os.path.join("interviews", str(self.session_id))
         if os.path.exists(os.path.join(session_dir, "service_off.flag")):
             return
+
+        if self.enable_qa_fsm:
+            self.qa_checkpoint_running = True
+            logger.info(f"[QA_FSM] Operating in event-driven FSM mode for session {self.session_id} (15s polling suppressed).")
+            return
+
+        # Legacy Polling Path
+        from services.copilot.src.services.qa_state_machine import qa_fsm_metrics
+        qa_fsm_metrics["qa_fsm_fallback_to_legacy_total"] += 1
 
         if self.qa_checkpoint_running and self.qa_checkpoint_task and not self.qa_checkpoint_task.done():
             return
@@ -1041,16 +1339,16 @@ class CopilotSessionEngine:
         self.qa_checkpoint_task = asyncio.create_task(self._run_qa_checkpoint_loop(websocket))
         self.background_tasks.add(self.qa_checkpoint_task)
         self.qa_checkpoint_task.add_done_callback(self.background_tasks.discard)
-        logger.info(f"[QA_CHECKPOINT] Started 15-second checkpoint loop for session {self.session_id}")
+        logger.info(f"[QA_CHECKPOINT] Started legacy 15-second checkpoint loop for session {self.session_id}")
 
     def stop_qa_checkpoint(self, cancel_evaluations: bool = True):
         """
-        Stops and cancels the 15-second Q/A checkpoint loop cleanly.
-        Idempotent.
-        When cancel_evaluations is False (e.g. during finalization), active Phase 2V
-        accuracy evaluation tasks are preserved to be drained rather than cancelled.
+        Stops and cancels QA tracking cleanly.
         """
         self.qa_checkpoint_running = False
+        if hasattr(self, "qa_fsm") and self.qa_fsm:
+            self.qa_fsm.close()
+
         if self.qa_checkpoint_task and not self.qa_checkpoint_task.done():
             self.qa_checkpoint_task.cancel()
             logger.info(f"[QA_CHECKPOINT] Cancelled checkpoint task for session {self.session_id}")
@@ -1173,26 +1471,38 @@ class CopilotSessionEngine:
             }
             self.confirmed_qa_pairs.append(confirmed_qa_record)
 
-            # 5. Pass to existing dynamic suggestion generation flow
-            await self._trigger_dynamic_suggestions_for_confirmed_qa(
-                pair_id=pair_id,
-                interviewer_q=confirmed_qa_record["question"],
-                candidate_a=confirmed_qa_record["answer"],
-                interviewer_turn_id=q_id,
-                candidate_turn_id=a_ids[-1],
-                websocket=websocket
-            )
-
-            # 6. Phase 2V: Trigger Answer Accuracy Evaluation for the confirmed Q/A pair
-            try:
-                await self._trigger_accuracy_evaluation_for_confirmed_qa(
-                    question=confirmed_qa_record["question"],
-                    answer=confirmed_qa_record["answer"],
+            # Phase 4B: Production Execution via UnifiedQAWorker or Legacy Pipeline Fallback
+            if self.enable_unified_qa and self.unified_qa_worker:
+                qa_prod_task = asyncio.create_task(
+                    self._execute_unified_qa_production_flow(
+                        pair_id=pair_id,
+                        q_id=q_id,
+                        a_ids=a_ids,
+                        confirmed_qa_record=confirmed_qa_record,
+                        websocket=websocket
+                    )
+                )
+                self.background_tasks.add(qa_prod_task)
+                qa_prod_task.add_done_callback(self.background_tasks.discard)
+            else:
+                await self._execute_legacy_post_qa_flow(
+                    pair_id=pair_id,
+                    q_id=q_id,
+                    a_ids=a_ids,
                     confirmed_qa_record=confirmed_qa_record,
                     websocket=websocket
                 )
-            except Exception as eval_err:
-                logger.error(f"[Phase2V] Error triggering accuracy evaluation for confirmed Q/A: {eval_err}")
+                if self.enable_unified_qa_shadow and self.unified_qa_worker:
+                    shadow_task = asyncio.create_task(
+                        self._run_shadow_unified_qa_worker(
+                            pair_id=pair_id,
+                            question=confirmed_qa_record["question"],
+                            answer=confirmed_qa_record["answer"],
+                            confirmed_qa_record=confirmed_qa_record
+                        )
+                    )
+                    self.background_tasks.add(shadow_task)
+                    shadow_task.add_done_callback(self.background_tasks.discard)
 
             return decision
 
@@ -1688,6 +1998,327 @@ Or when no complete Q/A exists:
         except Exception as err:
             logger.error(f"[Phase2V] Unexpected error evaluating Q/A {qa_id}: {err}")
 
+    async def _run_shadow_unified_qa_worker(
+        self,
+        pair_id: str,
+        question: str,
+        answer: str,
+        confirmed_qa_record: Dict[str, Any]
+    ):
+        """
+        Phase 4A: Parallel execution of UnifiedQAWorker in SHADOW MODE ONLY.
+        Runs in background, records parity comparison metrics against the legacy pipeline,
+        and persists telemetry locally without surfacing anything to users, APIs, or WebSockets.
+        """
+        try:
+            current_interview_state = {
+                "current_topic": self.intelligence.get("current_topic", "") if isinstance(self.intelligence, dict) else "",
+                "covered_skills": self.intelligence.get("covered_skills", []) if isinstance(self.intelligence, dict) else [],
+                "remaining_skills": self.intelligence.get("remaining_skills", []) if isinstance(self.intelligence, dict) else []
+            }
+
+            unified_result = await self.unified_qa_worker.process_completed_qa(
+                question=question,
+                answer=answer,
+                resume=self.resume,
+                jd=self.jd,
+                current_interview_state=current_interview_state
+            )
+
+            if not unified_result:
+                logger.warning(f"[Phase4A Shadow] UnifiedQAWorker returned None for pair {pair_id}")
+                return
+
+            # Await legacy evaluation task if actively running
+            eval_task = self.active_evaluation_tasks.get(pair_id)
+            if eval_task and not eval_task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(eval_task), timeout=3.0)
+                except Exception:
+                    pass
+            elif "accuracy_score" not in confirmed_qa_record:
+                await asyncio.sleep(0.05)
+
+            legacy_data = {
+                "accuracy_score": confirmed_qa_record.get("accuracy_score"),
+                "covered_skills": self.intelligence.get("covered_skills", []) if isinstance(self.intelligence, dict) else [],
+                "remaining_skills": self.intelligence.get("remaining_skills", []) if isinstance(self.intelligence, dict) else [],
+                "dynamic_suggestions": self.dynamic_suggestions,
+                "current_topic": self.intelligence.get("current_topic", "") if isinstance(self.intelligence, dict) else "",
+                "recommended_next_topic": self.assistance.get("recommended_next_topic", "") if isinstance(self.assistance, dict) else ""
+            }
+
+            comparison = compute_parity_metrics(
+                legacy_data=legacy_data,
+                unified_data=unified_result
+            )
+            comparison["pair_id"] = pair_id
+            comparison["timestamp"] = datetime.datetime.now().isoformat()
+            self.shadow_qa_comparisons.append(comparison)
+
+            logger.info(
+                f"[Phase4A Shadow] Parity comparison recorded for pair {pair_id}: "
+                f"accuracy_delta={comparison.get('accuracy_score_delta')}, "
+                f"skill_similarity={comparison.get('skill_coverage_similarity')}, "
+                f"followup_similarity={comparison.get('follow_up_similarity')}"
+            )
+
+            # Persist shadow telemetry locally to disk (zero impact on production data or contracts)
+            session_dir = os.path.join("interviews", str(self.session_id))
+            try:
+                os.makedirs(session_dir, exist_ok=True)
+                shadow_file = os.path.join(session_dir, "shadow_qa_comparisons.json")
+                with open(shadow_file, "w", encoding="utf-8") as f:
+                    json.dump({
+                        "session_id": str(self.session_id),
+                        "total_comparisons": len(self.shadow_qa_comparisons),
+                        "comparisons": self.shadow_qa_comparisons
+                    }, f, indent=2)
+            except Exception as disk_err:
+                logger.debug(f"[Phase4A Shadow] Failed saving shadow comparisons to disk: {disk_err}")
+
+        except Exception as e:
+            logger.error(f"[Phase4A Shadow] Unexpected error in shadow worker for pair {pair_id}: {e}")
+
+    async def _execute_legacy_post_qa_flow(
+        self,
+        pair_id: str,
+        q_id: Any,
+        a_ids: List[Any],
+        confirmed_qa_record: Dict[str, Any],
+        websocket: Any = None
+    ):
+        """
+        Phase 4B Fallback: Executes the legacy post-QA pipeline when UnifiedQAWorker fails or is disabled.
+        Maintains 100% backward-compatibility.
+        """
+        logger.info(f"[Phase4B Fallback] Executing legacy post-QA pipeline for pair {pair_id}")
+        await self._trigger_dynamic_suggestions_for_confirmed_qa(
+            pair_id=pair_id,
+            interviewer_q=confirmed_qa_record["question"],
+            candidate_a=confirmed_qa_record["answer"],
+            interviewer_turn_id=q_id,
+            candidate_turn_id=a_ids[-1] if a_ids else None,
+            websocket=websocket
+        )
+        try:
+            await self._trigger_accuracy_evaluation_for_confirmed_qa(
+                question=confirmed_qa_record["question"],
+                answer=confirmed_qa_record["answer"],
+                confirmed_qa_record=confirmed_qa_record,
+                websocket=websocket
+            )
+        except Exception as eval_err:
+            logger.error(f"[Phase2V] Error triggering legacy accuracy evaluation for confirmed Q/A: {eval_err}")
+
+    async def _execute_unified_qa_production_flow(
+        self,
+        pair_id: str,
+        q_id: Any,
+        a_ids: List[Any],
+        confirmed_qa_record: Dict[str, Any],
+        websocket: Any = None
+    ):
+        """
+        Phase 4B: Primary production execution of UnifiedQAWorker.
+        Replaces individual post-QA LLM calls with a single structured inference,
+        updating dynamic suggestions, accuracy scores, intelligence, and assistance in-place.
+        Automatically falls back to legacy pipeline if execution fails.
+        """
+        if getattr(self, "service_off", False):
+            return
+
+        session_dir = os.path.join("interviews", str(self.session_id))
+        if os.path.exists(os.path.join(session_dir, "service_off.flag")):
+            return
+
+        start_time = time.time()
+        try:
+            current_interview_state = {
+                "current_topic": self.intelligence.get("current_topic", "") if isinstance(self.intelligence, dict) else "",
+                "covered_skills": self.intelligence.get("covered_skills", []) if isinstance(self.intelligence, dict) else [],
+                "remaining_skills": self.intelligence.get("remaining_skills", []) if isinstance(self.intelligence, dict) else []
+            }
+
+            unified_result = await self.unified_qa_worker.process_completed_qa(
+                question=confirmed_qa_record["question"],
+                answer=confirmed_qa_record["answer"],
+                resume=self.resume,
+                jd=self.jd,
+                current_interview_state=current_interview_state
+            )
+
+            if not unified_result or not isinstance(unified_result, dict):
+                raise ValueError("UnifiedQAWorker returned empty or invalid result")
+
+            # 1. Accuracy Score Integration
+            score = unified_result.get("accuracy_score")
+            if score is not None:
+                confirmed_qa_record["accuracy_score"] = score
+                self.evaluated_qa_ids.add(pair_id)
+                logger.info(f"[Phase4B] Q/A {pair_id} evaluated via UnifiedQAWorker: accuracy_score={score}%")
+
+                if getattr(self, "on_qa_evaluated_callback", None):
+                    try:
+                        try:
+                            cb_res = self.on_qa_evaluated_callback(
+                                pair_id, score, confirmed_qa_record["question"], confirmed_qa_record["answer"]
+                            )
+                        except TypeError:
+                            cb_res = self.on_qa_evaluated_callback(pair_id, score)
+                        if asyncio.iscoroutine(cb_res):
+                            await cb_res
+                    except Exception as cb_err:
+                        logger.debug(f"[Phase4B] on_qa_evaluated_callback error: {cb_err}")
+                elif websocket:
+                    try:
+                        await websocket.send_json({
+                            "type": "qa_evaluated",
+                            "session_id": self.session_id,
+                            "qa_id": pair_id,
+                            "accuracy_score": score
+                        })
+                    except Exception as ws_err:
+                        logger.debug(f"[Phase4B] Direct websocket send error: {ws_err}")
+
+            # 2. Dynamic Suggestions Integration
+            suggestions = unified_result.get("suggestions", [])
+            self.dynamic_suggestions_sequence += 1
+            task_seq = self.dynamic_suggestions_sequence
+            self.latest_completed_suggestion_seq = task_seq
+            self.dynamic_suggestions = suggestions
+
+            duration = time.time() - start_time
+            record = {
+                "pair_id": pair_id,
+                "sequence": task_seq,
+                "interviewer_turn_id": q_id,
+                "candidate_turn_id": a_ids[-1] if a_ids else None,
+                "interviewer_text": confirmed_qa_record["question"],
+                "candidate_text": confirmed_qa_record["answer"],
+                "suggestions": suggestions,
+                "duration_seconds": round(duration, 2),
+                "timestamp": datetime.datetime.now().isoformat()
+            }
+            self.dynamic_suggestions_history.append(record)
+
+            try:
+                os.makedirs(session_dir, exist_ok=True)
+                dyn_file = os.path.join(session_dir, "dynamic_suggestions.json")
+                with open(dyn_file, "w", encoding="utf-8") as f:
+                    json.dump({
+                        "session_id": self.session_id,
+                        "latest_pair_id": pair_id,
+                        "latest_suggestions": suggestions,
+                        "history": self.dynamic_suggestions_history
+                    }, f, indent=2)
+            except Exception as disk_err:
+                logger.warning(f"[Phase4B] Error saving dynamic_suggestions.json: {disk_err}")
+
+            # 3. Intelligence State Integration
+            intel = unified_result.get("intelligence", {})
+            if isinstance(intel, dict):
+                current_topic = intel.get("current_topic", "")
+                if current_topic:
+                    self.intelligence["current_topic"] = current_topic
+                if "covered_skills" in intel:
+                    existing_covered = set(self.intelligence.get("covered_skills", []))
+                    new_covered = set(intel.get("covered_skills", []))
+                    self.intelligence["covered_skills"] = sorted(list(existing_covered.union(new_covered)))
+                if "remaining_skills" in intel:
+                    self.intelligence["remaining_skills"] = list(intel.get("remaining_skills", []))
+                if "resume_projects_covered" in intel:
+                    self.intelligence["resume_projects_covered"] = list(intel.get("resume_projects_covered", []))
+                if "resume_projects_remaining" in intel:
+                    self.intelligence["resume_projects_remaining"] = list(intel.get("resume_projects_remaining", []))
+
+                if current_topic:
+                    timeline = self.intelligence.setdefault("conversation_timeline", [])
+                    timeline.append({
+                        "topic": current_topic,
+                        "timestamp": datetime.datetime.now().isoformat()
+                    })
+
+                cov_count = len(self.intelligence.get("covered_skills", []))
+                rem_count = len(self.intelligence.get("remaining_skills", []))
+                tot = cov_count + rem_count
+                pct = round(cov_count / tot * 100) if tot else 0
+                self.intelligence["interview_progress"] = {
+                    "total_skills": tot,
+                    "covered_count": cov_count,
+                    "percentage": pct
+                }
+                self.intelligence["total_speakers_count"] = max(len(self.detected_speakers), 1)
+
+            # 4. Assistance Guidance Integration
+            assist = unified_result.get("assistance", {})
+            if isinstance(assist, dict):
+                if assist.get("recommended_next_topic"):
+                    self.assistance["recommended_next_topic"] = assist["recommended_next_topic"]
+                if assist.get("interview_notes"):
+                    self.assistance["interview_notes"] = assist["interview_notes"]
+                if assist.get("current_candidate_understanding"):
+                    self.assistance["current_candidate_understanding"] = assist["current_candidate_understanding"]
+
+            self.assistance["dynamic_suggestions"] = list(suggestions)
+            self.assistance["suggested_follow_up_questions"] = list(suggestions)
+            if self.initial_suggestions:
+                self.assistance["initial_suggestions"] = list(self.initial_suggestions)
+            if self.scenario_questions:
+                self.assistance["scenario_questions"] = list(self.scenario_questions)
+                self.assistance["suggested_practical_questions"] = list(self.scenario_questions)
+            if self.verification_questions:
+                self.assistance["verification_questions"] = list(self.verification_questions)
+
+            # 5. Production Repository Persistence
+            try:
+                await self.repo.save_session(self.session_id, {
+                    "confirmed_qa_pairs": self.confirmed_qa_pairs,
+                    "dynamic_suggestions": suggestions,
+                    "assistance": self.assistance,
+                    "intelligence": self.intelligence
+                })
+            except Exception as repo_err:
+                logger.warning(f"[Phase4B] Error saving session to repository: {repo_err}")
+
+            # 6. WebSocket Notifications ('copilot_update')
+            if websocket:
+                try:
+                    await websocket.send_json({
+                        "type": "copilot_update",
+                        "session_id": self.session_id,
+                        "transcript": self.transcript,
+                        "intelligence": self.intelligence,
+                        "assistance": self.assistance,
+                        "dynamic_suggestions": suggestions
+                    })
+                except Exception as ws_err:
+                    logger.debug(f"[Phase4B] WebSocket push error: {ws_err}")
+
+            if getattr(self, "on_update_callback", None):
+                try:
+                    res = self.on_update_callback()
+                    if asyncio.iscoroutine(res):
+                        await res
+                except Exception as cb_err:
+                    logger.debug(f"[Phase4B] on_update_callback notification: {cb_err}")
+
+            unified_qa_production_metrics["unified_qa_production_success_total"] += 1
+            logger.info(f"[Phase4B] UnifiedQAWorker production execution complete for pair {pair_id} in {duration:.2f}s")
+
+        except Exception as e:
+            logger.error(f"[Phase4B] Error in UnifiedQAWorker production execution for pair {pair_id}: {e}")
+            if self.enable_legacy_fallback:
+                logger.warning(f"[Phase4B Fallback] Triggering legacy post-QA fallback for pair {pair_id}")
+                unified_qa_production_metrics["unified_qa_production_fallback_total"] += 1
+                await self._execute_legacy_post_qa_flow(
+                    pair_id=pair_id,
+                    q_id=q_id,
+                    a_ids=a_ids,
+                    confirmed_qa_record=confirmed_qa_record,
+                    websocket=websocket
+                )
+
     async def on_in_meeting(self) -> List[str]:
         """Lifecycle hook triggered when session enters active/IN_MEETING state."""
         asyncio.create_task(self.generate_static_scenario_verification_questions())
@@ -1718,32 +2349,160 @@ Or when no complete Q/A exists:
 
             # 3. Final QA Checkpoint Evaluation (catches questions/answers from the latest speech)
             try:
-                logger.info(f"[Finalize] Running final Q/A checkpoint cycle for session {self.session_id}")
-                await self.run_qa_checkpoint_cycle()
+                if self._unresolved_role_buffer:
+                    await self._flush_unresolved_buffer()
+                if self.enable_qa_fsm and self.qa_fsm:
+                    logger.info(f"[Finalize] Finalizing active QA pair via FSM for session {self.session_id}")
+                    await self.qa_fsm.finalize_current_qa()
+                else:
+                    logger.info(f"[Finalize] Running final legacy Q/A checkpoint cycle for session {self.session_id}")
+                    await self.run_qa_checkpoint_cycle()
             except Exception as checkpoint_err:
                 logger.warning(f"[Finalize] Error during final QA checkpoint cycle: {checkpoint_err}")
 
-            # 4. Wait for all pending Phase 2V evaluation tasks to complete (DO NOT CANCEL)
+            # 4. Wait for all pending evaluation & background tasks to complete (DO NOT CANCEL)
             while True:
                 pending_evals = [t for t in self.active_evaluation_tasks.values() if not t.done()]
-                if not pending_evals:
+                pending_bg = [t for t in self.background_tasks if not t.done()]
+                all_pending = pending_evals + pending_bg
+                if not all_pending:
                     break
-                logger.info(f"[Finalize] Awaiting {len(pending_evals)} in-flight Phase 2V accuracy evaluation(s)...")
-                await asyncio.gather(*pending_evals, return_exceptions=True)
+                logger.info(f"[Finalize] Awaiting {len(all_pending)} in-flight evaluation and background task(s)...")
+                await asyncio.gather(*all_pending, return_exceptions=True)
 
-            # 5. Call Phase 3B FinalEvaluationService on complete interview evidence
-            try:
-                final_eval_service = FinalEvaluationService()
-                eval_result = await final_eval_service.evaluate_final_interview(
-                    transcript=self.transcript,
-                    jd=self.jd,
-                    resume=self.resume,
-                    confirmed_qa_pairs=self.confirmed_qa_pairs,
-                    custom_prompt=self.custom_prompt
-                )
-            except Exception as eval_err:
-                logger.error(f"[Finalize] FinalEvaluationService failed for session {self.session_id}: {eval_err}")
-                eval_result = None
+            # 5. Execute Final Interview Evaluation (Phase 5B Production with Automatic Fallback)
+            eval_result: Optional[Dict[str, Any]] = None
+            eval_source: str = "optimized"
+            legacy_eval_service = FinalEvaluationService()
+
+            # Primary Production Path: Optimized Final Evaluation
+            if self.enable_optimized_final_eval and self.final_evaluation_comparator:
+                try:
+                    logger.info(f"[Phase5B] Executing primary optimized final evaluation for session {self.session_id}")
+                    opt_res = await self.final_evaluation_comparator.evaluate_optimized_interview(
+                        compact_profile=self.compact_profile,
+                        confirmed_qa_pairs=self.confirmed_qa_pairs,
+                        intelligence=self.intelligence,
+                        assistance=self.assistance,
+                        transcript=self.transcript,
+                        jd=self.jd,
+                        resume=self.resume,
+                        custom_prompt=self.custom_prompt
+                    )
+                    if opt_res and isinstance(opt_res, dict) and "report" in opt_res:
+                        eval_result = opt_res["report"]
+                        meta = opt_res.get("meta", {})
+                        optimized_final_eval_production_metrics["optimized_eval_success_total"] += 1
+                        optimized_final_eval_production_metrics["optimized_eval_latency_ms"] += meta.get("duration_ms", 0.0)
+                        optimized_final_eval_production_metrics["optimized_eval_token_usage"] += meta.get("estimated_tokens", 0)
+                        succ = max(optimized_final_eval_production_metrics["optimized_eval_success_total"], 1)
+                        optimized_final_eval_production_metrics["optimized_eval_avg_latency_ms"] = round(
+                            optimized_final_eval_production_metrics["optimized_eval_latency_ms"] / succ, 2
+                        )
+                        eval_source = "optimized"
+                        logger.info(
+                            f"[Phase5B] Primary optimized final evaluation complete for session {self.session_id} "
+                            f"in {meta.get('duration_ms', 0):.1f}ms (~{meta.get('estimated_tokens', 0)} tokens)"
+                        )
+
+                        # Non-blocking shadow comparison for continuous telemetry if enabled
+                        if self.enable_final_eval_shadow:
+                            async def _run_shadow_telemetry(opt_report=eval_result, opt_meta=meta):
+                                try:
+                                    leg_svc = FinalEvaluationService()
+                                    leg_start = time.time()
+                                    leg_res = await leg_svc.evaluate_final_interview(
+                                        transcript=self.transcript,
+                                        jd=self.jd,
+                                        resume=self.resume,
+                                        confirmed_qa_pairs=self.confirmed_qa_pairs,
+                                        custom_prompt=self.custom_prompt
+                                    )
+                                    leg_lat = round((time.time() - leg_start) * 1000, 2)
+                                    leg_ev = leg_svc.format_interview_evidence(self.transcript, self.confirmed_qa_pairs)
+                                    leg_tok = (len(self.jd) + len(self.resume) + len(leg_ev) + 2000) // 4
+                                    if leg_res:
+                                        comp = self.final_evaluation_comparator.compare_evaluations(
+                                            legacy_report=leg_res,
+                                            optimized_report=opt_report,
+                                            legacy_meta={"duration_ms": leg_lat, "estimated_tokens": leg_tok},
+                                            optimized_meta=opt_meta
+                                        )
+                                        comp["session_id"] = str(self.session_id)
+                                        self.final_eval_shadow_comparisons.append(comp)
+                                        optimized_final_eval_production_metrics["report_similarity_score"] = comp.get("report_similarity_score", 1.0)
+                                        optimized_final_eval_production_metrics["score_delta"] = comp.get("score_delta", 0)
+                                        session_dir = os.path.join("interviews", str(self.session_id))
+                                        os.makedirs(session_dir, exist_ok=True)
+                                        with open(os.path.join(session_dir, "final_eval_shadow_comparison.json"), "w", encoding="utf-8") as f:
+                                            json.dump(comp, f, indent=2)
+                                except Exception as shadow_err:
+                                    logger.debug(f"[Phase5B Telemetry] Shadow parity telemetry error: {shadow_err}")
+
+                            shadow_task = asyncio.create_task(_run_shadow_telemetry())
+                            self.background_tasks.add(shadow_task)
+                            shadow_task.add_done_callback(self.background_tasks.discard)
+                    else:
+                        raise ValueError("Optimized evaluation returned empty or invalid schema")
+                except Exception as opt_err:
+                    logger.warning(f"[Phase5B Fallback Trigger] Optimized final evaluation failed for session {self.session_id}: {opt_err}")
+                    optimized_final_eval_production_metrics["optimized_eval_failure_total"] += 1
+                    eval_result = None
+
+            # Fallback Path: Legacy FinalEvaluationService
+            if not eval_result:
+                if self.enable_legacy_final_eval_fallback or not self.enable_optimized_final_eval:
+                    eval_source = "legacy_fallback" if self.enable_optimized_final_eval else "legacy_direct"
+                    if self.enable_optimized_final_eval:
+                        optimized_final_eval_production_metrics["optimized_eval_fallback_total"] += 1
+                    logger.info(f"[Phase5B Fallback] Executing legacy FinalEvaluationService for session {self.session_id} (source={eval_source})")
+                    try:
+                        leg_start = time.time()
+                        eval_result = await legacy_eval_service.evaluate_final_interview(
+                            transcript=self.transcript,
+                            jd=self.jd,
+                            resume=self.resume,
+                            confirmed_qa_pairs=self.confirmed_qa_pairs,
+                            custom_prompt=self.custom_prompt
+                        )
+                        leg_duration_ms = round((time.time() - leg_start) * 1000, 2)
+                        legacy_evidence = legacy_eval_service.format_interview_evidence(self.transcript, self.confirmed_qa_pairs)
+                        leg_tokens = (len(self.jd) + len(self.resume) + len(legacy_evidence) + 2000) // 4
+                        optimized_final_eval_production_metrics["legacy_eval_latency_ms"] += leg_duration_ms
+                        optimized_final_eval_production_metrics["legacy_eval_token_usage"] += leg_tokens
+
+                        # Phase 5A Compatibility: If legacy is primary (rollback or flag=False), run optimized in shadow mode
+                        if not self.enable_optimized_final_eval and self.enable_final_eval_shadow and self.final_evaluation_comparator and eval_result:
+                            async def _run_legacy_mode_shadow(legacy_eval_report=eval_result):
+                                try:
+                                    comp = await self.final_evaluation_comparator.run_shadow_comparison(
+                                        legacy_report=legacy_eval_report,
+                                        legacy_meta={"duration_ms": leg_duration_ms, "estimated_tokens": leg_tokens},
+                                        compact_profile=self.compact_profile,
+                                        confirmed_qa_pairs=self.confirmed_qa_pairs,
+                                        intelligence=self.intelligence,
+                                        assistance=self.assistance,
+                                        transcript=self.transcript,
+                                        jd=self.jd,
+                                        resume=self.resume,
+                                        custom_prompt=self.custom_prompt,
+                                        session_id=str(self.session_id)
+                                    )
+                                    if comp:
+                                        self.final_eval_shadow_comparisons.append(comp)
+                                        session_dir = os.path.join("interviews", str(self.session_id))
+                                        os.makedirs(session_dir, exist_ok=True)
+                                        with open(os.path.join(session_dir, "final_eval_shadow_comparison.json"), "w", encoding="utf-8") as f:
+                                            json.dump(comp, f, indent=2)
+                                except Exception as shadow_err:
+                                    logger.error(f"[Finalize Shadow Error] {shadow_err}")
+
+                            shadow_task = asyncio.create_task(_run_legacy_mode_shadow())
+                            self.background_tasks.add(shadow_task)
+                            shadow_task.add_done_callback(self.background_tasks.discard)
+                    except Exception as legacy_err:
+                        logger.error(f"[Phase5B Fallback] Legacy FinalEvaluationService failed for session {self.session_id}: {legacy_err}")
+                        eval_result = None
 
             if not eval_result:
                 logger.error(f"[Finalize] Final evaluation synthesis returned None for session {self.session_id}. Session will NOT be marked finalized.")

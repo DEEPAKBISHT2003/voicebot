@@ -37,6 +37,16 @@ class Settings:
     GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
     GROQ_COPILOT_MODEL: str = os.getenv("GROQ_COPILOT_MODEL", "llama-3.1-8b-instant")
 
+    # Optimization Flags
+    ENABLE_DETERMINISTIC_ROLE_CLASSIFIER: bool = os.getenv("ENABLE_DETERMINISTIC_ROLE_CLASSIFIER", "true").lower() in ("true", "1", "yes")
+    ENABLE_QA_FSM: bool = os.getenv("ENABLE_QA_FSM", "true").lower() in ("true", "1", "yes")
+    QA_FSM_SILENCE_THRESHOLD: float = float(os.getenv("QA_FSM_SILENCE_THRESHOLD", "10.0"))
+    ENABLE_UNIFIED_QA_WORKER_SHADOW: bool = os.getenv("ENABLE_UNIFIED_QA_WORKER_SHADOW", "true").lower() in ("true", "1", "yes")
+    ENABLE_UNIFIED_QA_WORKER: bool = os.getenv("ENABLE_UNIFIED_QA_WORKER", "true").lower() in ("true", "1", "yes")
+    ENABLE_LEGACY_FALLBACK: bool = os.getenv("ENABLE_LEGACY_FALLBACK", "true").lower() in ("true", "1", "yes")
+    ENABLE_FINAL_EVAL_SHADOW: bool = os.getenv("ENABLE_FINAL_EVAL_SHADOW", "true").lower() in ("true", "1", "yes")
+    ENABLE_OPTIMIZED_FINAL_EVAL: bool = os.getenv("ENABLE_OPTIMIZED_FINAL_EVAL", "true").lower() in ("true", "1", "yes")
+    ENABLE_LEGACY_FINAL_EVAL_FALLBACK: bool = os.getenv("ENABLE_LEGACY_FINAL_EVAL_FALLBACK", "true").lower() in ("true", "1", "yes")
 
     @classmethod
     def validate(cls) -> None:
