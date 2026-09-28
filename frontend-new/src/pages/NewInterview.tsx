@@ -265,7 +265,7 @@ export const NewInterview: React.FC = () => {
                 </p>
               </div>
 
-              <div 
+              {/* <div 
                 onClick={() => handleSelectMode('simulation')}
                 className={`border p-4 rounded-xl cursor-pointer transition-all flex flex-col items-start gap-2.5 relative ${
                   interviewType === 'simulation' 
@@ -280,7 +280,7 @@ export const NewInterview: React.FC = () => {
                 <p className="text-xs leading-relaxed">
                   Upload an interview recording (.wav file) to dry-run and test suggestions on the dashboard.
                 </p>
-              </div>
+              </div> */}
             </div>
           </div>
 

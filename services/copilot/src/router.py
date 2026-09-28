@@ -10,6 +10,7 @@ from services.copilot.src.api.deps import get_copilot_repo, get_copilot_sessions
 from services.copilot.src.services.repository import CopilotRepository
 from services.copilot.src.engine.session import CopilotSessionEngine
 from services.copilot.src.core.config import Settings
+from services.auth.src.deps import get_current_user
 
 router = APIRouter()
 
@@ -23,7 +24,8 @@ class StartCopilotRequest(BaseModel):
 async def start_copilot(
     req: StartCopilotRequest,
     repo: CopilotRepository = Depends(get_copilot_repo),
-    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions)
+    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
+    current_user=Depends(get_current_user),
 ):
     try:
         session_id = await repo.create_session(
@@ -60,7 +62,8 @@ async def start_copilot(
 @router.post("/{session_id}/stop")
 async def stop_copilot(
     session_id: str,
-    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions)
+    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
+    current_user=Depends(get_current_user),
 ):
     if session_id in active_sessions:
         # Mark inactive
@@ -106,7 +109,8 @@ async def stop_copilot(
 async def service_off_copilot(
     session_id: str,
     active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
-    repo: CopilotRepository = Depends(get_copilot_repo)
+    repo: CopilotRepository = Depends(get_copilot_repo),
+    current_user=Depends(get_current_user),
 ):
     """
     Dedicated SERVICE OFF endpoint:
@@ -261,7 +265,8 @@ async def service_off_copilot(
 
 @router.get("")
 async def list_copilot_sessions(
-    repo: CopilotRepository = Depends(get_copilot_repo)
+    repo: CopilotRepository = Depends(get_copilot_repo),
+    current_user=Depends(get_current_user),
 ):
     try:
         return await repo.list_sessions()
@@ -272,7 +277,8 @@ async def list_copilot_sessions(
 @router.get("/{session_id}")
 async def get_copilot_session(
     session_id: str,
-    repo: CopilotRepository = Depends(get_copilot_repo)
+    repo: CopilotRepository = Depends(get_copilot_repo),
+    current_user=Depends(get_current_user),
 ):
     try:
         return await repo.load_session(session_id)
@@ -291,7 +297,8 @@ async def add_copilot_transcript(
     session_id: str,
     req: AddTranscriptRequest,
     active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
-    repo: CopilotRepository = Depends(get_copilot_repo)
+    repo: CopilotRepository = Depends(get_copilot_repo),
+    current_user=Depends(get_current_user),
 ):
     if session_id in active_sessions:
         engine = active_sessions[session_id]["engine"]
@@ -322,7 +329,8 @@ async def update_copilot_prompt(
     session_id: str,
     req: UpdateCopilotPromptRequest,
     active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
-    repo: CopilotRepository = Depends(get_copilot_repo)
+    repo: CopilotRepository = Depends(get_copilot_repo),
+    current_user=Depends(get_current_user),
 ):
     if session_id in active_sessions:
         active_sessions[session_id]["custom_prompt"] = req.custom_prompt
@@ -345,7 +353,8 @@ async def update_copilot_prompt(
 async def get_copilot_status(
     session_id: str,
     active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
-    repo: CopilotRepository = Depends(get_copilot_repo)
+    repo: CopilotRepository = Depends(get_copilot_repo),
+    current_user=Depends(get_current_user),
 ):
     # Guard against non-UUID session IDs (e.g. browser prefetch hitting /start/status)
     import uuid as _uuid
@@ -455,7 +464,8 @@ async def get_copilot_status(
 async def finalize_copilot_report(
     session_id: str,
     active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
-    repo: CopilotRepository = Depends(get_copilot_repo)
+    repo: CopilotRepository = Depends(get_copilot_repo),
+    current_user=Depends(get_current_user),
 ):
     # 1. Always check PostgreSQL first for an already persisted final_report
     db_session = None
@@ -556,7 +566,8 @@ class JoinMeetingRequest(BaseModel):
 async def join_meeting(
     session_id: str,
     req: JoinMeetingRequest,
-    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions)
+    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
+    current_user=Depends(get_current_user),
 ):
     """
     Spawns the Playwright Teams Bot from the Copilot Service.
