@@ -1,9 +1,12 @@
 import asyncio
 import json
-from typing import Optional, Dict, Any
+import time
+from typing import Optional, Dict, Any, Union
+import uuid
 from openai import AsyncOpenAI
 from loguru import logger
 from services.copilot.src.core.config import Settings
+from services.copilot.src.services.usage_service import usage_service
 
 def clean_json_loads(text: str) -> dict:
     """Safely parse JSON responses that may be wrapped in markdown codeblocks."""
@@ -33,7 +36,8 @@ class CandidateEvaluationService:
         candidate_response: str, 
         jd: str = "", 
         resume: str = "", 
-        question: str = ""
+        question: str = "",
+        session_id: Optional[Union[str, uuid.UUID]] = None
     ) -> dict:
         """
         Submits candidate response to LLM for multi-dimension rating and comments.
@@ -71,6 +75,7 @@ Evaluate the candidate's response and output a structured JSON object with the f
 You must output ONLY valid JSON matching this schema. Do not output markdown code blocks or additional text.
 """
         try:
+            t0 = time.monotonic()
             chat_completion = await self.client.chat.completions.create(
                 messages=[
                     {"role": "user", "content": prompt}
@@ -78,6 +83,21 @@ You must output ONLY valid JSON matching this schema. Do not output markdown cod
                 model=self.model,
                 response_format={"type": "json_object"}
             )
+            duration_ms = int((time.monotonic() - t0) * 1000)
+
+            if session_id and hasattr(chat_completion, "usage") and chat_completion.usage:
+                try:
+                    await usage_service.record_llm_usage(
+                        session_id=session_id,
+                        stage="qa_accuracy_legacy",
+                        model=self.model,
+                        usage=chat_completion.usage,
+                        duration_ms=duration_ms,
+                        call_identifier=None,
+                    )
+                except Exception as usage_err:
+                    logger.warning(f"[EvaluationService] Failed to record usage telemetry for session {session_id}: {usage_err}")
+
             response_text = chat_completion.choices[0].message.content
             return clean_json_loads(response_text)
         except Exception as e:
@@ -105,7 +125,10 @@ You must output ONLY valid JSON matching this schema. Do not output markdown cod
         self,
         question: str,
         answer: str,
-        resume: str = ""
+        resume: str = "",
+        session_id: Optional[Union[str, uuid.UUID]] = None,
+        call_identifier: Optional[str] = None,
+        stage: str = "qa_accuracy"
     ) -> Optional[dict]:
         """
         Phase 2V: Evaluates a confirmed candidate answer against the interviewer's question
@@ -173,6 +196,7 @@ No feedback.
 No additional fields.
 """
         try:
+            t0 = time.monotonic()
             chat_completion = await asyncio.wait_for(
                 self.client.chat.completions.create(
                     messages=[
@@ -183,6 +207,21 @@ No additional fields.
                 ),
                 timeout=12.0
             )
+            duration_ms = int((time.monotonic() - t0) * 1000)
+
+            if session_id and hasattr(chat_completion, "usage") and chat_completion.usage:
+                try:
+                    await usage_service.record_llm_usage(
+                        session_id=session_id,
+                        stage=stage,
+                        model=self.model,
+                        usage=chat_completion.usage,
+                        duration_ms=duration_ms,
+                        call_identifier=call_identifier,
+                    )
+                except Exception as usage_err:
+                    logger.warning(f"[EvaluationService] Failed to record usage telemetry for session {session_id}: {usage_err}")
+
             response_text = chat_completion.choices[0].message.content
             parsed = clean_json_loads(response_text)
 

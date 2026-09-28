@@ -9,6 +9,10 @@ from openai import AsyncOpenAI
 from services.copilot.src.core.config import Settings
 
 
+import time
+from services.copilot.src.services.usage_service import usage_service
+
+
 def clean_json_loads(text: str) -> dict:
     """Safely parse JSON responses that may be wrapped in markdown codeblocks."""
     clean_text = text.strip()
@@ -188,6 +192,7 @@ Respond ONLY with valid JSON. Do not include markdown fences or extraneous comme
 """
         try:
             logger.info(f"[PreCompiler] Submitting consolidated pre-compilation request for session {session_id}...")
+            t0 = time.monotonic()
             chat_completion = await asyncio.wait_for(
                 self.client.chat.completions.create(
                     messages=[{"role": "user", "content": prompt}],
@@ -197,6 +202,21 @@ Respond ONLY with valid JSON. Do not include markdown fences or extraneous comme
                 ),
                 timeout=30.0
             )
+            duration_ms = int((time.monotonic() - t0) * 1000)
+
+            if hasattr(chat_completion, "usage") and chat_completion.usage:
+                try:
+                    await usage_service.record_llm_usage(
+                        session_id=session_id,
+                        stage="precompiler",
+                        model=self.model,
+                        usage=chat_completion.usage,
+                        duration_ms=duration_ms,
+                        call_identifier="precompiler",
+                    )
+                except Exception as usage_err:
+                    logger.warning(f"[PreCompiler] Failed to record usage telemetry for session {session_id}: {usage_err}")
+
             raw_content = chat_completion.choices[0].message.content or "{}"
             data = clean_json_loads(raw_content)
 

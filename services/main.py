@@ -128,11 +128,21 @@ async def startup_auth_and_schema():
                 if "final_report" not in cols:
                     await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN final_report JSON;")
                     logger.info("[DB] Added final_report column to copilot_sessions (SQLite)")
-                else:
-                    logger.info("[DB] Verified copilot_sessions schema (final_report column present in SQLite)")
+                if "meeting_started_at" not in cols:
+                    await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN meeting_started_at TIMESTAMP;")
+                    logger.info("[DB] Added meeting_started_at column to copilot_sessions (SQLite)")
+                if "meeting_ended_at" not in cols:
+                    await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN meeting_ended_at TIMESTAMP;")
+                    logger.info("[DB] Added meeting_ended_at column to copilot_sessions (SQLite)")
+                if "meeting_duration_seconds" not in cols:
+                    await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN meeting_duration_seconds INT;")
+                    logger.info("[DB] Added meeting_duration_seconds column to copilot_sessions (SQLite)")
         else:
             await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS final_report JSONB;")
-            logger.info("[DB] Verified copilot_sessions schema (final_report column present)")
+            await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS meeting_started_at TIMESTAMPTZ;")
+            await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS meeting_ended_at TIMESTAMPTZ;")
+            await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS meeting_duration_seconds INT;")
+            logger.info("[DB] Verified copilot_sessions schema (duration and report columns present)")
     except Exception as e:
         logger.warning(f"[DB] Schema migration check notice: {e}")
 

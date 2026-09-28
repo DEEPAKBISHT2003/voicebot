@@ -1,9 +1,12 @@
 import asyncio
 import json
-from typing import List, Dict, Any, Optional
+import time
+from typing import List, Dict, Any, Optional, Union
+import uuid
 from openai import AsyncOpenAI
 from loguru import logger
 from services.copilot.src.core.config import Settings
+from services.copilot.src.services.usage_service import usage_service
 
 
 def clean_json_loads(text: str) -> dict:
@@ -128,7 +131,9 @@ class FinalEvaluationService:
         jd: str = "",
         resume: str = "",
         confirmed_qa_pairs: Optional[List[Dict[str, Any]]] = None,
-        custom_prompt: str = ""
+        custom_prompt: str = "",
+        session_id: Optional[Union[str, uuid.UUID]] = None,
+        stage: str = "final_evaluation"
     ) -> Optional[Dict[str, Any]]:
         """
         Public entry point for Final Evaluation synthesis.
@@ -255,6 +260,7 @@ Output a single JSON object with EXACTLY this top-level schema:
                         )
                     })
 
+                t0 = time.monotonic()
                 chat_completion = await asyncio.wait_for(
                     self.client.chat.completions.create(
                         messages=messages,
@@ -263,6 +269,23 @@ Output a single JSON object with EXACTLY this top-level schema:
                     ),
                     timeout=45.0
                 )
+                duration_ms = int((time.monotonic() - t0) * 1000)
+
+                if session_id and hasattr(chat_completion, "usage") and chat_completion.usage:
+                    try:
+                        await usage_service.record_llm_usage(
+                            session_id=session_id,
+                            stage=stage,
+                            model=self.model,
+                            usage=chat_completion.usage,
+                            duration_ms=duration_ms,
+                            call_identifier="dossier_synthesis",
+                        )
+                    except Exception as usage_err:
+                        logger.warning(
+                            f"[FinalEvaluationService] Failed to record usage telemetry for session {session_id} "
+                            f"(attempt {attempt + 1}): {usage_err}"
+                        )
 
                 response_content = chat_completion.choices[0].message.content
                 if not response_content or not response_content.strip():
@@ -456,7 +479,9 @@ async def evaluate_final_interview(
     jd: str = "",
     resume: str = "",
     confirmed_qa_pairs: Optional[List[Dict[str, Any]]] = None,
-    custom_prompt: str = ""
+    custom_prompt: str = "",
+    session_id: Optional[Union[str, uuid.UUID]] = None,
+    stage: str = "final_evaluation"
 ) -> Optional[Dict[str, Any]]:
     """Isolated module-level entry point for Final Evaluation synthesis."""
     service = FinalEvaluationService()
@@ -465,5 +490,7 @@ async def evaluate_final_interview(
         jd=jd,
         resume=resume,
         confirmed_qa_pairs=confirmed_qa_pairs,
-        custom_prompt=custom_prompt
+        custom_prompt=custom_prompt,
+        session_id=session_id,
+        stage=stage
     )

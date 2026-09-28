@@ -8,9 +8,10 @@ import { Login } from './pages/Login';
 import { InterviewsList } from './pages/InterviewsList';
 import { NewInterview } from './pages/NewInterview';
 import { InterviewSession } from './pages/InterviewSession';
-// import { NewCopilot } from './copilot/pages/NewCopilot';
+import { NewCopilot } from './copilot/pages/NewCopilot';
 import { CopilotSession } from './copilot/pages/CopilotSession';
-import { AnalyticsPlaceholder, UserControlPlaceholder } from './pages/AdminPlaceholders';
+import { UsageDashboard } from './pages/UsageDashboard';
+import { UserControlPlaceholder } from './pages/AdminPlaceholders';
 
 // Instantiate Query Client for server state caching
 const queryClient = new QueryClient({
@@ -40,12 +41,13 @@ function App() {
                       <Route path="/" element={<InterviewsList />} />
                       <Route path="/interviews/new" element={<NewInterview />} />
                       <Route path="/interviews/:id" element={<InterviewSession />} />
-                      {/* <Route path="/copilots/new" element={<NewCopilot />} /> */}
+                      <Route path="/copilots/new" element={<NewCopilot />} />
                       <Route path="/copilots/:id" element={<CopilotSession />} />
 
                       {/* Admin-only Routes */}
                       <Route element={<AdminRoute />}>
-                        <Route path="/analytics" element={<AnalyticsPlaceholder />} />
+                        <Route path="/analytics" element={<UsageDashboard />} />
+                        <Route path="/usage" element={<UsageDashboard />} />
                         <Route path="/user-control" element={<UserControlPlaceholder />} />
                       </Route>
 

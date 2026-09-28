@@ -15,10 +15,10 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const baseNavigation = [
     { name: 'Dashboard', href: '/', icon: LayoutDashboard },
     { name: 'New Interview', href: '/interviews/new', icon: PlusCircle },
-    // { name: 'New Copilot', href: '/copilots/new', icon: Sparkles },
+    { name: 'New Copilot', href: '/copilots/new', icon: Sparkles },
   ];
 
-  // Admin-only navigation items
+  // Admin-only navigation items: Analytics (Usage & Costs) and User Control
   const adminNavigation = [
     { name: 'Analytics', href: '/analytics', icon: BarChart3 },
     { name: 'User Control', href: '/user-control', icon: Users },
@@ -98,8 +98,8 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
               ? 'Session Setup'
               : location.pathname.includes('/copilots/')
               ? 'Appz Moderator Room'
-              : location.pathname === '/analytics'
-              ? 'Analytics'
+              : location.pathname === '/analytics' || location.pathname === '/usage'
+              ? 'Analytics - Usage & Costs'
               : location.pathname === '/user-control'
               ? 'User Control'
               : 'Interview Room'}

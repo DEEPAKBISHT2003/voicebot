@@ -1,9 +1,12 @@
 import json
 import re
-from typing import List, Dict, Any, Optional
+import time
+from typing import List, Dict, Any, Optional, Union
+import uuid
 from loguru import logger
 from openai import AsyncOpenAI
 from services.copilot.src.core.config import Settings
+from services.copilot.src.services.usage_service import usage_service
 
 
 def clean_json_loads(text: str) -> dict:
@@ -43,7 +46,8 @@ class ConversationalRoleIdentifier:
         transcript: List[Dict[str, Any]],
         participants: List[str],
         jd: str = "",
-        resume: str = ""
+        resume: str = "",
+        session_id: Optional[Union[str, uuid.UUID]] = None
     ) -> Dict[str, Any]:
         """
         Submits recent conversational turns, JD, resume, and participant list to the LLM.
@@ -127,6 +131,7 @@ Analyze the dialogue and return a structured JSON object with EXACTLY this schem
 You must output ONLY valid JSON matching this schema. Do not output markdown code blocks or additional text."""
 
         try:
+            t0 = time.monotonic()
             chat_completion = await self.client.chat.completions.create(
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -135,6 +140,21 @@ You must output ONLY valid JSON matching this schema. Do not output markdown cod
                 model=self.model,
                 response_format={"type": "json_object"}
             )
+            duration_ms = int((time.monotonic() - t0) * 1000)
+
+            if session_id and hasattr(chat_completion, "usage") and chat_completion.usage:
+                try:
+                    await usage_service.record_llm_usage(
+                        session_id=session_id,
+                        stage="role_identifier",
+                        model=self.model,
+                        usage=chat_completion.usage,
+                        duration_ms=duration_ms,
+                        call_identifier=None,
+                    )
+                except Exception as usage_err:
+                    logger.warning(f"[RoleIdentifier] Failed to record usage telemetry for session {session_id}: {usage_err}")
+
             response_text = chat_completion.choices[0].message.content
             raw_result = clean_json_loads(response_text)
 

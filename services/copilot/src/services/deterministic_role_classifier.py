@@ -42,7 +42,8 @@ class DeterministicRoleClassifier:
         participants: List[str],
         jd: str = "",
         resume: str = "",
-        compact_profile: Optional[Any] = None
+        compact_profile: Optional[Any] = None,
+        session_id: Optional[Any] = None
     ) -> Dict[str, Any]:
         """
         Determines conversational roles for participants.
@@ -67,7 +68,8 @@ class DeterministicRoleClassifier:
                 transcript=transcript,
                 participants=participants,
                 jd=jd,
-                resume=resume
+                resume=resume,
+                session_id=session_id
             )
 
         # Sort participants deterministically (pure alphabetical order, independent of set hash seeds)
@@ -233,7 +235,8 @@ class DeterministicRoleClassifier:
                 transcript=transcript,
                 participants=sorted_participants,
                 jd=jd,
-                resume=resume
+                resume=resume,
+                session_id=session_id
             )
             fallback_speakers = fallback_res.get("speakers", {})
 

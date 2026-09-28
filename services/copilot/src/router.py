@@ -1,6 +1,7 @@
 import os
 import asyncio
 import datetime
+import inspect
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from loguru import logger
@@ -13,6 +14,15 @@ from services.copilot.src.core.config import Settings
 from services.auth.src.deps import get_current_user
 
 router = APIRouter()
+
+async def _safe_finalize_duration(repo: Any, session_id: str) -> None:
+    if hasattr(repo, "finalize_meeting_duration"):
+        try:
+            res = repo.finalize_meeting_duration(session_id)
+            if inspect.isawaitable(res):
+                await res
+        except Exception as e:
+            logger.debug(f"[MeetingDuration] Notice finalizing duration: {e}")
 
 class StartCopilotRequest(BaseModel):
     jd: str
@@ -63,6 +73,7 @@ async def start_copilot(
 async def stop_copilot(
     session_id: str,
     active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
+    repo: CopilotRepository = Depends(get_copilot_repo),
     current_user=Depends(get_current_user),
 ):
     if session_id in active_sessions:
@@ -99,10 +110,12 @@ async def stop_copilot(
                 await ws.close()
             except Exception:
                 pass
+        await _safe_finalize_duration(repo, session_id)
         logger.info(f"Stopped AI Copilot Session: {session_id}")
         return {"status": "stopped"}
     else:
         # Check database fallback
+        await _safe_finalize_duration(repo, session_id)
         return {"status": "stopped"}
 
 @router.post("/{session_id}/service-off")
@@ -246,8 +259,9 @@ async def service_off_copilot(
     if "dashboard_websockets" in sess:
         sess["dashboard_websockets"].clear()
 
-    # 6. Save final session snapshot to repository
+    # 6. Save final session snapshot to repository & finalize meeting duration
     try:
+        await _safe_finalize_duration(repo, session_id)
         await repo.save_session(
             session_id,
             {
@@ -262,6 +276,89 @@ async def service_off_copilot(
 
     logger.info(f"[CopilotServiceOff] Successfully completed SERVICE OFF for session: {session_id}")
     return {"status": "Service Off", "session_id": session_id}
+
+# ==============================================================================
+# PHASE D: USAGE & CREDIT DASHBOARD ENDPOINTS
+# ==============================================================================
+
+@router.get("/usage/balance")
+async def get_usage_balance(
+    force_refresh: bool = False,
+    current_user=Depends(get_current_user),
+):
+    """
+    Retrieve current DeepSeek credit/account balance with 60-second in-memory TTL caching.
+    """
+    try:
+        from services.copilot.src.services.dashboard_service import dashboard_service
+        return await dashboard_service.get_deepseek_balance(force_refresh=force_refresh)
+    except Exception as e:
+        logger.error(f"[UsageAPI] Error fetching balance: {e}")
+        return {
+            "is_available": False,
+            "balance": None,
+            "currency": "USD",
+            "error": "Internal error retrieving balance",
+            "source": "deepseek",
+            "cached": False,
+            "retrieved_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+
+@router.get("/usage/summary")
+async def get_usage_summary(
+    current_user=Depends(get_current_user),
+):
+    """
+    Dashboard-level global usage totals across all sessions and stages.
+    """
+    try:
+        from services.copilot.src.services.dashboard_service import dashboard_service
+        return await dashboard_service.get_usage_summary()
+    except Exception as e:
+        logger.error(f"[UsageAPI] Error fetching usage summary: {e}")
+        raise HTTPException(status_code=500, detail="Failed to calculate usage summary")
+
+@router.get("/usage/sessions")
+async def get_usage_sessions(
+    page: int = 1,
+    limit: int = 20,
+    current_user=Depends(get_current_user),
+):
+    """
+    Paginated session-level usage rollups including meeting duration, tokens, cost, and LLM call counts.
+    """
+    if page < 1:
+        raise HTTPException(status_code=400, detail="Page must be greater than or equal to 1")
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=400, detail="Limit must be between 1 and 100")
+    try:
+        from services.copilot.src.services.dashboard_service import dashboard_service
+        return await dashboard_service.get_session_usage_list(page=page, limit=limit)
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"[UsageAPI] Error listing session usage: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve session usage list")
+
+@router.get("/usage/sessions/{session_id}")
+async def get_session_usage_detail(
+    session_id: str,
+    current_user=Depends(get_current_user),
+):
+    """
+    Detailed session breakdown with stage-level aggregation and chronological immutable LLM call records.
+    """
+    try:
+        from services.copilot.src.services.dashboard_service import dashboard_service
+        detail = await dashboard_service.get_session_usage_detail(session_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+        return detail
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[UsageAPI] Error fetching session usage detail for {session_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve session usage detail")
 
 @router.get("")
 async def list_copilot_sessions(
@@ -533,6 +630,7 @@ async def finalize_copilot_report(
             except Exception:
                 pass
         sess["bot_process"] = None
+        await _safe_finalize_duration(repo, session_id)
 
         res = await engine.finalize_report()
         if res and res.get("is_finalized"):
