@@ -23,6 +23,7 @@ from services.copilot.src.services.final_evaluation_comparator import (
     optimized_final_eval_production_metrics,
     get_optimized_final_eval_production_metrics
 )
+from services.copilot.src.services.usage_service import usage_service
 
 
 def clean_json_loads(text: str) -> dict:
@@ -287,7 +288,8 @@ class CopilotSessionEngine:
                     participants=human_speakers,
                     jd=self.jd,
                     resume=self.resume,
-                    compact_profile=self.compact_profile
+                    compact_profile=self.compact_profile,
+                    session_id=self.session_id
                 )
                 speakers_info = res.get("speakers", {})
                 newly_resolved = False
@@ -378,7 +380,8 @@ class CopilotSessionEngine:
                         participants=human_speakers,
                         jd=self.jd,
                         resume=self.resume,
-                        compact_profile=self.compact_profile
+                        compact_profile=self.compact_profile,
+                        session_id=self.session_id
                     )
                     speakers_map = role_result.get("speakers", {})
                     newly_resolved = False
@@ -1695,6 +1698,7 @@ Or when no complete Q/A exists:
         logger.info(f"[QA_DETECTOR] session_id={self.session_id} turn_count={len(recent_turns)}")
 
         try:
+            t0 = time.monotonic()
             chat_completion = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -1703,6 +1707,21 @@ Or when no complete Q/A exists:
                 temperature=0.1,
                 response_format={"type": "json_object"}
             )
+            duration_ms = int((time.monotonic() - t0) * 1000)
+
+            if self.session_id and hasattr(chat_completion, "usage") and chat_completion.usage:
+                try:
+                    await usage_service.record_llm_usage(
+                        session_id=self.session_id,
+                        stage="qa_detector",
+                        model=self.model,
+                        usage=chat_completion.usage,
+                        duration_ms=duration_ms,
+                        call_identifier=None,
+                    )
+                except Exception as usage_err:
+                    logger.warning(f"[QA_DETECTOR] Failed to record usage telemetry for session {self.session_id}: {usage_err}")
+
             raw_content = chat_completion.choices[0].message.content or "{}"
             decision = clean_json_loads(raw_content)
             if not isinstance(decision, dict):
@@ -1936,7 +1955,10 @@ Or when no complete Q/A exists:
             result = await self.evaluation_service.evaluate_accuracy(
                 question=question,
                 answer=answer,
-                resume=self.resume
+                resume=self.resume,
+                session_id=self.session_id,
+                call_identifier=qa_id,
+                stage="qa_accuracy"
             )
 
             # Strict requirement: Only record & broadcast when a valid evaluation was actually produced
@@ -2022,7 +2044,9 @@ Or when no complete Q/A exists:
                 answer=answer,
                 resume=self.resume,
                 jd=self.jd,
-                current_interview_state=current_interview_state
+                current_interview_state=current_interview_state,
+                session_id=self.session_id,
+                call_identifier=pair_id
             )
 
             if not unified_result:
@@ -2145,7 +2169,9 @@ Or when no complete Q/A exists:
                 answer=confirmed_qa_record["answer"],
                 resume=self.resume,
                 jd=self.jd,
-                current_interview_state=current_interview_state
+                current_interview_state=current_interview_state,
+                session_id=self.session_id,
+                call_identifier=pair_id
             )
 
             if not unified_result or not isinstance(unified_result, dict):
@@ -2387,7 +2413,9 @@ Or when no complete Q/A exists:
                         transcript=self.transcript,
                         jd=self.jd,
                         resume=self.resume,
-                        custom_prompt=self.custom_prompt
+                        custom_prompt=self.custom_prompt,
+                        session_id=self.session_id,
+                        stage="final_evaluation"
                     )
                     if opt_res and isinstance(opt_res, dict) and "report" in opt_res:
                         eval_result = opt_res["report"]
@@ -2416,7 +2444,9 @@ Or when no complete Q/A exists:
                                         jd=self.jd,
                                         resume=self.resume,
                                         confirmed_qa_pairs=self.confirmed_qa_pairs,
-                                        custom_prompt=self.custom_prompt
+                                        custom_prompt=self.custom_prompt,
+                                        session_id=self.session_id,
+                                        stage="final_eval_shadow"
                                     )
                                     leg_lat = round((time.time() - leg_start) * 1000, 2)
                                     leg_ev = leg_svc.format_interview_evidence(self.transcript, self.confirmed_qa_pairs)
@@ -2435,7 +2465,7 @@ Or when no complete Q/A exists:
                                         session_dir = os.path.join("interviews", str(self.session_id))
                                         os.makedirs(session_dir, exist_ok=True)
                                         with open(os.path.join(session_dir, "final_eval_shadow_comparison.json"), "w", encoding="utf-8") as f:
-                                            json.dump(comp, f, indent=2)
+                                             json.dump(comp, f, indent=2)
                                 except Exception as shadow_err:
                                     logger.debug(f"[Phase5B Telemetry] Shadow parity telemetry error: {shadow_err}")
 
@@ -2463,7 +2493,9 @@ Or when no complete Q/A exists:
                             jd=self.jd,
                             resume=self.resume,
                             confirmed_qa_pairs=self.confirmed_qa_pairs,
-                            custom_prompt=self.custom_prompt
+                            custom_prompt=self.custom_prompt,
+                            session_id=self.session_id,
+                            stage="final_evaluation"
                         )
                         leg_duration_ms = round((time.time() - leg_start) * 1000, 2)
                         legacy_evidence = legacy_eval_service.format_interview_evidence(self.transcript, self.confirmed_qa_pairs)

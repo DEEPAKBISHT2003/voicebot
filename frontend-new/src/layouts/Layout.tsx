@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, PlusCircle, Sparkles } from 'lucide-react';
+import { LayoutDashboard, PlusCircle, Sparkles, Coins } from 'lucide-react';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -13,6 +13,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
     { name: 'Dashboard', href: '/', icon: LayoutDashboard },
     { name: 'New Interview', href: '/interviews/new', icon: PlusCircle },
     { name: 'New Copilot', href: '/copilots/new', icon: Sparkles },
+    { name: 'Usage & Costs', href: '/usage', icon: Coins },
   ];
 
   return (
@@ -51,7 +52,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
         {/* Header */}
         <header className="h-16 border-b border-border-gray px-8 flex items-center justify-between">
           <div className="text-xs font-semibold text-muted-gray uppercase tracking-wider">
-            {location.pathname === '/' ? 'Overview' : location.pathname.includes('/new') ? 'Session Setup' : location.pathname.includes('/copilots/') ? 'Appz Moderator Room' : 'Interview Room'}
+            {location.pathname === '/' ? 'Overview' : location.pathname === '/usage' ? 'Usage & Costs' : location.pathname.includes('/new') ? 'Session Setup' : location.pathname.includes('/copilots/') ? 'Appz Moderator Room' : 'Interview Room'}
           </div>
         </header>
 

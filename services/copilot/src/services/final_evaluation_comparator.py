@@ -2,11 +2,13 @@ import os
 import json
 import time
 import asyncio
-from typing import List, Dict, Any, Optional, Set
+from typing import List, Dict, Any, Optional, Set, Union
+import uuid
 from openai import AsyncOpenAI
 from loguru import logger
 from services.copilot.src.core.config import Settings
 from services.copilot.src.services.precompiler import CompactProfile
+from services.copilot.src.services.usage_service import usage_service
 
 
 def clean_json_loads(text: str) -> dict:
@@ -507,7 +509,9 @@ Output a single JSON object with EXACTLY this top-level schema:
         jd: str = "",
         resume: str = "",
         custom_prompt: str = "",
-        timeout: float = 25.0
+        timeout: float = 25.0,
+        session_id: Optional[Union[str, uuid.UUID]] = None,
+        stage: str = "final_evaluation"
     ) -> Optional[Dict[str, Any]]:
         """
         Executes the optimized final evaluation using the Structured Evidence Dossier.
@@ -525,9 +529,9 @@ Output a single JSON object with EXACTLY this top-level schema:
         )
 
         system_prompt, user_prompt = self.build_prompts(dossier)
-        start_time = time.time()
 
         try:
+            t0 = time.monotonic()
             chat_completion = await asyncio.wait_for(
                 self.client.chat.completions.create(
                     messages=[
@@ -539,7 +543,23 @@ Output a single JSON object with EXACTLY this top-level schema:
                 ),
                 timeout=timeout
             )
-            duration_ms = round((time.time() - start_time) * 1000, 2)
+            duration_ms = int((time.monotonic() - t0) * 1000)
+
+            if session_id and hasattr(chat_completion, "usage") and chat_completion.usage:
+                try:
+                    await usage_service.record_llm_usage(
+                        session_id=session_id,
+                        stage=stage,
+                        model=self.model,
+                        usage=chat_completion.usage,
+                        duration_ms=duration_ms,
+                        call_identifier="dossier_synthesis",
+                    )
+                except Exception as usage_err:
+                    logger.warning(
+                        f"[FinalEvaluationComparator] Failed to record usage telemetry for session {session_id}: {usage_err}"
+                    )
+
             content = chat_completion.choices[0].message.content or "{}"
             raw_dict = clean_json_loads(content)
 

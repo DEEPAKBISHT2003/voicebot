@@ -51,3 +51,10 @@ class Settings:
     @classmethod
     def validate(cls) -> None:
         pass
+
+
+from services.copilot.src.core.pricing import (
+    ModelPricing,
+    DEFAULT_MODEL_PRICING,
+    get_model_pricing,
+)

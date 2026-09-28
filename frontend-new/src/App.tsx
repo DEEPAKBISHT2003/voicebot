@@ -6,6 +6,7 @@ import { NewInterview } from './pages/NewInterview';
 import { InterviewSession } from './pages/InterviewSession';
 import { NewCopilot } from './copilot/pages/NewCopilot';
 import { CopilotSession } from './copilot/pages/CopilotSession';
+import { UsageDashboard } from './pages/UsageDashboard';
 
 // Instantiate Query Client for server state caching
 const queryClient = new QueryClient({
@@ -28,6 +29,7 @@ function App() {
             <Route path="/interviews/:id" element={<InterviewSession />} />
             <Route path="/copilots/new" element={<NewCopilot />} />
             <Route path="/copilots/:id" element={<CopilotSession />} />
+            <Route path="/usage" element={<UsageDashboard />} />
           </Routes>
         </Layout>
       </BrowserRouter>

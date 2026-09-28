@@ -22,27 +22,28 @@ env/
 
 # ─── Python Cache & Bytecode ───────────────────────────────
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .ipynb_checkpoints/
 *.egg-info/
+dist/
+build/
+*.egg
 
 # ─── Node.js & Web Frontend ────────────────────────────────
 node_modules/
-dist/
-build/
 frontend-new/node_modules/
 frontend-new/dist/
 frontend-new/build/
 .eslintcache
 yarn-error.log
 pnpm-debug.log
+npm-debug.log*
 
-# ─── Runtime Data, Session Storage & Screenshots ───────────
+# ─── Runtime Data, Session Storage & Media ─────────────────
 interviews/
 storage/
 **/storage/
@@ -50,8 +51,6 @@ logs/
 *.log
 temp/
 tmp/
-
-# ─── Audio & Media Files ───────────────────────────────────
 *.wav
 *.mp3
 *.pcm
@@ -74,37 +73,22 @@ tmp/
 *.sqlite3-wal
 *.sqlite-journal
 db.sqlite3
-
-# ─── Node.js ──────────────────────────────────────────────
-node_modules/
-dist/
-build/
-.eslintcache
-yarn-error.log
-pnpm-debug.log
-
-# ─── Docker ───────────────────────────────────────────────
 postgres_data/
 
-# ─── IDE & Editor ─────────────────────────────────────────
+# ─── IDE, Editor & OS ──────────────────────────────────────
 .vscode/
 .idea/
+.gemini/
+.agents/
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.swp
-
-# ─── OS-Specific ──────────────────────────────────────────
+*.swo
 .DS_Store
 Thumbs.db
 ehthumbs.db
-
-# ─── Logs & Temp Files ────────────────────────────────────
-*.log
-logs/
-temp/
-tmp/
 
 # ─── Playwright & Browser Automation ──────────────────────
 .playwright/
@@ -115,19 +99,6 @@ test-results/
 .cache/
 teams_bot_profile/
 
-# ─── IDE, Editor & OS ──────────────────────────────────────
-.vscode/
-.idea/
-.gemini/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.swp
-.DS_Store
-Thumbs.db
-ehthumbs.db
-
 # ─── AI-DLC & Workspace Agent Runtime ──────────────────────
 .kiro/
 aidlc/
@@ -137,12 +108,14 @@ AGENTS.md
 htmlcov/
 coverage.xml
 .coverage
+.coverage.*
 *.cover
 
-# ─── Archive (historical migration plans) ────────────────
+# ─── Archive & Temporary Docs ─────────────────────────────
 docs/archive/
-
-# ─── Excluded Project Files ───────────────────────────────
+docss/
+docs
+docss.zip
 ARCHITECTURE.md
 VAD.md
 PROCESS.md
@@ -158,10 +131,6 @@ migration-plan-phase3.md
 migration-plan-phase4.md
 migration-plan-phase5.md
 packages/
-PROCESS.md
-docss/
-docs
-docss.zip
 
 # ─── Scratch & Diagnostic Test Scripts ─────────────────
 scratch_*.py
@@ -178,10 +147,13 @@ scripts/preflight.sh
 scripts/run_full_diag.sh
 scripts/start_session.json
 scripts/test_*
-AGENTS.md
 
 # ─── Diagnostic & Phase 2 / Phase 3 Test Suites ────────
 tests/test_phase2*.py
 tests/unit/test_phase2*.py
 tests/test_phase3*.py
-tests/unit/test_phase3*.py
+tests/unit/test_phase3*.py
+tests/unit/test_phase_a_usage_service.py
+tests/unit/test_phase_b_llm_instrumentation.py
+tests/unit/test_phase_c_duration_tracking.py
+tests/unit/test_phase_d_usage_dashboard.py

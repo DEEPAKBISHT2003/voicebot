@@ -2,10 +2,12 @@ import os
 import json
 import time
 import asyncio
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Union
+import uuid
 from openai import AsyncOpenAI
 from loguru import logger
 from services.copilot.src.core.config import Settings
+from services.copilot.src.services.usage_service import usage_service
 
 
 def clean_json_loads(text: str) -> dict:
@@ -336,7 +338,9 @@ Return ONLY valid JSON matching this exact structure:
         resume: str = "",
         jd: str = "",
         current_interview_state: Optional[Dict[str, Any]] = None,
-        timeout: float = 15.0
+        timeout: float = 15.0,
+        session_id: Optional[Union[str, uuid.UUID]] = None,
+        call_identifier: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
         Executes the unified post-QA inference call and deterministically computes the accuracy score.
@@ -356,8 +360,8 @@ Return ONLY valid JSON matching this exact structure:
             current_interview_state=current_interview_state
         )
 
-        start_time = time.time()
         try:
+            t0 = time.monotonic()
             chat_completion = await asyncio.wait_for(
                 self.client.chat.completions.create(
                     messages=[
@@ -369,8 +373,23 @@ Return ONLY valid JSON matching this exact structure:
                 ),
                 timeout=timeout
             )
+            duration_ms = int((time.monotonic() - t0) * 1000)
+
+            if session_id and hasattr(chat_completion, "usage") and chat_completion.usage:
+                try:
+                    await usage_service.record_llm_usage(
+                        session_id=session_id,
+                        stage="unified_qa",
+                        model=self.model,
+                        usage=chat_completion.usage,
+                        duration_ms=duration_ms,
+                        call_identifier=call_identifier,
+                    )
+                except Exception as usage_err:
+                    logger.warning(f"[UnifiedQAWorker] Failed to record usage telemetry for session {session_id}: {usage_err}")
+
             raw_content = chat_completion.choices[0].message.content
-            duration = time.time() - start_time
+            duration = duration_ms / 1000.0
             parsed = clean_json_loads(raw_content)
 
             # Validate top-level schema keys
