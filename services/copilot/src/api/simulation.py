@@ -167,6 +167,9 @@ async def simulation_websocket(
             return
 
     sess = active_sessions[session_id]
+    sess["bot_joined"] = True
+    sess["caption_socket_connected"] = True
+    sess["transcript_processor_initialized"] = True
     engine: CopilotSessionEngine = sess["engine"]
 
     # Transcribe the full WAV file (optional simulation fallback)
@@ -242,6 +245,21 @@ async def simulation_websocket(
                     seg = transcript_segments[seg_index]
                     if seg["start"] <= elapsed:
                         logger.info(f"[Sim] [{seg['speaker']}]: {seg['text']}")
+                        import time as _t
+                        now_ts = _t.time()
+                        sess["first_caption_received"] = True
+                        sess["last_caption_time"] = now_ts
+                        if "first_caption_timestamp" not in sess or sess["first_caption_timestamp"] is None:
+                            sess["first_caption_timestamp"] = now_ts
+                        sess["caption_count"] = sess.get("caption_count", 0) + 1
+                        if not isinstance(sess.get("unique_speakers"), set):
+                            sess["unique_speakers"] = set(sess.get("unique_speakers") or [])
+                        spk = seg.get("speaker")
+                        if spk and spk.lower() != "unknown":
+                            sess["unique_speakers"].add(spk)
+                        sess["unique_speakers_detected"] = len(sess["unique_speakers"])
+                        if sess.get("caption_count", 0) >= 2 or sess.get("unique_speakers_detected", 0) >= 2:
+                            sess["readiness_confirmed"] = True
                         await engine.add_message(seg["speaker"], seg["text"], websocket=copilot_ws)
                         seg_index += 1
                     else:

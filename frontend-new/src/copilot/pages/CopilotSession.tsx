@@ -19,6 +19,7 @@ import {
   Pin
 } from 'lucide-react';
 import { useCopilotAudio, getTranscriptEntryKey, type CopilotTranscriptEntry } from '../hooks/useCopilotAudio';
+import { InterviewReadinessPanel } from '../components/InterviewReadinessPanel';
 import { stopCopilot, serviceOffCopilot, getCopilotStatus, finalizeCopilotReport } from '../../api/copilot';
 import type { CopilotFinalReport } from '../../types/copilot-report';
 
@@ -61,7 +62,13 @@ export const CopilotSession: React.FC = () => {
     togglePinQuestion,
     startConnection,
     stopConnection,
-    updateState
+    updateState,
+    reportReady,
+    reportStatus,
+    setReportStatus,
+    reportError,
+    setReportError,
+    readiness,
   } = useCopilotAudio(id || null);
 
   const [uiMode, setUiMode] = useState<'live' | 'report'>('live');
@@ -104,17 +111,48 @@ export const CopilotSession: React.FC = () => {
           setFinalReport(res.final_report);
         }
         const active = (res as any).is_active;
-        const serviceOff = (res as any).service_off || res.status === 'Service Off';
-        const hasReport = Boolean(res.final_report && res.final_report.is_finalized === true);
+        const serviceOff = Boolean(
+          (res as any).service_off ||
+          res.status === 'Service Off' ||
+          res.session_state === 'DISCONNECT_REQUESTED' ||
+          res.session_state === 'FINALIZING' ||
+          res.session_state === 'GENERATING_REPORT' ||
+          res.session_state === 'SERVICE_DISCONNECTED' ||
+          res.session_state === 'REPORT_READY'
+        );
+        const hasReport = Boolean(
+          res.report_ready ||
+          (res.final_report && res.final_report.is_finalized === true)
+        );
 
-        if (hasReport || serviceOff || active === false) {
+        if (serviceOff) {
+          setIsServiceOff(true);
+        }
+
+        if (res.report_status === 'generating') {
+          setIsGeneratingReport(true);
+        } else if (res.report_status === 'ready') {
+          setIsGeneratingReport(false);
+        }
+
+        if (res.report_error) {
+          setFinalizationError(res.report_error);
+        }
+
+        if (hasReport) {
           setIsCompletedSession(true);
           setIsSimulationFinished(true);
-          if (serviceOff) setIsServiceOff(true);
+          setIsGeneratingReport(false);
           stopConnection();
-          if (hasReport) {
+          if (res.final_report && res.final_report.is_finalized === true) {
             setUiMode('report');
           }
+        } else if (serviceOff) {
+          // Disconnected from call, but report is still compiling in background
+          setIsCompletedSession(false);
+        } else if (active === false) {
+          setIsCompletedSession(true);
+          stopConnection();
         } else {
           setIsCompletedSession(false);
           startConnection();
@@ -243,9 +281,11 @@ export const CopilotSession: React.FC = () => {
   }, [transcript, isTranscriptExpanded]);
 
 
-  // Poll backend status to auto-detect session closure for active sessions
+  // Polling effect to track session progress and report compilation
   useEffect(() => {
-    if (!id || isServiceOff || isCompletedSession) return;
+    if (!id) return;
+    // When report is ready and loaded, polling can stop
+    if (reportReady && finalReport?.is_finalized) return;
 
     const checkStatus = async () => {
       try {
@@ -255,21 +295,28 @@ export const CopilotSession: React.FC = () => {
           if (res.final_report && res.final_report.is_finalized === true) {
             setFinalReport(res.final_report);
           }
-          const active = (res as any).is_active;
-          const serviceOff = (res as any).service_off || res.status === 'Service Off';
-          const hasReport = Boolean(res.final_report && res.final_report.is_finalized === true);
-
+          const serviceOff = Boolean(
+            (res as any).service_off ||
+            res.status === 'Service Off' ||
+            res.session_state === 'DISCONNECT_REQUESTED' ||
+            res.session_state === 'FINALIZING' ||
+            res.session_state === 'GENERATING_REPORT' ||
+            res.session_state === 'SERVICE_DISCONNECTED' ||
+            res.session_state === 'REPORT_READY'
+          );
           if (serviceOff) {
             setIsServiceOff(true);
-            setIsCompletedSession(true);
-            stopConnection();
-          } else if (hasReport || active === false) {
+          }
+          if (res.report_ready) {
+            setIsGeneratingReport(false);
             setIsCompletedSession(true);
             setIsSimulationFinished(true);
-            stopConnection();
-            if (hasReport) {
-              setUiMode('report');
-            }
+          } else if (res.report_status === 'generating') {
+            setIsGeneratingReport(true);
+          }
+          if (res.report_error) {
+            setFinalizationError(res.report_error);
+            setIsGeneratingReport(false);
           }
         }
       } catch (err) {
@@ -280,17 +327,71 @@ export const CopilotSession: React.FC = () => {
     checkStatus();
     const interval = setInterval(checkStatus, 3000);
     return () => clearInterval(interval);
-  }, [id, isServiceOff, isCompletedSession]);
+  }, [id, reportReady, finalReport]);
+
+  const isCompiling = isGeneratingReport || reportStatus === 'generating';
+  const isViewResultsEnabled = Boolean(
+    reportReady &&
+    (finalReport?.is_finalized === true || (finalReport && !(finalReport as any).error)) &&
+    !isCompiling
+  );
+
+  const getFinalResultsTooltip = (): string => {
+    if (isCompiling) {
+      return 'Generating final report...';
+    }
+    if (reportStatus === 'failed' || finalizationError || reportError) {
+      return 'Final report generation failed. Click Retry in the error banner.';
+    }
+    if (!isViewResultsEnabled) {
+      return 'Disconnect the service to generate final interview results.';
+    }
+    return 'View the finalized interview evaluation report';
+  };
+
+  const handleRetryFinalize = async () => {
+    if (!id || isCompiling) return;
+    setIsGeneratingReport(true);
+    setFinalizationError(null);
+    setReportError(null);
+    setReportStatus('generating');
+    try {
+      const finalRes = await finalizeCopilotReport(id);
+      if (finalRes && finalRes.is_finalized === true) {
+        setFinalReport(finalRes);
+        updateState({
+          report_ready: true,
+          report_status: 'ready',
+          session_state: 'REPORT_READY',
+          final_report: finalRes
+        });
+      } else {
+        const errMsg = (finalRes as any)?.error || 'Final report generation failed.';
+        setFinalizationError(errMsg);
+        setReportStatus('failed');
+      }
+    } catch (err: any) {
+      console.error('Retry compilation failed:', err);
+      setFinalizationError(err?.message || 'Final report generation failed.');
+      setReportStatus('failed');
+    } finally {
+      setIsGeneratingReport(false);
+    }
+  };
 
   const handleServiceOff = async () => {
     if (!id || isServiceOffLoading || isServiceOff) return;
     setIsServiceOffLoading(true);
     try {
       await serviceOffCopilot(id);
-      stopConnection();
       setIsServiceOff(true);
+      setIsGeneratingReport(true);
+      setFinalizationError(null);
+      setReportError(null);
+      setReportStatus('generating');
     } catch (e) {
       console.error('Failed to execute Service Off on backend:', e);
+      setFinalizationError('Failed to disconnect service. Please try again.');
     } finally {
       setIsServiceOffLoading(false);
     }
@@ -353,7 +454,7 @@ export const CopilotSession: React.FC = () => {
               {/* View Final Results Button */}
               <button
                 onClick={async () => {
-                  if (!id) return;
+                  if (!isViewResultsEnabled || !id) return;
                   if (finalReport && finalReport.is_finalized === true) {
                     setUiMode('report');
                     return;
@@ -364,11 +465,15 @@ export const CopilotSession: React.FC = () => {
                     const finalRes = await finalizeCopilotReport(id);
                     if (finalRes && finalRes.is_finalized === true) {
                       setFinalReport(finalRes);
-                      updateState(finalRes);
+                      updateState({
+                        report_ready: true,
+                        report_status: 'ready',
+                        session_state: 'REPORT_READY',
+                        final_report: finalRes
+                      });
                       setUiMode('report');
                     } else {
-                      // Failed or unconfirmed finalization: do not enter report mode, do not overwrite existing valid report
-                      const errMsg = finalRes?.error || 'Final evaluation synthesis failed. Session remains eligible for retry.';
+                      const errMsg = (finalRes as any)?.error || 'Final evaluation synthesis failed. Session remains eligible for retry.';
                       console.warn('[Finalize] Report finalization failed or unconfirmed:', errMsg);
                       setFinalizationError(errMsg);
                     }
@@ -379,17 +484,20 @@ export const CopilotSession: React.FC = () => {
                     setIsGeneratingReport(false);
                   }
                 }}
-                disabled={isGeneratingReport}
-                className={`flex items-center gap-2 px-4 py-2 text-white text-xs font-bold rounded-lg shadow-md transition-all cursor-pointer border ${
-                  isSimulationFinished
-                    ? 'bg-green-600 hover:bg-green-700 border-green-700 animate-bounce'
-                    : 'bg-primary hover:bg-primary/90 border-primary'
+                disabled={!isViewResultsEnabled}
+                title={getFinalResultsTooltip()}
+                className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg shadow-md transition-all border ${
+                  !isViewResultsEnabled
+                    ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed shadow-none'
+                    : isSimulationFinished
+                    ? 'bg-green-600 hover:bg-green-700 text-white border-green-700 cursor-pointer animate-bounce'
+                    : 'bg-primary hover:bg-primary/90 text-white border-primary cursor-pointer'
                 }`}
               >
-                {isGeneratingReport ? (
+                {isCompiling ? (
                   <>
                     <div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-white" />
-                    Compiling Report...
+                    Generating final report...
                   </>
                 ) : (
                   <>
@@ -400,7 +508,7 @@ export const CopilotSession: React.FC = () => {
               </button>
 
               {/* Status Indicator */}
-              {/* {isServiceOff ? (
+              {isServiceOff ? (
                 <div className="flex items-center gap-2 px-3 py-1.5 bg-red-50 rounded-lg border border-red-200 shadow-sm">
                   <span className="h-2.5 w-2.5 rounded-full bg-red-600" />
                   <span className="text-xs font-black uppercase text-red-700 tracking-wider">Service Disconnected</span>
@@ -411,36 +519,23 @@ export const CopilotSession: React.FC = () => {
                   <span className="text-xs font-bold uppercase text-green-700 tracking-wider">COMPLETED</span>
                 </div>
               ) : (
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-white rounded-lg border border-border-gray">
-                  <span className={`h-2.5 w-2.5 rounded-full ${status === 'connected' ? 'bg-green-500 animate-pulse' :
-                      status === 'connecting' ? 'bg-amber-500 animate-pulse' : 'bg-muted-gray'
-                    }`} />
-                  <span className="text-xs font-bold capitalize text-primary">{status === 'disconnected' ? 'On Hold' : status}</span>
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-white rounded-lg border border-border-gray shadow-xs">
+                  <span className={`h-2.5 w-2.5 rounded-full ${
+                    readiness.interviewReady
+                      ? 'bg-green-500 animate-pulse'
+                      : status === 'connected'
+                      ? 'bg-blue-500 animate-pulse'
+                      : status === 'connecting'
+                      ? 'bg-amber-500 animate-pulse'
+                      : 'bg-muted-gray'
+                  }`} />
+                  <span className="text-xs font-bold capitalize text-primary">
+                    {readiness.interviewReady
+                      ? 'Interview Ready'
+                      : readiness.state ? readiness.state.replace(/_/g, ' ').toLowerCase() : (status === 'disconnected' ? 'On Hold' : status)}
+                  </span>
                 </div>
-              )} */}
-
-              {/* {!isCompletedSession && !isServiceOff && (
-                <>
-                  {status === 'connected' ? (
-                    <button
-                      onClick={stopConnection}
-                      className="flex items-center gap-2 px-4 py-2 bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold rounded-lg border border-red-200 transition-colors"
-                    >
-                      <Power className="h-3.5 w-3.5" />
-                      Disconnected
-                    </button>
-                  ) : (
-                    <button
-                      onClick={startConnection}
-                      disabled={status === 'connecting'}
-                      className="flex items-center gap-2 px-4 py-2 bg-primary hover:bg-primary/95 text-white text-xs font-bold rounded-lg disabled:opacity-50 transition-colors shadow-sm"
-                    >
-                      <Mic className="h-3.5 w-3.5" />
-                      {status === 'connecting' ? 'Connecting...' : 'Connect Copilot'}
-                    </button>
-                  )}
-                </>
-              )} */}
+              )}
 
               {/* Dedicated SERVICE OFF / Disconnect Button */}
               <button
@@ -449,9 +544,9 @@ export const CopilotSession: React.FC = () => {
                 className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg shadow-sm transition-all border ${
                   isServiceOff || isCompletedSession
                     ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed opacity-90'
-                    : 'bg-red-600 hover:bg-red-700 text-white border-red-700 active:scale-95 disabled:opacity-50'
+                    : 'bg-red-600 hover:bg-red-700 text-white border-red-700 active:scale-95 disabled:opacity-50 cursor-pointer'
                 }`}
-                title={isServiceOff ? "Session is permanently Service Off" : isCompletedSession ? "Session is completed" : "Instruct Teams bot to leave and permanently shut down this session"}
+                title={isServiceOff ? "Session is permanently Service Off" : isCompletedSession ? "Session is completed" : "Instruct Teams bot to leave and generate final interview results"}
               >
                 <Power className="h-3.5 w-3.5" />
                 {isServiceOff ? 'Service Disconnected' : isServiceOffLoading ? 'Disconnecting...' : 'Disconnect'}
@@ -461,23 +556,42 @@ export const CopilotSession: React.FC = () => {
         </div>
       </div>
 
-      {(error || finalizationError) && (
+      {(error || finalizationError || reportError) && (
         <div className="p-3 bg-red-50 border border-red-200 text-red-600 rounded-lg text-xs font-semibold flex items-center justify-between">
-          <span>Error: {finalizationError || error}</span>
-          {finalizationError && (
+          <span>Error: {finalizationError || reportError || error}</span>
+          <div className="flex items-center gap-2">
+            {(finalizationError || reportError || reportStatus === 'failed') && (
+              <button
+                onClick={handleRetryFinalize}
+                disabled={isCompiling}
+                className="px-2 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-xs font-bold cursor-pointer transition-colors disabled:opacity-50"
+              >
+                Retry
+              </button>
+            )}
             <button
-              onClick={() => setFinalizationError(null)}
+              onClick={() => {
+                setFinalizationError(null);
+                setReportError(null);
+              }}
               className="text-red-600 hover:text-red-800 text-xs font-bold underline ml-2 cursor-pointer"
             >
               Dismiss
             </button>
-          )}
+          </div>
         </div>
       )}
 
       {/* Main Grid Workspace */}
       {uiMode === 'live' ? (
         <div className="space-y-6 animate-fade-in">
+          {/* Interview Readiness Status Panel */}
+          <InterviewReadinessPanel
+            readiness={readiness}
+            sessionId={id}
+            isServiceOff={isServiceOff}
+            isCompletedSession={isCompletedSession}
+          />
           {/* Simulation Audio Control Bar */}
           {isSimulation && (
             <div className="bg-primary/5 border border-primary/20 rounded-xl p-3 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-sm">

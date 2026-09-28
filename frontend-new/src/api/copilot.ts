@@ -14,6 +14,23 @@ export interface StartCopilotResponse {
   status: string;
 }
 
+export interface InterviewReadiness {
+  state: 'BOT_JOINING' | 'IN_MEETING' | 'CAPTION_STREAM_CONNECTED' | 'TRANSCRIPT_ENGINE_READY' | 'CAPTIONS_FLOWING' | 'INTERVIEW_READY' | string;
+  interview_ready: boolean;
+  readiness_confirmed: boolean;
+  bot_joined: boolean;
+  caption_socket_connected: boolean;
+  transcript_processor_initialized: boolean;
+  first_caption_received: boolean;
+  caption_count: number;
+  unique_speakers: string[];
+  unique_speakers_detected: number;
+  has_proven_transcript?: boolean;
+  first_caption_timestamp?: number | null;
+  last_caption_time?: number | null;
+  caption_seconds_ago?: number | null;
+}
+
 export interface CopilotStatusResponse {
   session_id?: string;
   is_active?: boolean;
@@ -24,6 +41,22 @@ export interface CopilotStatusResponse {
   final_report?: CopilotFinalReport | null;
   intelligence?: any;
   assistance?: any;
+  session_state?: string;
+  report_ready?: boolean;
+  report_status?: string;
+  report_error?: string | null;
+  readiness?: InterviewReadiness;
+  interview_ready?: boolean;
+  readiness_confirmed?: boolean;
+  readiness_state?: string;
+  bot_joined?: boolean;
+  caption_socket_connected?: boolean;
+  transcript_processor_initialized?: boolean;
+  first_caption_received?: boolean;
+  has_proven_transcript?: boolean;
+  caption_count?: number;
+  unique_speakers_detected?: number;
+  first_caption_timestamp?: number | null;
 }
 
 export const startCopilot = async (data: StartCopilotRequest): Promise<StartCopilotResponse> => {

@@ -35,6 +35,7 @@ export interface CopilotTranscriptEntry {
   timestamp: string;
   evaluation?: CopilotEvaluation;
   source?: string;
+  is_final?: boolean;
 }
 
 export const getTranscriptEntryKey = (entry: CopilotTranscriptEntry): string => {
@@ -165,6 +166,22 @@ export interface PreviousAnswerEvaluation {
   answer: string;
 }
 
+export interface InterviewReadinessState {
+  state: string;
+  interviewReady: boolean;
+  readinessConfirmed: boolean;
+  botJoined: boolean;
+  captionSocketConnected: boolean;
+  transcriptProcessorInitialized: boolean;
+  firstCaptionReceived: boolean;
+  hasProvenTranscript: boolean;
+  captionCount: number;
+  uniqueSpeakers: string[];
+  uniqueSpeakersDetected: number;
+  firstCaptionTimestamp: number | null;
+  lastCaptionTime: number | null;
+}
+
 export const useCopilotAudio = (sessionId: string | null) => {
   const [status, setStatus] = useState<CopilotConnectionStatus>('disconnected');
   const [error, setError] = useState<string | null>(null);
@@ -199,6 +216,29 @@ export const useCopilotAudio = (sessionId: string | null) => {
   // Phase 2W: Single live previous-answer accuracy score (0-100) and evaluation details
   const [previousAnswerAccuracy, setPreviousAnswerAccuracy] = useState<number | null>(null);
   const [previousAnswer, setPreviousAnswer] = useState<PreviousAnswerEvaluation | null>(null);
+
+  // Phase 5: Dedicated backend report readiness, lifecycle state, and error tracking
+  const [reportReady, setReportReady] = useState<boolean>(false);
+  const [reportStatus, setReportStatus] = useState<string>('idle');
+  const [sessionState, setSessionState] = useState<string>('DISCONNECTED');
+  const [reportError, setReportError] = useState<string | null>(null);
+
+  // Interview Readiness System: startup activation checklist & live caption status
+  const [readiness, setReadiness] = useState<InterviewReadinessState>({
+    state: 'BOT_JOINING',
+    interviewReady: false,
+    readinessConfirmed: false,
+    botJoined: false,
+    captionSocketConnected: false,
+    transcriptProcessorInitialized: false,
+    firstCaptionReceived: false,
+    hasProvenTranscript: false,
+    captionCount: 0,
+    uniqueSpeakers: [],
+    uniqueSpeakersDetected: 0,
+    firstCaptionTimestamp: null,
+    lastCaptionTime: null,
+  });
 
   const togglePinQuestion = (id: string) => {
     setQuestions((prev) =>
@@ -357,6 +397,57 @@ export const useCopilotAudio = (sessionId: string | null) => {
         answer: data.answer || ''
       });
     }
+
+    if (typeof data.report_ready === 'boolean') {
+      setReportReady(data.report_ready);
+    }
+    if (data.report_status) {
+      setReportStatus(data.report_status);
+    }
+    if (data.session_state) {
+      setSessionState(data.session_state);
+    }
+    if (data.report_error !== undefined) {
+      setReportError(data.report_error);
+    }
+
+    // Interview Readiness System update
+    if (data.readiness || typeof data.interview_ready === 'boolean' || typeof data.readiness_confirmed === 'boolean' || data.readiness_state) {
+      const r = data.readiness || {};
+      const isConfirmed = Boolean(r.readiness_confirmed ?? data.readiness_confirmed ?? false);
+      const isReady = Boolean(r.interview_ready ?? data.interview_ready ?? isConfirmed);
+      const bJoined = Boolean(r.bot_joined ?? data.bot_joined ?? false);
+      const capConn = Boolean(r.caption_socket_connected ?? data.caption_socket_connected ?? false);
+      const procInit = Boolean(r.transcript_processor_initialized ?? data.transcript_processor_initialized ?? false);
+      const firstCap = Boolean(r.first_caption_received ?? data.first_caption_received ?? false);
+      const hasProven = Boolean(r.has_proven_transcript ?? data.has_proven_transcript ?? false);
+      const st = r.state || data.readiness_state || (isReady ? 'INTERVIEW_READY' : firstCap ? 'CAPTIONS_FLOWING' : 'BOT_JOINING');
+      const capCount = typeof r.caption_count === 'number' ? r.caption_count : (typeof data.caption_count === 'number' ? data.caption_count : 0);
+      const spkList = Array.isArray(r.unique_speakers) ? r.unique_speakers : [];
+      const spkCount = typeof r.unique_speakers_detected === 'number' ? r.unique_speakers_detected : (typeof data.unique_speakers_detected === 'number' ? data.unique_speakers_detected : spkList.length);
+      const firstCapTs = r.first_caption_timestamp ? Number(r.first_caption_timestamp) * 1000 : (typeof data.first_caption_timestamp === 'number' ? data.first_caption_timestamp * 1000 : null);
+      const lastCap = r.last_caption_time ? Number(r.last_caption_time) * 1000 : (firstCap ? Date.now() : null);
+
+      setReadiness((prev) => {
+        const mergedSpeakers = Array.from(new Set([...prev.uniqueSpeakers, ...spkList]));
+        const mergedCount = Math.max(prev.captionCount, capCount);
+        return {
+          state: st,
+          interviewReady: isReady,
+          readinessConfirmed: isConfirmed,
+          botJoined: prev.botJoined || bJoined,
+          captionSocketConnected: prev.captionSocketConnected || capConn,
+          transcriptProcessorInitialized: prev.transcriptProcessorInitialized || procInit,
+          firstCaptionReceived: prev.firstCaptionReceived || firstCap,
+          hasProvenTranscript: prev.hasProvenTranscript || hasProven,
+          captionCount: mergedCount,
+          uniqueSpeakers: mergedSpeakers,
+          uniqueSpeakersDetected: Math.max(prev.uniqueSpeakersDetected, spkCount, mergedSpeakers.length),
+          firstCaptionTimestamp: prev.firstCaptionTimestamp || firstCapTs,
+          lastCaptionTime: lastCap || prev.lastCaptionTime,
+        };
+      });
+    }
   };
 
   const startConnection = async () => {
@@ -397,9 +488,27 @@ export const useCopilotAudio = (sessionId: string | null) => {
               speaker_role: data.speaker_role,
               text: data.text || '',
               timestamp: data.timestamp || new Date().toISOString(),
-              source: data.source || 'teams_native'
+              source: data.source || 'teams_native',
+              is_final: data.is_final !== undefined ? data.is_final : true,
             };
             setTranscript((prev) => appendSingleTurn(prev, singleTurn));
+            const incomingSpeaker = (singleTurn.speaker || singleTurn.speaker_name || '').trim();
+            setReadiness((prev) => {
+              const newSpeakers = incomingSpeaker && incomingSpeaker.toLowerCase() !== 'unknown' && !prev.uniqueSpeakers.includes(incomingSpeaker)
+                ? [...prev.uniqueSpeakers, incomingSpeaker]
+                : prev.uniqueSpeakers;
+              const newCount = prev.captionCount + 1;
+              return {
+                ...prev,
+                hasProvenTranscript: true,
+                firstCaptionReceived: true,
+                captionCount: newCount,
+                uniqueSpeakers: newSpeakers,
+                uniqueSpeakersDetected: Math.max(prev.uniqueSpeakersDetected, newSpeakers.length),
+                firstCaptionTimestamp: prev.firstCaptionTimestamp || Date.now(),
+                lastCaptionTime: Date.now(),
+              };
+            });
           } else if (data.type === 'qa_evaluated') {
             console.log('[CopilotWS] Received qa_evaluated event:', data);
             if (typeof data.accuracy_score === 'number') {
@@ -490,5 +599,15 @@ export const useCopilotAudio = (sessionId: string | null) => {
     stopConnection,
     sendMessage,
     updateState,
+    reportReady,
+    setReportReady,
+    reportStatus,
+    setReportStatus,
+    sessionState,
+    setSessionState,
+    reportError,
+    setReportError,
+    readiness,
+    setReadiness,
   };
 };

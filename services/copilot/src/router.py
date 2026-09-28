@@ -10,6 +10,8 @@ from services.copilot.src.api.deps import get_copilot_repo, get_copilot_sessions
 from services.copilot.src.services.repository import CopilotRepository
 from services.copilot.src.engine.session import CopilotSessionEngine
 from services.copilot.src.core.config import Settings
+from services.copilot.src.services.readiness import compute_readiness
+from services.copilot.src.websocket.handler import stop_native_monitor
 
 router = APIRouter()
 
@@ -42,13 +44,28 @@ async def start_copilot(
         active_sessions[session_id] = {
             "engine": engine,
             "status": "Connecting to audio stream...",
+            "session_state": "CONNECTED",
+            "report_ready": False,
+            "report_status": "not_ready",
+            "report_error": None,
             "transcript": engine.get_transcript(),
             "timestamp": datetime.datetime.now().isoformat(),
             "jd": req.jd,
             "resume": req.resume,
             "custom_prompt": req.custom_prompt,
             "is_active": True,
-            "websocket": None
+            "service_off": False,
+            "websocket": None,
+            "bot_joined": False,
+            "caption_socket_connected": False,
+            "transcript_processor_initialized": True,
+            "first_caption_received": False,
+            "readiness_confirmed": False,
+            "caption_count": 0,
+            "unique_speakers": set(),
+            "unique_speakers_detected": 0,
+            "first_caption_timestamp": None,
+            "last_caption_time": None,
         }
         
         logger.info(f"Initialized AI Copilot Session: {session_id}")
@@ -102,6 +119,170 @@ async def stop_copilot(
         # Check database fallback
         return {"status": "stopped"}
 
+async def _execute_service_off_finalization(session_id: str, sess: dict, repo: CopilotRepository):
+    """
+    Executes session finalization following service disconnect:
+    1. FINALIZING: Flushes turn aggregators into transcript and finalizes QA FSM.
+    2. GENERATING_REPORT: Invokes engine.finalize_report().
+    3. REPORT_READY: Updates report_ready=True, report_status='ready', persists to DB.
+    On error: Sets report_ready=False, report_status='failed', report_error=...
+    """
+    logger.info(f"[CopilotServiceOff] Background finalization started for session {session_id}")
+    dashboards = list(sess.get("dashboard_websockets", set()))
+    try:
+        sess["session_state"] = "FINALIZING"
+        sess["status"] = "Finalizing session..."
+
+        # Notify dashboards of FINALIZING state
+        for ws in dashboards:
+            try:
+                await ws.send_json({
+                    "type": "copilot_update",
+                    "session_id": session_id,
+                    "status": "Finalizing session...",
+                    "session_state": "FINALIZING",
+                    "report_ready": False,
+                    "report_status": "generating",
+                    "service_off": True
+                })
+            except Exception:
+                pass
+
+        # Capture and commit any pending speech/turns from aggregators
+        turn_agg = sess.get("turn_aggregator")
+        logical_agg = sess.get("logical_aggregator")
+        engine = sess.get("engine")
+        if turn_agg and logical_agg and engine:
+            try:
+                flushed_seqs = turn_agg.finalize_all_pending()
+                for s_list in flushed_seqs.values():
+                    for fseq in s_list:
+                        turns = logical_agg.process_finalized_sequence(fseq)
+                        for t in turns:
+                            await engine.add_message(
+                                speaker=t.speaker_name,
+                                text=t.text,
+                                source="teams_native",
+                                allow_merge=False,
+                                turn_id=t.logical_turn_id,
+                                is_final=True
+                            )
+                final_turns = logical_agg.flush()
+                for t in final_turns:
+                    await engine.add_message(
+                        speaker=t.speaker_name,
+                        text=t.text,
+                        source="teams_native",
+                        allow_merge=False,
+                        turn_id=t.logical_turn_id,
+                        is_final=True
+                    )
+                sess["transcript"] = engine.get_transcript()
+            except Exception as flush_err:
+                logger.warning(f"[CopilotServiceOff] Aggregator turn flush warning: {flush_err}")
+
+        # Stop native monitor task as part of service off finalization
+        stop_native_monitor(sess, session_id, reason="service_off_finalization")
+
+        # Transition to GENERATING_REPORT
+        sess["session_state"] = "GENERATING_REPORT"
+        sess["status"] = "Generating final report..."
+        for ws in dashboards:
+            try:
+                await ws.send_json({
+                    "type": "copilot_update",
+                    "session_id": session_id,
+                    "status": "Generating final report...",
+                    "session_state": "GENERATING_REPORT",
+                    "report_ready": False,
+                    "report_status": "generating",
+                    "service_off": True
+                })
+            except Exception:
+                pass
+
+        if not engine:
+            db_sess = await repo.load_session(session_id)
+            engine = CopilotSessionEngine(
+                session_id,
+                repo,
+                db_sess.get("transcript", []),
+                jd=db_sess.get("jd", ""),
+                resume=db_sess.get("resume", ""),
+                custom_prompt=db_sess.get("custom_prompt", ""),
+                confirmed_qa_pairs=db_sess.get("confirmed_qa_pairs", [])
+            )
+            sess["engine"] = engine
+
+        res = await engine.finalize_report()
+        if res and res.get("is_finalized"):
+            sess["final_report"] = res
+            sess["session_state"] = "REPORT_READY"
+            sess["report_ready"] = True
+            sess["report_status"] = "ready"
+            sess["status"] = "Service Disconnected"
+            sess["report_error"] = None
+
+            # Persist finalized report and state to DB
+            await repo.save_session(
+                session_id,
+                {
+                    "session_id": session_id,
+                    "status": "Service Disconnected",
+                    "service_off": True,
+                    "final_report": res,
+                    "transcript": engine.get_transcript(),
+                    "report_ready": True
+                }
+            )
+            logger.info(f"[CopilotServiceOff] Final evaluation report successfully generated and saved for {session_id}")
+
+            for ws in dashboards:
+                try:
+                    await ws.send_json({
+                        "type": "copilot_update",
+                        "session_id": session_id,
+                        "status": "Service Disconnected",
+                        "session_state": "REPORT_READY",
+                        "report_ready": True,
+                        "report_status": "ready",
+                        "service_off": True,
+                        "final_report": res
+                    })
+                    await ws.close(code=1000)
+                except Exception:
+                    pass
+            sess.get("dashboard_websockets", set()).clear()
+
+        else:
+            raise RuntimeError("Final evaluation synthesis produced invalid or unconfirmed report")
+
+    except Exception as fe:
+        logger.error(f"[CopilotServiceOff] Final report generation failed for session {session_id}: {fe}")
+        sess["session_state"] = "SERVICE_DISCONNECTED"
+        sess["report_ready"] = False
+        sess["report_status"] = "failed"
+        sess["report_error"] = "Final report generation failed."
+        sess["status"] = "Final report generation failed."
+
+        for ws in dashboards:
+            try:
+                await ws.send_json({
+                    "type": "copilot_update",
+                    "session_id": session_id,
+                    "status": "Final report generation failed.",
+                    "session_state": "SERVICE_DISCONNECTED",
+                    "report_ready": False,
+                    "report_status": "failed",
+                    "report_error": "Final report generation failed.",
+                    "service_off": True
+                })
+                await ws.close(code=1000)
+            except Exception:
+                pass
+        sess.get("dashboard_websockets", set()).clear()
+
+
 @router.post("/{session_id}/service-off")
 async def service_off_copilot(
     session_id: str,
@@ -110,31 +291,39 @@ async def service_off_copilot(
 ):
     """
     Dedicated SERVICE OFF endpoint:
-    - Permanently marks session as Service Off (is_active=False, service_off=True, status="Service Off")
+    - Sets session_state to DISCONNECT_REQUESTED and initiates background finalization
     - Requests the browser service to make the Teams bot leave and cleanly shut down
-    - Closes active dashboard WebSockets for this session
-    - Persists Service Off state to disk/repository
-    - Is strictly idempotent
+    - Transitions session through FINALIZING -> GENERATING_REPORT -> SERVICE_DISCONNECTED -> REPORT_READY
+    - Sets report_ready=True ONLY once report is finalized and persisted
+    - Strictly idempotent
     """
     logger.info(f"[CopilotServiceOff] Received SERVICE OFF request for session: {session_id}")
 
-    # 1. Update in-memory session state if active or initialize Service Off record
+    # 1. Update in-memory session state
     if session_id in active_sessions:
         sess = active_sessions[session_id]
         sess["service_off"] = True
         sess["is_active"] = False
-        sess["status"] = "Service Off"
+        sess["session_state"] = "DISCONNECT_REQUESTED"
+        sess["report_ready"] = False
+        sess["report_status"] = "generating"
+        sess["report_error"] = None
+        sess["status"] = "Disconnecting..."
     else:
         active_sessions[session_id] = {
             "service_off": True,
             "is_active": False,
-            "status": "Service Off",
+            "session_state": "DISCONNECT_REQUESTED",
+            "report_ready": False,
+            "report_status": "generating",
+            "report_error": None,
+            "status": "Disconnecting...",
             "transcript": [],
             "dashboard_websockets": set()
         }
         sess = active_sessions[session_id]
 
-    # 2. Persist flag to session directory so state is permanently preserved across restarts
+    # 2. Persist flag to session directory
     try:
         session_dir = os.path.join("interviews", session_id)
         os.makedirs(session_dir, exist_ok=True)
@@ -154,7 +343,7 @@ async def service_off_copilot(
     except Exception as be:
         logger.warning(f"[CopilotServiceOff] Notification to browser-service failed or skipped ({be}); checking local bot process...")
 
-    # 4. If bot process was spawned locally in copilot service, wait bounded time or terminate
+    # 4. If bot process was spawned locally, wait bounded time or terminate
     bot_process = sess.get("bot_process")
     if bot_process and bot_process.poll() is None:
         logger.info(f"[CopilotServiceOff] Waiting for local bot process PID {bot_process.pid} to exit gracefully...")
@@ -225,30 +414,30 @@ async def service_off_copilot(
         except Exception as re:
             logger.warning(f"[CopilotServiceOff] Error stopping runner: {re}")
 
-    # 5. Cleanly close dashboard WebSockets belonging exclusively to this session
+    # 5. Broadcast DISCONNECT_REQUESTED to dashboards
     dashboards = list(sess.get("dashboard_websockets", set()))
     for ws in dashboards:
         try:
             await ws.send_json({
                 "type": "copilot_update",
                 "session_id": session_id,
-                "status": "Service Off",
+                "status": "Disconnecting...",
+                "session_state": "DISCONNECT_REQUESTED",
                 "service_off": True,
-                "is_active": False
+                "is_active": False,
+                "report_ready": False,
+                "report_status": "generating"
             })
-            await ws.close(code=1000)
         except Exception:
             pass
-    if "dashboard_websockets" in sess:
-        sess["dashboard_websockets"].clear()
 
-    # 6. Save final session snapshot to repository
+    # 6. Save intermediate session state
     try:
         await repo.save_session(
             session_id,
             {
                 "session_id": session_id,
-                "status": "Service Off",
+                "status": "Service Disconnected",
                 "service_off": True,
                 "transcript": sess.get("transcript", [])
             }
@@ -256,8 +445,17 @@ async def service_off_copilot(
     except Exception as se:
         logger.debug(f"[CopilotServiceOff] Session save notice: {se}")
 
-    logger.info(f"[CopilotServiceOff] Successfully completed SERVICE OFF for session: {session_id}")
-    return {"status": "Service Off", "session_id": session_id}
+    # 7. Spawn background finalization task to transition FINALIZING -> GENERATING_REPORT -> REPORT_READY
+    asyncio.create_task(_execute_service_off_finalization(session_id, sess, repo))
+
+    logger.info(f"[CopilotServiceOff] Service Off initiated for {session_id}; finalization dispatched in background")
+    return {
+        "status": "Service Disconnected",
+        "session_id": session_id,
+        "session_state": "DISCONNECT_REQUESTED",
+        "report_ready": False,
+        "report_status": "generating"
+    }
 
 @router.get("")
 async def list_copilot_sessions(
@@ -364,7 +562,7 @@ async def get_copilot_status(
                     final_rep = db_sess.get("final_report")
                     sess["final_report"] = final_rep
                     sess["is_active"] = False
-                    sess["status"] = "Service Off" if db_sess.get("service_off") else "Session completed."
+                    sess["status"] = "Service Disconnected" if db_sess.get("service_off") else "Session completed."
             except Exception:
                 pass
 
@@ -386,12 +584,57 @@ async def get_copilot_status(
             e_copy.setdefault("source", "teams_native")
             normalized_transcript.append(e_copy)
 
-        is_act = False if (final_rep or sess.get("service_off")) else sess.get("is_active", True)
+        has_ready_report = bool(final_rep and isinstance(final_rep, dict) and final_rep.get("is_finalized") is True)
+        report_ready = sess.get("report_ready", has_ready_report) or has_ready_report
+
+        session_state = sess.get("session_state")
+        if not session_state:
+            if report_ready:
+                session_state = "REPORT_READY"
+            elif sess.get("service_off"):
+                session_state = "SERVICE_DISCONNECTED"
+            elif sess.get("is_active"):
+                session_state = "IN_MEETING" if raw_transcript else "CONNECTED"
+            else:
+                session_state = "CONNECTED"
+
+        report_status = sess.get("report_status")
+        if not report_status:
+            if report_ready:
+                report_status = "ready"
+            elif sess.get("service_off") and not report_ready:
+                report_status = "generating" if not sess.get("report_error") else "failed"
+            else:
+                report_status = "not_ready"
+
+        is_act = False if (report_ready or sess.get("service_off")) else sess.get("is_active", True)
+        status_text = sess.get("status", "ready")
+        if sess.get("service_off") and report_ready:
+            status_text = "Service Disconnected"
+
+        readiness = compute_readiness(sess)
+
         return {
             "session_id": session_id,
             "is_active": is_act,
             "service_off": sess.get("service_off", False),
-            "status": sess.get("status", "ready"),
+            "status": status_text,
+            "session_state": session_state,
+            "report_ready": report_ready,
+            "report_status": report_status,
+            "report_error": sess.get("report_error"),
+            "readiness": readiness,
+            "interview_ready": readiness["interview_ready"],
+            "readiness_confirmed": readiness["readiness_confirmed"],
+            "readiness_state": readiness["state"],
+            "bot_joined": readiness["bot_joined"],
+            "caption_socket_connected": readiness["caption_socket_connected"],
+            "transcript_processor_initialized": readiness["transcript_processor_initialized"],
+            "first_caption_received": readiness["first_caption_received"],
+            "has_proven_transcript": readiness.get("has_proven_transcript", False),
+            "caption_count": readiness["caption_count"],
+            "unique_speakers_detected": readiness["unique_speakers_detected"],
+            "first_caption_timestamp": readiness["first_caption_timestamp"],
             "transcript": normalized_transcript,
             "intelligence": intelligence,
             "assistance": assistance,
@@ -405,6 +648,7 @@ async def get_copilot_status(
             db_session = await repo.load_session(session_id)
             is_service_off = db_session.get("service_off", False)
             final_report = db_session.get("final_report")
+            has_ready_report = bool(final_report and isinstance(final_report, dict) and final_report.get("is_finalized") is True)
 
             intelligence = {}
             assistance = {}
@@ -425,11 +669,32 @@ async def get_copilot_status(
                 e_copy.setdefault("source", "teams_native")
                 normalized_transcript.append(e_copy)
 
+            session_state = "REPORT_READY" if has_ready_report else ("SERVICE_DISCONNECTED" if is_service_off else "CONNECTED")
+            report_status = "ready" if has_ready_report else ("not_ready" if not is_service_off else "failed")
+            status_text = "Service Disconnected" if is_service_off else "Session completed."
+
+            readiness = compute_readiness(db_session)
+
             return {
                 "session_id": session_id,
                 "is_active": False,
                 "service_off": is_service_off,
-                "status": "Service Off" if is_service_off else "Session completed.",
+                "status": status_text,
+                "session_state": session_state,
+                "report_ready": has_ready_report,
+                "report_status": report_status,
+                "report_error": None if has_ready_report else ("Final report not found" if is_service_off else None),
+                "readiness": readiness,
+                "interview_ready": readiness["interview_ready"],
+                "readiness_confirmed": readiness["readiness_confirmed"],
+                "readiness_state": readiness["state"],
+                "bot_joined": readiness["bot_joined"],
+                "caption_socket_connected": readiness["caption_socket_connected"],
+                "transcript_processor_initialized": readiness["transcript_processor_initialized"],
+                "first_caption_received": readiness["first_caption_received"],
+                "caption_count": readiness["caption_count"],
+                "unique_speakers_detected": readiness["unique_speakers_detected"],
+                "first_caption_timestamp": readiness["first_caption_timestamp"],
                 "transcript": normalized_transcript,
                 "intelligence": intelligence,
                 "assistance": assistance,
@@ -439,11 +704,26 @@ async def get_copilot_status(
             }
         except FileNotFoundError:
             # Session not yet initialized in copilot — return a default waiting state
-            # instead of 404 so the frontend doesn't break during startup
+            readiness = compute_readiness({})
             return {
                 "session_id": session_id,
                 "is_active": False,
                 "status": "Copilot session initializing...",
+                "session_state": "CONNECTED",
+                "report_ready": False,
+                "report_status": "not_ready",
+                "report_error": None,
+                "readiness": readiness,
+                "interview_ready": readiness["interview_ready"],
+                "readiness_confirmed": readiness["readiness_confirmed"],
+                "readiness_state": readiness["state"],
+                "bot_joined": readiness["bot_joined"],
+                "caption_socket_connected": readiness["caption_socket_connected"],
+                "transcript_processor_initialized": readiness["transcript_processor_initialized"],
+                "first_caption_received": readiness["first_caption_received"],
+                "caption_count": readiness["caption_count"],
+                "unique_speakers_detected": readiness["unique_speakers_detected"],
+                "first_caption_timestamp": readiness["first_caption_timestamp"],
                 "transcript": [],
                 "intelligence": {},
                 "assistance": {},
@@ -466,6 +746,10 @@ async def finalize_copilot_report(
             if session_id in active_sessions:
                 active_sessions[session_id]["is_active"] = False
                 active_sessions[session_id]["final_report"] = db_session["final_report"]
+                active_sessions[session_id]["report_ready"] = True
+                active_sessions[session_id]["report_status"] = "ready"
+                active_sessions[session_id]["session_state"] = "REPORT_READY"
+                active_sessions[session_id]["status"] = "Service Disconnected"
             return db_session["final_report"]
     except FileNotFoundError:
         pass
@@ -478,6 +762,10 @@ async def finalize_copilot_report(
         if sess.get("final_report"):
             logger.info(f"Returning already finalized report for active session {session_id}")
             sess["is_active"] = False
+            sess["report_ready"] = True
+            sess["report_status"] = "ready"
+            sess["session_state"] = "REPORT_READY"
+            sess["status"] = "Service Disconnected"
             return sess["final_report"]
 
         engine = sess["engine"]
@@ -514,6 +802,9 @@ async def finalize_copilot_report(
         except Exception as flush_err:
             logger.warning(f"[Finalize] Error flushing pending turns before bot termination: {flush_err}")
 
+        # Stop native monitor task as part of finalize endpoint execution
+        stop_native_monitor(sess, session_id, reason="session_finalize_endpoint")
+
         # Safely terminate bot process now that caption buffers are flushed
         bot_process = sess.get("bot_process")
         if bot_process and bot_process.poll() is None:
@@ -524,10 +815,31 @@ async def finalize_copilot_report(
                 pass
         sess["bot_process"] = None
 
+        sess["session_state"] = "GENERATING_REPORT"
+        sess["report_status"] = "generating"
         res = await engine.finalize_report()
         if res and res.get("is_finalized"):
             sess["is_active"] = False
             sess["final_report"] = res
+            sess["report_ready"] = True
+            sess["report_status"] = "ready"
+            sess["session_state"] = "REPORT_READY"
+            sess["status"] = "Service Disconnected"
+            sess["report_error"] = None
+            try:
+                await repo.save_session(session_id, {
+                    "final_report": res,
+                    "status": "Service Disconnected",
+                    "service_off": True,
+                    "transcript": engine.get_transcript(),
+                    "report_ready": True
+                })
+            except Exception as se:
+                logger.debug(f"[Finalize] Save report notice: {se}")
+        else:
+            sess["report_ready"] = False
+            sess["report_status"] = "failed"
+            sess["report_error"] = "Final report generation failed."
         return res
     else:
         if not db_session:
@@ -633,6 +945,9 @@ async def join_meeting(
                     decoded = line.decode("utf-8", errors="replace").strip()
                     if decoded:
                         logger.info(f"[TeamsBot] {decoded}")
+                        if any(term in decoded for term in ("IN_MEETING", "Meeting admission confirmed", "Real in-meeting state", "Pre-join name input submitted", "Clicking Join now", "Live Captions successfully enabled")):
+                            if session_id in active_sessions:
+                                active_sessions[session_id]["bot_joined"] = True
                 process.stdout.close()
                 process.wait()
                 logger.info(f"[TeamsBot] Bot process exited with code: {process.returncode}")
@@ -728,13 +1043,62 @@ async def post_native_caption(
     }
 
     if sess:
+        sess["bot_joined"] = True
+        sess["caption_socket_connected"] = True
+        sess["first_caption_received"] = True
+        now_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        sess["last_caption_time"] = now_ts
+        if "first_caption_timestamp" not in sess or sess["first_caption_timestamp"] is None:
+            sess["first_caption_timestamp"] = now_ts
+        sess["caption_count"] = sess.get("caption_count", 0) + 1
+        if not isinstance(sess.get("unique_speakers"), set):
+            sess["unique_speakers"] = set(sess.get("unique_speakers") or [])
+        if raw_speaker and raw_speaker.lower() != "unknown":
+            sess["unique_speakers"].add(raw_speaker)
+        sess["unique_speakers_detected"] = len(sess["unique_speakers"])
         sess.setdefault("native_captions", []).append(event_record)
+        logical_agg = sess.get("logical_aggregator")
+        eng = sess.get("engine")
+        if logical_agg and eng:
+            active_prog = logical_agg.update_interim_text(
+                sequence_id=req.caption_sequence,
+                speaker_name=raw_speaker,
+                text=text,
+                current_time=detected_dt if detected_at_str else received_at_dt
+            )
+            if active_prog:
+                logger.info(
+                    f"[Transcript] Progressive Turn Emitted: session_id={session_id}, speaker='{active_prog.speaker_name}', "
+                    f"sequence_id={req.caption_sequence}, turn_id={active_prog.logical_turn_id}, timestamp='{received_at_str}'"
+                )
+                async def _dispatch_prog(t=active_prog):
+                    prog_msg = await eng.add_message(
+                        speaker=t.speaker_name,
+                        text=t.text,
+                        source="teams_native",
+                        allow_merge=False,
+                        turn_id=t.logical_turn_id,
+                        is_final=False
+                    )
+                    sess["transcript"] = eng.get_transcript()
+                    sess["has_proven_transcript"] = True
+                    if sess.get("engine") and sess["engine"].on_update_callback:
+                        await sess["engine"].on_update_callback(prog_msg, is_final=False)
+                    logger.info(
+                        f"[Transcript] Interim Broadcast Sent: session_id={session_id}, speaker='{t.speaker_name}', "
+                        f"turn_id={t.logical_turn_id}, text='{t.text}'"
+                    )
+                import asyncio
+                asyncio.create_task(_dispatch_prog())
+
+        readiness = compute_readiness(sess)
+        if readiness["readiness_confirmed"]:
+            sess["readiness_confirmed"] = True
+
         aggregator = sess.get("turn_aggregator")
         if aggregator:
             try:
                 newly_fin = aggregator.process_raw_event(event_record)
-                logical_agg = sess.get("logical_aggregator")
-                eng = sess.get("engine")
                 disp_ids = sess.get("dispatched_seq_ids")
                 if logical_agg and eng and disp_ids is not None:
                     for strat in ("strategy_c_quiescence_1500ms", "strategy_b_dom_removal"):
@@ -745,18 +1109,24 @@ async def post_native_caption(
                                 for turn in completed_turns:
                                     import asyncio
                                     import time as _time
+                                    logger.info(
+                                        f"[Transcript] Final Turn Replaced Interim: session_id={session_id}, speaker='{turn.speaker_name}', "
+                                        f"turn_id={turn.logical_turn_id}, text='{turn.text}'"
+                                    )
                                     async def _dispatch_turn(t=turn):
                                         last_msg = await eng.add_message(
                                             speaker=t.speaker_name,
                                             text=t.text,
                                             source="teams_native",
                                             allow_merge=False,
-                                            turn_id=t.logical_turn_id
+                                            turn_id=t.logical_turn_id,
+                                            is_final=True
                                         )
                                         sess["transcript"] = eng.get_transcript()
                                         sess["last_speech_time"] = _time.time()
+                                        sess["has_proven_transcript"] = True
                                         if sess.get("engine") and sess["engine"].on_update_callback:
-                                            await sess["engine"].on_update_callback(last_msg)
+                                            await sess["engine"].on_update_callback(last_msg, is_final=True)
                                     asyncio.create_task(_dispatch_turn())
             except Exception as agg_err:
                 logger.warning(f"[NativeHTTP] Error processing event in turn_aggregator: {agg_err}")
