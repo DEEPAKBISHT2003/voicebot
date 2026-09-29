@@ -3,39 +3,40 @@ import { useNavigate } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as zod from 'zod';
-import { AlertCircle, Sparkles, ChevronDown, ChevronUp } from 'lucide-react';
+import { Video, AlertCircle, Sparkles, ChevronDown, ChevronUp } from 'lucide-react';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Input } from '../components/Input';
 import { TextArea } from '../components/TextArea';
 import { ResumeUpload } from '../components/ResumeUpload';
-import { startInterview, parseResumeFile } from '../api/interview';
+import { parseResumeFile } from '../api/interview';
+import { startCopilot, joinCopilotMeeting } from '../api/copilot';
 
 const schema = zod.object({
+  meeting_url: zod
+    .string()
+    .min(5, 'Microsoft Teams meeting URL is required.')
+    .refine(
+      (url) => url.startsWith('http://') || url.startsWith('https://'),
+      'Please enter a valid URL (starting with https://)'
+    ),
   jd: zod.string().min(10, 'Job description must be at least 10 characters.'),
   resume: zod.string().min(10, 'Resume text is required (upload a file or paste text below).'),
   custom_prompt: zod.string().optional(),
-  meeting_url: zod.string().optional(),
 });
 
 type FormData = zod.infer<typeof schema>;
 
-export const DEFAULT_INTERVIEWER_PROMPT = `You are Miaa, a professional, warm, and encouraging mock interviewer conducting a voice-based screening interview to help a candidate practice.
+export const DEFAULT_COPILOT_PROMPT = `You are an expert technical assistant.
 
-Interview flow:
-1. Greet the candidate warmly, introducing yourself, stating the specific role you're mock-interviewing them for (pulled from the Job Description).
-2. Ask a total of 3 to 4 questions throughout the interview, one at a time. Mix technical and behavioral questions based on the candidate's resume and job description.
-3. Ask only one question per turn, then stop and wait for their answer.
-4. After each answer, give a brief natural acknowledgment before moving to the next question.
-5. Closing: let the candidate know the mock interview is complete, give concise feedback, and say goodbye.
+Real-Time Guidance Rules:
+1. Evaluate candidate technical accuracy, confidence, and practical depth.
+2. Recommend 2 follow-up questions tailored to missing concepts or partial answers.
+3. Provide 2 scenario-based architecture and coding questions for deep technical verification.
+4. Generate 2 verification questions to verify candidate resume claims.
+5. Suggest the recommended next topic for the interviewer.`;
 
-Voice output rules:
-- Speak in short, natural sentences, 1 to 3 sentences per turn.
-- Do not use emojis, bullet points, asterisks, headers, or markdown of any kind.
-- Spell out all numbers (say "three" not "3").
-- Avoid special characters.`;
-
-export const NewInterview: React.FC = () => {
+export const MeetingObserver: React.FC = () => {
   const navigate = useNavigate();
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -44,7 +45,6 @@ export const NewInterview: React.FC = () => {
 
   // File upload state
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [fileBase64, setFileBase64] = useState<string>('');
 
   const {
     register,
@@ -54,10 +54,10 @@ export const NewInterview: React.FC = () => {
   } = useForm<FormData>({
     resolver: zodResolver(schema),
     defaultValues: {
+      meeting_url: '',
       jd: '',
       resume: '',
-      custom_prompt: DEFAULT_INTERVIEWER_PROMPT,
-      meeting_url: '',
+      custom_prompt: DEFAULT_COPILOT_PROMPT,
     },
   });
 
@@ -66,29 +66,19 @@ export const NewInterview: React.FC = () => {
     setErrorMsg(null);
     setIsParsing(true);
 
-    // Convert file to base64 for session submission
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const result = event.target?.result as string;
-      const base64Data = result.split(',')[1] || result;
-      setFileBase64(base64Data);
-    };
-    reader.readAsDataURL(file);
-
     try {
-      // Call backend parser endpoint directly
       const extractedText = await parseResumeFile(file);
       if (!extractedText || extractedText.trim().length === 0) {
-        setErrorMsg('Zero text detected in this file. Please manually paste or type your resume details in the text box below.');
+        setErrorMsg('Zero text detected in this file. Please manually paste or type candidate resume details below.');
       } else {
         setValue('resume', extractedText, { shouldValidate: true });
       }
     } catch (err: any) {
       console.error('Failed to parse resume file:', err);
       setErrorMsg(
-        err.response?.data?.detail || 
-        err.message || 
-        'Failed to automatically parse the file. Please manually paste or type your resume details in the text box below.'
+        err.response?.data?.detail ||
+        err.message ||
+        'Failed to automatically parse the file. Please manually paste or type candidate resume details below.'
       );
     } finally {
       setIsParsing(false);
@@ -96,27 +86,30 @@ export const NewInterview: React.FC = () => {
   };
 
   const onSubmit = async (data: FormData) => {
-    if (!uploadedFile) {
-      setErrorMsg('Please upload a resume file (.pdf or .txt) before initializing the interview.');
-      return;
-    }
     setIsSubmitting(true);
     setErrorMsg(null);
 
     try {
-      // Direct voice bot interview (Active Interviewer / Mia)
-      const response = await startInterview({
+      // 1. Initialize Copilot session
+      const copilotResponse = await startCopilot({
         jd: data.jd,
         resume: data.resume || '',
-        custom_prompt: data.custom_prompt || '',
-        resume_filename: uploadedFile.name,
-        resume_base64: fileBase64,
-        meeting_url: data.meeting_url && data.meeting_url.trim() ? data.meeting_url.trim() : '',
+        custom_prompt: data.custom_prompt || DEFAULT_COPILOT_PROMPT,
       });
-      navigate(`/interviews/${response.session_id}`);
+
+      // 2. Trigger the Teams observer bot to join the meeting
+      await joinCopilotMeeting(
+        copilotResponse.session_id,
+        data.meeting_url.trim(),
+        'observer',
+        'Appzlogic Moderator'
+      );
+
+      // 3. Redirect directly to the Copilot dashboard for live monitoring
+      navigate(`/copilots/${copilotResponse.session_id}`);
     } catch (err: any) {
-      console.error('Failed to start interview:', err);
-      setErrorMsg(err.response?.data?.detail || err.message || 'Failed to start interview session.');
+      console.error('Failed to start Meeting Observer:', err);
+      setErrorMsg(err.response?.data?.detail || err.message || 'Failed to start Meeting Observer session.');
     } finally {
       setIsSubmitting(false);
     }
@@ -126,11 +119,11 @@ export const NewInterview: React.FC = () => {
     <div className="space-y-6 max-w-4xl">
       <div>
         <h1 className="text-xl font-bold text-primary flex items-center gap-2.5">
-          <Sparkles className="h-6 w-6 text-primary shrink-0" />
-          Direct AI Voice Interview
+          <Video className="h-6 w-6 text-primary shrink-0" />
+          Appz Meeting Observer
         </h1>
         <p className="text-sm text-muted-gray mt-1">
-          Configure a direct mock interview with Mia. Practice interactively via your browser microphone or invite Mia to your meeting call.
+          Deploy a silent AI observer bot to your Microsoft Teams meeting to capture real-time captions, analyze candidate responses, and provide live interview guidance.
         </p>
       </div>
 
@@ -143,17 +136,17 @@ export const NewInterview: React.FC = () => {
 
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
         <Card className="space-y-6">
-          {/* Join Meeting Link (Optional) */}
+          {/* Microsoft Teams Meeting Link */}
           <div className="space-y-1.5">
             <Input
-              label="Join Meeting Link (Optional)"
+              label="Microsoft Teams Meeting Link"
               id="meeting_url"
-              placeholder="https://teams.microsoft.com/l/meetup-join/... (Leave blank to use browser mic)"
+              placeholder="https://teams.microsoft.com/l/meetup-join/..."
               error={errors.meeting_url?.message}
               {...register('meeting_url')}
             />
             <p className="text-[11px] text-muted-gray">
-              Optional: Enter a Microsoft Teams or Google Meet link to send Mia into the meeting as an active voice interviewer. Leave empty to speak directly via browser microphone.
+              Provide the full Microsoft Teams invitation link. A silent observer bot will join the call to stream audio for transcription.
             </p>
           </div>
 
@@ -177,10 +170,10 @@ export const NewInterview: React.FC = () => {
 
           {/* Parsed Resume Content */}
           <TextArea
-            label="Parsed Resume Content"
+            label="Candidate Resume Content"
             id="resume"
             rows={8}
-            placeholder="Parsed resume content will appear here, or you can paste your resume details directly..."
+            placeholder="Parsed resume content will appear here, or you can paste candidate resume text directly..."
             error={errors.resume?.message}
             {...register('resume')}
           />
@@ -194,7 +187,7 @@ export const NewInterview: React.FC = () => {
             >
               <span className="flex items-center gap-1.5">
                 <Sparkles className="h-3.5 w-3.5 text-muted-gray" />
-                Advanced Voice Interviewer System Prompt (Optional)
+                Advanced Observer Guidance Prompt (Optional)
               </span>
               {showAdvancedPrompt ? (
                 <ChevronUp className="h-4 w-4 text-muted-gray" />
@@ -208,12 +201,12 @@ export const NewInterview: React.FC = () => {
                 <TextArea
                   id="custom_prompt"
                   rows={8}
-                  placeholder="Customize the mock interviewer's persona, interview structure, and instructions..."
+                  placeholder="Customize the real-time evaluation and recommendation prompt for the observer..."
                   error={errors.custom_prompt?.message}
                   {...register('custom_prompt')}
                 />
                 <p className="text-[11px] text-muted-gray">
-                  Customize Mia&apos;s behavior, question count, and feedback style for this interview session.
+                  Customize the criteria and instruction rules the AI uses to evaluate candidate answers and suggest follow-up questions.
                 </p>
               </div>
             )}
@@ -236,8 +229,8 @@ export const NewInterview: React.FC = () => {
             isLoading={isSubmitting}
             disabled={isParsing}
           >
-            <Sparkles className="h-4 w-4 mr-2" />
-            {isSubmitting ? 'Initializing Interview...' : 'Initialize Interview'}
+            <Video className="h-4 w-4 mr-2" />
+            {isSubmitting ? 'Joining Meeting as Observer...' : 'Launch Meeting Observer'}
           </Button>
         </div>
       </form>

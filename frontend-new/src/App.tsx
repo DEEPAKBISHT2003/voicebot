@@ -7,6 +7,7 @@ import { Layout } from './layouts/Layout';
 import { Login } from './pages/Login';
 import { InterviewsList } from './pages/InterviewsList';
 import { NewInterview } from './pages/NewInterview';
+import { MeetingObserver } from './pages/MeetingObserver';
 import { InterviewSession } from './pages/InterviewSession';
 import { NewCopilot } from './copilot/pages/NewCopilot';
 import { CopilotSession } from './copilot/pages/CopilotSession';
@@ -41,6 +42,9 @@ function App() {
                       <Route path="/" element={<InterviewsList />} />
                       <Route path="/interviews/new" element={<NewInterview />} />
                       <Route path="/interviews/:id" element={<InterviewSession />} />
+                      <Route path="/meeting-observer" element={<MeetingObserver />} />
+                      <Route path="/meeting-observer/new" element={<MeetingObserver />} />
+                      <Route path="/observer/new" element={<MeetingObserver />} />
                       <Route path="/copilots/new" element={<NewCopilot />} />
                       <Route path="/copilots/:id" element={<CopilotSession />} />
 

@@ -283,8 +283,7 @@ async def service_off_copilot(
 
 @router.get("/usage/balance")
 async def get_usage_balance(
-    force_refresh: bool = False,
-    current_user=Depends(get_current_user),
+    force_refresh: bool = False
 ):
     """
     Retrieve current DeepSeek credit/account balance with 60-second in-memory TTL caching.
@@ -305,9 +304,7 @@ async def get_usage_balance(
         }
 
 @router.get("/usage/summary")
-async def get_usage_summary(
-    current_user=Depends(get_current_user),
-):
+async def get_usage_summary():
     """
     Dashboard-level global usage totals across all sessions and stages.
     """
@@ -321,8 +318,7 @@ async def get_usage_summary(
 @router.get("/usage/sessions")
 async def get_usage_sessions(
     page: int = 1,
-    limit: int = 20,
-    current_user=Depends(get_current_user),
+    limit: int = 20
 ):
     """
     Paginated session-level usage rollups including meeting duration, tokens, cost, and LLM call counts.
@@ -342,8 +338,7 @@ async def get_usage_sessions(
 
 @router.get("/usage/sessions/{session_id}")
 async def get_session_usage_detail(
-    session_id: str,
-    current_user=Depends(get_current_user),
+    session_id: str
 ):
     """
     Detailed session breakdown with stage-level aggregation and chronological immutable LLM call records.
