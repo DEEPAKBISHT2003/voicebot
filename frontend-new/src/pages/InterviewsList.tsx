@@ -21,6 +21,301 @@ import { Skeleton } from '../components/Loader';
 import { EmptyState } from '../components/EmptyState';
 import { Modal } from '../components/Modal';
 
+
+/**
+ * Words that should NEVER appear as part of a candidate's valid name.
+ * Any line or candidate segment containing these words is disqualified.
+ */
+const FORBIDDEN_NAME_WORDS = new Set([
+  // Headers & section titles
+  'curriculum',
+  'vitae',
+  'curriculumvitae',
+  'cv',
+  'resume',
+  'profile',
+  'profilesummary',
+  'summary',
+  'objective',
+  'careerobjective',
+  'about',
+  'aboutme',
+  'personal',
+  'details',
+  'personaldetails',
+  'information',
+  'info',
+  'overview',
+  'declaration',
+  'reference',
+  'references',
+  'experience',
+  'workexperience',
+  'employment',
+  'history',
+  'education',
+  'skill',
+  'skills',
+  'project',
+  'projects',
+  'certification',
+  'certifications',
+  'award',
+  'awards',
+  'achievement',
+  'achievements',
+  'publication',
+  'publications',
+  'hobby',
+  'hobbies',
+  'interest',
+  'interests',
+  'language',
+  'languages',
+  'biodata',
+
+  // Contact fields & labels
+  'email',
+  'phone',
+  'mobile',
+  'tel',
+  'telephone',
+  'contact',
+  'contactdetails',
+  'contactinfo',
+  'address',
+  'location',
+  'city',
+  'country',
+  'state',
+  'zip',
+  'postal',
+  'gender',
+  'dob',
+  'birth',
+  'nationality',
+
+  // Common job roles & title keywords
+  'engineer',
+  'engineering',
+  'developer',
+  'development',
+  'architect',
+  'architecture',
+  'designer',
+  'design',
+  'scientist',
+  'science',
+  'manager',
+  'management',
+  'analyst',
+  'analytics',
+  'consultant',
+  'consulting',
+  'programmer',
+  'programming',
+  'specialist',
+  'administrator',
+  'administration',
+  'intern',
+  'internship',
+  'officer',
+  'director',
+  'lead',
+  'leader',
+  'leadership',
+  'senior',
+  'junior',
+  'principal',
+  'staff',
+  'associate',
+  'coder',
+  'tester',
+  'qa',
+  'software',
+  'hardware',
+  'frontend',
+  'backend',
+  'fullstack',
+  'stack',
+  'product',
+  'data',
+  'devops',
+  'cloud',
+  'web',
+  'marketing',
+  'digitalmarketing',
+  'seo',
+
+  // Sentence words / verbs / resume filler
+  'passionate',
+  'seeking',
+  'experienced',
+  'motivated',
+  'responsible',
+  'dedicated',
+  'driven',
+  'enthusiastic',
+  'proficient',
+  'skilled',
+  'years',
+  'looking',
+  'working',
+  'worked',
+  'specialized',
+  'graduated',
+  'student',
+  'present',
+  'current',
+  'remote',
+  'hybrid',
+  'onsite',
+  'page',
+  'confidential',
+  'with',
+  'and',
+  'for',
+]);
+
+// Matches URLs, social media links, domains, or protocols
+const URL_OR_SOCIAL_REGEX = /(https?:\/\/|www\.|linkedin\.com|github\.com|behance|medium\.com|gitlab\.com|portfolio|\.github\.io|\.com|\.org|\.net|\.io|\.dev|\.ai)/i;
+
+// Matches bullet points or list markers
+const BULLET_REGEX = /[•*·#~✓✔]/;
+
+// Regex patterns to immediately disqualify lines or candidate segments that match resume sections or job titles
+const RESUME_HEADER_REGEX = /\b(curriculum|vitae|resume|biodata|bio-data|profile|summary|objective|overview|declaration|experience|education|skills|projects|certifications?|references?)\b/i;
+const JOB_TITLE_REGEX = /\b(engineer|developer|architect|designer|scientist|manager|analyst|consultant|programmer|specialist|administrator|intern|coder|tester|director|lead|officer)\b/i;
+const CONTACT_LABEL_REGEX = /\b(email|phone|mobile|tel|telephone|contact|address|location|linkedin|github)\b/i;
+
+/**
+ * Validates whether a candidate string looks like a person's name.
+ *
+ * Rules:
+ * - Length between 2 and 35 characters.
+ * - Allowed characters: alphabetic letters (including accented characters), spaces, apostrophes, hyphens, and periods.
+ * - Must contain at least 2 alphabetic characters.
+ * - Contains 1 to 4 words.
+ * - Does not contain excessive or malformed punctuation (e.g. consecutive dashes, trailing hyphens).
+ * - None of the constituent words match forbidden resume metadata, job titles, or contact labels.
+ */
+const isValidCandidateName = (candidate: string): boolean => {
+  if (!candidate) return false;
+  const trimmed = candidate.trim();
+
+  // Rule 4: Must be between 2 and 35 characters
+  if (trimmed.length < 2 || trimmed.length > 35) return false;
+
+  // Rule 4: Allowed characters: letters (including accented/latin extended), spaces, apostrophes, hyphens, periods
+  if (!/^[a-zA-ZÀ-ÿ\s.'-]+$/.test(trimmed)) return false;
+
+  // Must contain at least 2 alphabetic characters
+  const lettersOnly = trimmed.replace(/[^a-zA-ZÀ-ÿ]/g, '');
+  if (lettersOnly.length < 2) return false;
+
+  // Rule 3 & 4: Contain 1-4 words (split by whitespace)
+  const words = trimmed.split(/\s+/).filter(Boolean);
+  if (words.length < 1 || words.length > 4) return false;
+
+  // No excessive or malformed punctuation
+  if (/[-.']{2,}/.test(trimmed)) return false;
+  if (/^[-']|[-']$/.test(trimmed)) return false;
+
+  // Disqualify if the candidate string matches header, job title, or contact labels
+  if (RESUME_HEADER_REGEX.test(trimmed)) return false;
+  if (JOB_TITLE_REGEX.test(trimmed)) return false;
+  if (CONTACT_LABEL_REGEX.test(trimmed)) return false;
+
+  // Check sub-words (splitting on whitespace, hyphens, underscores, dots, or slashes)
+  // This catches hyphenated headers like "CURRICULUM-VITAE", "BIO-DATA", "ABOUT-ME", etc.
+  const subWords = trimmed.split(/[\s\-_/.]+/).filter(Boolean);
+  for (const word of subWords) {
+    const cleanWord = word.toLowerCase().replace(/[^a-z]/g, '');
+    if (!cleanWord) continue;
+    if (FORBIDDEN_NAME_WORDS.has(cleanWord)) {
+      return false;
+    }
+  }
+
+  return true;
+};
+
+/**
+ * Enhanced heuristic-based candidate name extraction mechanism.
+ *
+ * Replaces simple first-line assumption with a robust scanner:
+ * - Scans the first 20 non-empty trimmed lines.
+ * - Skips resume metadata, headers, contact info, URLs, phone numbers, and job titles.
+ * - Supports composite lines with delimiters like '|', '•', or ' - ' (e.g., "John Doe | Senior Engineer").
+ * - Returns "Unknown Candidate" if no confident match is found.
+ */
+const extractCandidateName = (resumeText: string): string => {
+  if (!resumeText || typeof resumeText !== 'string') {
+    return 'Unknown Candidate';
+  }
+
+  // Rule 1: Parse resume text into non-empty trimmed lines
+  const lines = resumeText
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+
+  if (lines.length === 0) {
+    return 'Unknown Candidate';
+  }
+
+  // Rule 1: Inspect the first 15–20 non-empty lines
+  const candidateLines = lines.slice(0, 20);
+
+  for (const rawLine of candidateLines) {
+    // Rule 3: Reject lines with bullet points
+    if (BULLET_REGEX.test(rawLine)) {
+      continue;
+    }
+
+    // Rule 2: Reject lines containing email addresses
+    if (/@/.test(rawLine)) {
+      continue;
+    }
+
+    // Rule 2: Reject lines containing URLs or social links
+    if (URL_OR_SOCIAL_REGEX.test(rawLine)) {
+      continue;
+    }
+
+    // Rule 2: Reject lines starting with or containing phone numbers / excessive digits
+    if (/^(\+|\d{1,4}[\s-]?\(?\d{2,4}\)?)/.test(rawLine) || (rawLine.match(/\d/g) || []).length >= 4) {
+      continue;
+    }
+
+    // Remove any trailing parenthetical info e.g. "John Doe (He/Him)"
+    const cleanedLine = rawLine.replace(/\s*\([^)]*\)/g, '').trim();
+    if (!cleanedLine) continue;
+
+    // Check if the whole cleaned line is a valid candidate name
+    if (isValidCandidateName(cleanedLine)) {
+      return cleanedLine;
+    }
+
+    // Check delimited segments e.g. "John Doe | Software Engineer" or "Curriculum Vitae | John Doe"
+    if (/[|,]|\s+-\s+/.test(cleanedLine)) {
+      const segments = cleanedLine
+        .split(/[|,]|\s+-\s+/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+
+      for (const segment of segments) {
+        if (isValidCandidateName(segment)) {
+          return segment;
+        }
+      }
+    }
+  }
+
+  // Rule 5: Confidence-Based Fallback
+  return 'Unknown Candidate';
+};
+
 export const InterviewsList: React.FC = () => {
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
@@ -33,22 +328,6 @@ export const InterviewsList: React.FC = () => {
     refetchInterval: 30000, // refresh every 30s to check for updates
     staleTime: 10000, // consider fresh for 10s
   });
-
-  const extractCandidateName = (resumeText: string): string => {
-    if (!resumeText) return 'Unknown Candidate';
-    const lines = resumeText.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
-    if (lines.length === 0) return 'Unknown Candidate';
-    const firstLine = lines[0];
-    const name = firstLine.split(',')[0].split('|')[0].split('+')[0].split(' - ')[0].trim();
-    const words = name.split(/\s+/);
-    if (words.length > 4) {
-      return words.slice(0, 3).join(' ');
-    }
-    if (!name || /^\d+$/.test(name)) {
-      return 'Candidate';
-    }
-    return name;
-  };
 
   const formatDate = (isoString: string | null): string => {
     if (!isoString) return 'Date unknown';

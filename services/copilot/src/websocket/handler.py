@@ -7,6 +7,7 @@ import time
 import os
 import uuid
 import datetime
+import inspect
 
 from services.copilot.src.api.deps import get_copilot_sessions_ws, get_copilot_repo_ws
 from services.copilot.src.services.repository import CopilotRepository
@@ -14,6 +15,24 @@ from services.copilot.src.engine.session import CopilotSessionEngine
 from services.copilot.src.pipeline.builder import CopilotPipelineBuilder
 from services.copilot.src.pipeline.native_turn_finalizer import NativeTurnAggregator
 from services.copilot.src.pipeline.native_turn_aligner import NativeLogicalTurnAggregator
+
+async def _safe_record_start(repo: Any, session_id: str) -> None:
+    if hasattr(repo, "record_meeting_start"):
+        try:
+            res = repo.record_meeting_start(session_id)
+            if inspect.isawaitable(res):
+                await res
+        except Exception as e:
+            logger.debug(f"[MeetingDuration] Notice recording start: {e}")
+
+async def _safe_finalize_duration(repo: Any, session_id: str) -> None:
+    if hasattr(repo, "finalize_meeting_duration"):
+        try:
+            res = repo.finalize_meeting_duration(session_id)
+            if inspect.isawaitable(res):
+                await res
+        except Exception as e:
+            logger.debug(f"[MeetingDuration] Notice finalizing duration: {e}")
 try:
     from pipecat.pipeline.runner import PipelineRunner as WorkerRunner
 except ImportError:
@@ -272,6 +291,7 @@ async def websocket_endpoint(
     if is_audio_producer:
         sess["status"] = "Listening to audio stream..."
         sess["last_speech_time"] = time.time()
+        await _safe_record_start(repo, session_id)
 
         # Phase 2S: Trigger initial suggestions when entering IN_MEETING (audio producer connected)
         if sess.get("engine"):
@@ -339,6 +359,7 @@ async def websocket_endpoint(
                 logger.error(f"[CopilotWS] Audio pipeline error: {err}")
             finally:
                 inactivity_task.cancel()
+                await _safe_finalize_duration(repo, session_id)
                 if audio_buffer:
                     user_audio_snapshot = bytes(audio_buffer._user_audio_buffer) if hasattr(audio_buffer, "_user_audio_buffer") else b""
                     try:
@@ -376,6 +397,7 @@ async def websocket_endpoint(
                 pass
             finally:
                 inactivity_task.cancel()
+                await _safe_finalize_duration(repo, session_id)
 
     # Native Captions Branch (Teams Bot Live Captions Producer — Production Transcript Source)
     elif is_native_captions:
@@ -383,6 +405,7 @@ async def websocket_endpoint(
         sess["native_caption_websockets"] = sess.setdefault("native_caption_websockets", set())
         sess["native_caption_websockets"].add(websocket)
         logger.info(f"[CopilotWS] Native captions client connected (session={session_id})")
+        await _safe_record_start(repo, session_id)
 
         # Phase 2S: Trigger initial suggestions if not already initiated
         if sess.get("engine"):

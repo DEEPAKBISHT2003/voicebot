@@ -24,6 +24,7 @@ from services.interview.src.api.deps import (
     get_repo_ws,
     get_active_sessions_ws
 )
+from services.auth.src.deps import get_current_user
 
 router = APIRouter(prefix="/api")
 
@@ -62,7 +63,10 @@ def classify_speaker_role(text: str, raw_spk: Optional[str], speaker_map: dict) 
     return "Candidate"
 
 @router.post("/interviews/parse-resume")
-async def parse_resume(file: UploadFile = File(...)):
+async def parse_resume(
+    file: UploadFile = File(...),
+    current_user=Depends(get_current_user),
+):
     try:
         parser = DocumentParserFactory.get_parser(file.filename)
         file_bytes = await file.read()
@@ -142,7 +146,8 @@ async def spawn_teams_bot(session_id: str, meeting_url: str):
 async def start_interview(
     req: StartSessionRequest,
     repo=Depends(get_repo),
-    active_sessions=Depends(get_active_sessions)
+    active_sessions=Depends(get_active_sessions),
+    current_user=Depends(get_current_user),
 ):
     try:
         session_id = await repo.create_session(
@@ -343,7 +348,8 @@ async def websocket_endpoint(
 async def stop_interview(
     session_id: str,
     repo=Depends(get_repo),
-    active_sessions=Depends(get_active_sessions)
+    active_sessions=Depends(get_active_sessions),
+    current_user=Depends(get_current_user),
 ):
     if session_id not in active_sessions:
         raise HTTPException(status_code=404, detail="Session not found.")
@@ -398,7 +404,8 @@ async def update_interview_prompt(
     session_id: str,
     req: UpdatePromptRequest,
     repo=Depends(get_repo),
-    active_sessions=Depends(get_active_sessions)
+    active_sessions=Depends(get_active_sessions),
+    current_user=Depends(get_current_user),
 ):
     if session_id in active_sessions:
         sess = active_sessions[session_id]
@@ -428,7 +435,8 @@ async def update_interview_prompt(
 async def get_session_status(
     session_id: str,
     repo=Depends(get_repo),
-    active_sessions=Depends(get_active_sessions)
+    active_sessions=Depends(get_active_sessions),
+    current_user=Depends(get_current_user),
 ):
     if session_id in active_sessions:
         sess = active_sessions[session_id]
@@ -457,7 +465,8 @@ async def list_interviews(
     limit: Optional[int] = 100,
     offset: int = 0,
     repo=Depends(get_repo),
-    active_sessions=Depends(get_active_sessions)
+    active_sessions=Depends(get_active_sessions),
+    current_user=Depends(get_current_user),
 ):
     try:
         fetch_limit = (offset + limit) if limit else None
@@ -551,7 +560,8 @@ async def get_interview(
     session_id: str,
     request: Request,
     repo=Depends(get_repo),
-    active_sessions=Depends(get_active_sessions)
+    active_sessions=Depends(get_active_sessions),
+    current_user=Depends(get_current_user),
 ):
     if session_id in active_sessions:
         sess = active_sessions[session_id]
@@ -828,7 +838,11 @@ def normalize_wav_to_16k_mono(file_bytes: bytes) -> bytes:
         return file_bytes
 
 @router.post("/interviews/{session_id}/upload-audio")
-async def upload_audio_file(session_id: str, file: UploadFile = File(...)):
+async def upload_audio_file(
+    session_id: str,
+    file: UploadFile = File(...),
+    current_user=Depends(get_current_user),
+):
     directory = os.path.join(Settings.DEFAULT_STORAGE_DIR, session_id)
     os.makedirs(directory, exist_ok=True)
     

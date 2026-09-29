@@ -1,6 +1,8 @@
 import os
 import uuid
-from typing import List, Dict, Any, Optional
+import datetime
+from typing import List, Dict, Any, Optional, Union
+from loguru import logger
 from services.copilot.src.models.copilot import CopilotSessionModel
 from services.copilot.src.core.config import Settings
 
@@ -66,6 +68,12 @@ class CopilotRepository:
                 "intelligence": data.get("intelligence", {}),
                 "assistance": data.get("assistance", {})
             }
+        if "meeting_started_at" in data:
+            update_fields["meeting_started_at"] = data["meeting_started_at"]
+        if "meeting_ended_at" in data:
+            update_fields["meeting_ended_at"] = data["meeting_ended_at"]
+        if "meeting_duration_seconds" in data:
+            update_fields["meeting_duration_seconds"] = data["meeting_duration_seconds"]
 
         # Phase 2S: Persist initial_suggestions to disk cache if provided
         if "initial_suggestions" in data:
@@ -129,6 +137,19 @@ class CopilotRepository:
                             }, f, indent=2)
                     except Exception:
                         pass
+
+        # Phase 1: Persist compact_profile to disk cache if provided
+        if "compact_profile" in data:
+            c_prof = data["compact_profile"]
+            for target_dir in [os.path.join("interviews", str(sid_uuid)), os.path.join(self.directory, str(sid_uuid))]:
+                try:
+                    os.makedirs(target_dir, exist_ok=True)
+                    with open(os.path.join(target_dir, "compact_profile.json"), "w", encoding="utf-8") as f:
+                        import json
+                        prof_data = c_prof if isinstance(c_prof, dict) else (c_prof.to_dict() if hasattr(c_prof, "to_dict") else vars(c_prof))
+                        json.dump(prof_data, f, indent=2)
+                except Exception:
+                    pass
 
         if update_fields:
             await CopilotSessionModel.filter(session_id=sid_uuid).update(**update_fields)
@@ -232,6 +253,29 @@ class CopilotRepository:
             if len(ver_q) == 5:
                 verification_questions = ver_q
 
+        # Phase 1: Load persisted compact_profile if available
+        compact_profile = None
+        for target_dir in [os.path.join("interviews", str(sid_uuid)), os.path.join(self.directory, str(sid_uuid))]:
+            p = os.path.join(target_dir, "compact_profile.json")
+            if os.path.exists(p):
+                try:
+                    import json
+                    with open(p, "r", encoding="utf-8") as f:
+                        compact_profile = json.load(f)
+                    if compact_profile:
+                        break
+                except Exception:
+                    pass
+
+        if compact_profile and not initial_suggestions:
+            initial_suggestions = compact_profile.get("initial_questions", [])[:2]
+
+        if compact_profile and (not scenario_questions or not verification_questions):
+            if not scenario_questions:
+                scenario_questions = compact_profile.get("scenario_questions", [])[:5]
+            if not verification_questions:
+                verification_questions = compact_profile.get("verification_questions", [])[:5]
+
         return {
             "session_id": str(session.session_id),
             "timestamp": session.timestamp.isoformat() if session.timestamp else None,
@@ -240,11 +284,15 @@ class CopilotRepository:
             "custom_prompt": session.custom_prompt,
             "transcript": session.transcript,
             "final_report": session.final_report,
+            "meeting_started_at": session.meeting_started_at.isoformat() if session.meeting_started_at else None,
+            "meeting_ended_at": session.meeting_ended_at.isoformat() if session.meeting_ended_at else None,
+            "meeting_duration_seconds": session.meeting_duration_seconds,
             "initial_suggestions": initial_suggestions,
             "dynamic_suggestions": dynamic_suggestions,
             "confirmed_qa_pairs": confirmed_qa_pairs,
             "scenario_questions": scenario_questions,
             "verification_questions": verification_questions,
+            "compact_profile": compact_profile,
             "service_off": is_service_off
         }
 
@@ -262,7 +310,110 @@ class CopilotRepository:
                 "resume": s.resume,
                 "custom_prompt": s.custom_prompt,
                 "transcript": s.transcript,
-                "final_report": s.final_report
+                "final_report": s.final_report,
+                "meeting_started_at": s.meeting_started_at.isoformat() if s.meeting_started_at else None,
+                "meeting_ended_at": s.meeting_ended_at.isoformat() if s.meeting_ended_at else None,
+                "meeting_duration_seconds": s.meeting_duration_seconds,
             }
             for s in sessions
         ]
+
+    async def record_meeting_start(
+        self,
+        session_id: Union[str, uuid.UUID],
+        start_time: Optional[datetime.datetime] = None
+    ) -> Optional[datetime.datetime]:
+        """
+        Record the authoritative timestamp when the bot actually enters/connects to the Teams meeting.
+        Idempotent: If meeting_started_at is already set, does nothing and preserves first start time.
+        """
+        try:
+            sid_uuid = uuid.UUID(str(session_id))
+        except ValueError:
+            logger.warning(f"record_meeting_start: invalid UUID '{session_id}'")
+            return None
+
+        session = await CopilotSessionModel.get_or_none(session_id=sid_uuid)
+        if not session:
+            logger.warning(f"record_meeting_start: session not found '{session_id}'")
+            return None
+
+        if session.meeting_started_at is not None:
+            # Idempotent: do not reset or overwrite existing start timestamp
+            return session.meeting_started_at
+
+        now = start_time or datetime.datetime.now(datetime.timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=datetime.timezone.utc)
+
+        session.meeting_started_at = now
+        await session.save(update_fields=["meeting_started_at"])
+        logger.info(f"[MeetingDuration] Recorded meeting_started_at={now.isoformat()} for session={session_id}")
+        return session.meeting_started_at
+
+    async def finalize_meeting_duration(
+        self,
+        session_id: Union[str, uuid.UUID],
+        end_time: Optional[datetime.datetime] = None
+    ) -> Optional[int]:
+        """
+        Record the authoritative meeting end time and compute meeting_duration_seconds.
+        Idempotent: If meeting_ended_at is already set, does nothing and returns existing duration.
+        Handles:
+          - Start before end: computes duration in seconds.
+          - End without start: persists meeting_ended_at, leaves duration None, logs anomaly.
+          - Negative duration: rejects negative duration (leaves None), logs warning.
+        """
+        try:
+            sid_uuid = uuid.UUID(str(session_id))
+        except ValueError:
+            logger.warning(f"finalize_meeting_duration: invalid UUID '{session_id}'")
+            return None
+
+        session = await CopilotSessionModel.get_or_none(session_id=sid_uuid)
+        if not session:
+            logger.warning(f"finalize_meeting_duration: session not found '{session_id}'")
+            return None
+
+        if session.meeting_ended_at is not None:
+            # Idempotent: already finalized
+            return session.meeting_duration_seconds
+
+        now = end_time or datetime.datetime.now(datetime.timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=datetime.timezone.utc)
+
+        session.meeting_ended_at = now
+        update_fields = ["meeting_ended_at"]
+
+        if session.meeting_started_at is not None:
+            started_at = session.meeting_started_at
+            if started_at.tzinfo is None:
+                started_at = started_at.replace(tzinfo=datetime.timezone.utc)
+
+            delta = (now - started_at).total_seconds()
+            if delta < 0:
+                logger.warning(
+                    f"[MeetingDuration] Anomaly: meeting_ended_at ({now.isoformat()}) < "
+                    f"meeting_started_at ({started_at.isoformat()}) for session {session_id}. Negative duration rejected."
+                )
+                session.meeting_duration_seconds = None
+            else:
+                session.meeting_duration_seconds = int(delta)
+                update_fields.append("meeting_duration_seconds")
+                logger.info(
+                    f"[MeetingDuration] Finalized meeting duration: {session.meeting_duration_seconds}s "
+                    f"(start={started_at.isoformat()}, end={now.isoformat()}) for session={session_id}"
+                )
+        else:
+            logger.warning(
+                f"[MeetingDuration] Anomaly: End event recorded without meeting_started_at for session {session_id}. "
+                f"Duration left NULL."
+            )
+            session.meeting_duration_seconds = None
+
+        await session.save(update_fields=update_fields)
+        return session.meeting_duration_seconds
+
+    # Convenient alias
+    record_meeting_end = finalize_meeting_duration

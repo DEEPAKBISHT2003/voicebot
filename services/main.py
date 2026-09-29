@@ -18,6 +18,10 @@ from services.interview.src.api.interviews import router as interviews_router, g
 from services.copilot.src.router import router as copilot_router
 from services.copilot.src.websocket.handler import router as copilot_ws_router
 from services.copilot.src.api.simulation import router as simulation_router
+from services.auth.src.api.auth import router as auth_router
+from services.auth.src.api.users import router as users_router
+from services.auth.src.seed import seed_admin_user
+from services.auth.src.security import validate_jwt_secret_configured
 
 from services.interview.src.repositories.postgres_repository import PostgresInterviewRepository
 from services.copilot.src.services.repository import CopilotRepository
@@ -86,7 +90,11 @@ app.include_router(copilot_ws_router, tags=["Copilot WebSocket"])
 # 4. Simulation Router (/api/copilot/{id}/upload-audio, /api/ws/copilot/{id}/simulate)
 app.include_router(simulation_router, prefix="/api", tags=["Simulation"])
 
-# Register Tortoise-ORM with both Interview and Copilot model definitions
+# 5. Authentication & User Management Routers (/api/auth/login, /api/auth/me, /api/users)
+app.include_router(auth_router)
+app.include_router(users_router)
+
+# Register Tortoise-ORM with Interview, Copilot, and Auth model definitions
 db_url = CopilotSettings.DATABASE_URL or InterviewSettings.DATABASE_URL
 register_tortoise(
     app,
@@ -95,6 +103,7 @@ register_tortoise(
         "models": [
             "services.interview.src.models.interview",
             "services.copilot.src.models.copilot",
+            "services.auth.src.models.user",
         ]
     },
     generate_schemas=True,
@@ -102,14 +111,44 @@ register_tortoise(
 )
 
 @app.on_event("startup")
-async def ensure_copilot_schema():
+async def startup_auth_and_schema():
+    # 1. Validate JWT_SECRET_KEY is configured (Fails startup if missing)
+    validate_jwt_secret_configured()
+    logger.info("[Auth] JWT security configuration validated.")
+
+    # 2. Ensure Copilot schema compatibility
     try:
         from tortoise import Tortoise
         conn = Tortoise.get_connection("default")
-        await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS final_report JSONB;")
-        logger.info("[DB] Verified copilot_sessions schema (final_report column present)")
+        dialect = getattr(conn.capabilities, "dialect", "")
+        if dialect == "sqlite":
+            _, rows = await conn.execute_query("PRAGMA table_info(copilot_sessions);")
+            if rows:
+                cols = [r["name"] for r in rows]
+                if "final_report" not in cols:
+                    await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN final_report JSON;")
+                    logger.info("[DB] Added final_report column to copilot_sessions (SQLite)")
+                if "meeting_started_at" not in cols:
+                    await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN meeting_started_at TIMESTAMP;")
+                    logger.info("[DB] Added meeting_started_at column to copilot_sessions (SQLite)")
+                if "meeting_ended_at" not in cols:
+                    await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN meeting_ended_at TIMESTAMP;")
+                    logger.info("[DB] Added meeting_ended_at column to copilot_sessions (SQLite)")
+                if "meeting_duration_seconds" not in cols:
+                    await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN meeting_duration_seconds INT;")
+                    logger.info("[DB] Added meeting_duration_seconds column to copilot_sessions (SQLite)")
+        else:
+            await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS final_report JSONB;")
+            await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS meeting_started_at TIMESTAMPTZ;")
+            await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS meeting_ended_at TIMESTAMPTZ;")
+            await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS meeting_duration_seconds INT;")
+            logger.info("[DB] Verified copilot_sessions schema (duration and report columns present)")
     except Exception as e:
         logger.warning(f"[DB] Schema migration check notice: {e}")
+
+    # 3. Seed initial administrator if none exists
+    await seed_admin_user()
+
 
 
 @app.get("/health")

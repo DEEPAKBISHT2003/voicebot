@@ -1,11 +1,18 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { AuthProvider } from './context/AuthContext';
+import { ProtectedRoute } from './components/ProtectedRoute';
+import { AdminRoute } from './components/AdminRoute';
 import { Layout } from './layouts/Layout';
+import { Login } from './pages/Login';
 import { InterviewsList } from './pages/InterviewsList';
 import { NewInterview } from './pages/NewInterview';
+import { MeetingObserver } from './pages/MeetingObserver';
 import { InterviewSession } from './pages/InterviewSession';
 import { NewCopilot } from './copilot/pages/NewCopilot';
 import { CopilotSession } from './copilot/pages/CopilotSession';
+import { UsageDashboard } from './pages/UsageDashboard';
+import { UserControlPlaceholder } from './pages/AdminPlaceholders';
 
 // Instantiate Query Client for server state caching
 const queryClient = new QueryClient({
@@ -20,17 +27,47 @@ const queryClient = new QueryClient({
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <Layout>
+      <AuthProvider>
+        <BrowserRouter>
           <Routes>
-            <Route path="/" element={<InterviewsList />} />
-            <Route path="/interviews/new" element={<NewInterview />} />
-            <Route path="/interviews/:id" element={<InterviewSession />} />
-            <Route path="/copilots/new" element={<NewCopilot />} />
-            <Route path="/copilots/:id" element={<CopilotSession />} />
+            {/* Public Login Route */}
+            <Route path="/login" element={<Login />} />
+
+            {/* Protected Routes (USER and ADMIN) */}
+            <Route element={<ProtectedRoute />}>
+              <Route
+                element={
+                  <Layout>
+                    <Routes>
+                      <Route path="/" element={<InterviewsList />} />
+                      <Route path="/interviews/new" element={<NewInterview />} />
+                      <Route path="/interviews/:id" element={<InterviewSession />} />
+                      <Route path="/meeting-observer" element={<MeetingObserver />} />
+                      <Route path="/meeting-observer/new" element={<MeetingObserver />} />
+                      <Route path="/observer/new" element={<MeetingObserver />} />
+                      <Route path="/copilots/new" element={<NewCopilot />} />
+                      <Route path="/copilots/:id" element={<CopilotSession />} />
+
+                      {/* Admin-only Routes */}
+                      <Route element={<AdminRoute />}>
+                        <Route path="/analytics" element={<UsageDashboard />} />
+                        <Route path="/usage" element={<UsageDashboard />} />
+                        <Route path="/user-control" element={<UserControlPlaceholder />} />
+                      </Route>
+
+                      <Route path="*" element={<Navigate to="/" replace />} />
+                    </Routes>
+                  </Layout>
+                }
+                path="/*"
+              />
+            </Route>
+
+            {/* Fallback */}
+            <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
-        </Layout>
-      </BrowserRouter>
+        </BrowserRouter>
+      </AuthProvider>
     </QueryClientProvider>
   );
 }

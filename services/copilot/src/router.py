@@ -1,6 +1,7 @@
 import os
 import asyncio
 import datetime
+import inspect
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from loguru import logger
@@ -10,8 +11,18 @@ from services.copilot.src.api.deps import get_copilot_repo, get_copilot_sessions
 from services.copilot.src.services.repository import CopilotRepository
 from services.copilot.src.engine.session import CopilotSessionEngine
 from services.copilot.src.core.config import Settings
+from services.auth.src.deps import get_current_user
 
 router = APIRouter()
+
+async def _safe_finalize_duration(repo: Any, session_id: str) -> None:
+    if hasattr(repo, "finalize_meeting_duration"):
+        try:
+            res = repo.finalize_meeting_duration(session_id)
+            if inspect.isawaitable(res):
+                await res
+        except Exception as e:
+            logger.debug(f"[MeetingDuration] Notice finalizing duration: {e}")
 
 class StartCopilotRequest(BaseModel):
     jd: str
@@ -23,7 +34,8 @@ class StartCopilotRequest(BaseModel):
 async def start_copilot(
     req: StartCopilotRequest,
     repo: CopilotRepository = Depends(get_copilot_repo),
-    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions)
+    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
+    current_user=Depends(get_current_user),
 ):
     try:
         session_id = await repo.create_session(
@@ -35,6 +47,10 @@ async def start_copilot(
         
         # Track session in active memory
         engine = CopilotSessionEngine(session_id, repo, [], jd=req.jd, resume=req.resume, custom_prompt=req.custom_prompt)
+        
+        # Phase 1: Pre-compile profile in background during initialization
+        asyncio.create_task(engine.precompile())
+
         active_sessions[session_id] = {
             "engine": engine,
             "status": "Connecting to audio stream...",
@@ -56,7 +72,9 @@ async def start_copilot(
 @router.post("/{session_id}/stop")
 async def stop_copilot(
     session_id: str,
-    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions)
+    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
+    repo: CopilotRepository = Depends(get_copilot_repo),
+    current_user=Depends(get_current_user),
 ):
     if session_id in active_sessions:
         # Mark inactive
@@ -92,17 +110,20 @@ async def stop_copilot(
                 await ws.close()
             except Exception:
                 pass
+        await _safe_finalize_duration(repo, session_id)
         logger.info(f"Stopped AI Copilot Session: {session_id}")
         return {"status": "stopped"}
     else:
         # Check database fallback
+        await _safe_finalize_duration(repo, session_id)
         return {"status": "stopped"}
 
 @router.post("/{session_id}/service-off")
 async def service_off_copilot(
     session_id: str,
     active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
-    repo: CopilotRepository = Depends(get_copilot_repo)
+    repo: CopilotRepository = Depends(get_copilot_repo),
+    current_user=Depends(get_current_user),
 ):
     """
     Dedicated SERVICE OFF endpoint:
@@ -238,8 +259,9 @@ async def service_off_copilot(
     if "dashboard_websockets" in sess:
         sess["dashboard_websockets"].clear()
 
-    # 6. Save final session snapshot to repository
+    # 6. Save final session snapshot to repository & finalize meeting duration
     try:
+        await _safe_finalize_duration(repo, session_id)
         await repo.save_session(
             session_id,
             {
@@ -255,9 +277,88 @@ async def service_off_copilot(
     logger.info(f"[CopilotServiceOff] Successfully completed SERVICE OFF for session: {session_id}")
     return {"status": "Service Off", "session_id": session_id}
 
+# ==============================================================================
+# PHASE D: USAGE & CREDIT DASHBOARD ENDPOINTS
+# ==============================================================================
+
+@router.get("/usage/balance")
+async def get_usage_balance(
+    force_refresh: bool = False
+):
+    """
+    Retrieve current DeepSeek credit/account balance with 60-second in-memory TTL caching.
+    """
+    try:
+        from services.copilot.src.services.dashboard_service import dashboard_service
+        return await dashboard_service.get_deepseek_balance(force_refresh=force_refresh)
+    except Exception as e:
+        logger.error(f"[UsageAPI] Error fetching balance: {e}")
+        return {
+            "is_available": False,
+            "balance": None,
+            "currency": "USD",
+            "error": "Internal error retrieving balance",
+            "source": "deepseek",
+            "cached": False,
+            "retrieved_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+
+@router.get("/usage/summary")
+async def get_usage_summary():
+    """
+    Dashboard-level global usage totals across all sessions and stages.
+    """
+    try:
+        from services.copilot.src.services.dashboard_service import dashboard_service
+        return await dashboard_service.get_usage_summary()
+    except Exception as e:
+        logger.error(f"[UsageAPI] Error fetching usage summary: {e}")
+        raise HTTPException(status_code=500, detail="Failed to calculate usage summary")
+
+@router.get("/usage/sessions")
+async def get_usage_sessions(
+    page: int = 1,
+    limit: int = 20
+):
+    """
+    Paginated session-level usage rollups including meeting duration, tokens, cost, and LLM call counts.
+    """
+    if page < 1:
+        raise HTTPException(status_code=400, detail="Page must be greater than or equal to 1")
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=400, detail="Limit must be between 1 and 100")
+    try:
+        from services.copilot.src.services.dashboard_service import dashboard_service
+        return await dashboard_service.get_session_usage_list(page=page, limit=limit)
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"[UsageAPI] Error listing session usage: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve session usage list")
+
+@router.get("/usage/sessions/{session_id}")
+async def get_session_usage_detail(
+    session_id: str
+):
+    """
+    Detailed session breakdown with stage-level aggregation and chronological immutable LLM call records.
+    """
+    try:
+        from services.copilot.src.services.dashboard_service import dashboard_service
+        detail = await dashboard_service.get_session_usage_detail(session_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+        return detail
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[UsageAPI] Error fetching session usage detail for {session_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve session usage detail")
+
 @router.get("")
 async def list_copilot_sessions(
-    repo: CopilotRepository = Depends(get_copilot_repo)
+    repo: CopilotRepository = Depends(get_copilot_repo),
+    current_user=Depends(get_current_user),
 ):
     try:
         return await repo.list_sessions()
@@ -268,7 +369,8 @@ async def list_copilot_sessions(
 @router.get("/{session_id}")
 async def get_copilot_session(
     session_id: str,
-    repo: CopilotRepository = Depends(get_copilot_repo)
+    repo: CopilotRepository = Depends(get_copilot_repo),
+    current_user=Depends(get_current_user),
 ):
     try:
         return await repo.load_session(session_id)
@@ -287,7 +389,8 @@ async def add_copilot_transcript(
     session_id: str,
     req: AddTranscriptRequest,
     active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
-    repo: CopilotRepository = Depends(get_copilot_repo)
+    repo: CopilotRepository = Depends(get_copilot_repo),
+    current_user=Depends(get_current_user),
 ):
     if session_id in active_sessions:
         engine = active_sessions[session_id]["engine"]
@@ -318,7 +421,8 @@ async def update_copilot_prompt(
     session_id: str,
     req: UpdateCopilotPromptRequest,
     active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
-    repo: CopilotRepository = Depends(get_copilot_repo)
+    repo: CopilotRepository = Depends(get_copilot_repo),
+    current_user=Depends(get_current_user),
 ):
     if session_id in active_sessions:
         active_sessions[session_id]["custom_prompt"] = req.custom_prompt
@@ -341,7 +445,8 @@ async def update_copilot_prompt(
 async def get_copilot_status(
     session_id: str,
     active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
-    repo: CopilotRepository = Depends(get_copilot_repo)
+    repo: CopilotRepository = Depends(get_copilot_repo),
+    current_user=Depends(get_current_user),
 ):
     # Guard against non-UUID session IDs (e.g. browser prefetch hitting /start/status)
     import uuid as _uuid
@@ -451,7 +556,8 @@ async def get_copilot_status(
 async def finalize_copilot_report(
     session_id: str,
     active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
-    repo: CopilotRepository = Depends(get_copilot_repo)
+    repo: CopilotRepository = Depends(get_copilot_repo),
+    current_user=Depends(get_current_user),
 ):
     # 1. Always check PostgreSQL first for an already persisted final_report
     db_session = None
@@ -519,6 +625,7 @@ async def finalize_copilot_report(
             except Exception:
                 pass
         sess["bot_process"] = None
+        await _safe_finalize_duration(repo, session_id)
 
         res = await engine.finalize_report()
         if res and res.get("is_finalized"):
@@ -552,7 +659,8 @@ class JoinMeetingRequest(BaseModel):
 async def join_meeting(
     session_id: str,
     req: JoinMeetingRequest,
-    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions)
+    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
+    current_user=Depends(get_current_user),
 ):
     """
     Spawns the Playwright Teams Bot from the Copilot Service.

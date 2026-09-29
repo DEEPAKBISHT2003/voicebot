@@ -17,6 +17,7 @@ from services.copilot.src.core.config import Settings
 from services.copilot.src.api.deps import get_copilot_sessions_ws, get_copilot_repo_ws
 from services.copilot.src.services.repository import CopilotRepository
 from services.copilot.src.engine.session import CopilotSessionEngine
+from services.auth.src.deps import get_current_user
 
 router = APIRouter()
 
@@ -95,7 +96,11 @@ def normalize_wav_to_16k_mono(file_bytes: bytes) -> bytes:
 
 
 @router.post("/copilot/{session_id}/upload-audio")
-async def upload_simulation_audio(session_id: str, file: UploadFile = File(...)):
+async def upload_simulation_audio(
+    session_id: str,
+    file: UploadFile = File(...),
+    current_user=Depends(get_current_user),
+):
     """Upload a WAV file for copilot simulation testing."""
     directory = os.path.join(Settings.DEFAULT_STORAGE_DIR, session_id)
     os.makedirs(directory, exist_ok=True)
