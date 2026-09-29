@@ -255,7 +255,31 @@ class DeterministicRoleClassifier:
                 f"{self.CONFIDENCE_THRESHOLD} (0 LLM calls): {speakers_result}"
             )
 
+        # Enforce Single Candidate Invariant: candidate_count <= 1
+        candidate_speakers = [
+            p for p, info in speakers_result.items()
+            if info.get("role") == "candidate"
+        ]
+        if len(candidate_speakers) > 1:
+            # Pick the candidate with highest confidence (tie-breaker: resume match)
+            top_cand = max(
+                candidate_speakers,
+                key=lambda p: (
+                    speakers_result[p].get("confidence", 0.0),
+                    1 if p == matched_candidate_speaker else 0
+                )
+            )
+            for p in candidate_speakers:
+                if p != top_cand:
+                    logger.info(
+                        f"[DeterministicRoleClassifier] Single Candidate Invariant: demoting '{p}' "
+                        f"to interviewer (retaining '{top_cand}' as sole candidate)"
+                    )
+                    speakers_result[p]["role"] = "interviewer"
+                    speakers_result[p]["reasoning"] += " (Demoted to interviewer by single candidate invariant)"
+
         return {"speakers": speakers_result}
+
 
     # -------------------------------------------------------------------------
     # Helper & Extraction Methods
@@ -281,7 +305,14 @@ class DeterministicRoleClassifier:
 
         # Inspect initial lines of resume for candidate name
         lines = [ln.strip() for ln in resume.strip().splitlines() if ln.strip()]
-        for line in lines[:5]:
+        for line in lines[:8]:
+            match = re.search(r"(?:candidate\s+name|name)\s*:\s*([A-Za-z\s\.\-]{2,40})", line, re.IGNORECASE)
+            if match:
+                extracted = match.group(1).strip()
+                words = extracted.split()
+                if 1 < len(words) <= 4:
+                    return extracted
+
             clean = line.strip("#*:-_")
             words = clean.split()
             if 1 < len(words) <= 4 and all(w.replace(".", "").isalpha() for w in words):
@@ -410,6 +441,12 @@ class DeterministicRoleClassifier:
             "introduce", "start by", "let us", "welcome", "please"
         )
 
+        setup_chatter_patterns = (
+            "can you hear", "am i audible", "is my screen", "see my screen",
+            "share my screen", "green signal", "audio check", "mic check", "sound check",
+            "test test", "on mute", "unmute", "let me admit", "waiting room"
+        )
+
         for turn in transcript:
             speaker = turn.get("speaker")
             text = turn.get("text", "").strip()
@@ -417,6 +454,10 @@ class DeterministicRoleClassifier:
                 continue
 
             t_lower = text.lower()
+            # Ignore pre-interview connection / setup chatter
+            if any(sc in t_lower for sc in setup_chatter_patterns):
+                continue
+
             is_prompt_or_q = (
                 text.endswith("?")
                 or any(t_lower.startswith(qs) or f" {qs}" in t_lower for qs in question_starters)
@@ -442,20 +483,38 @@ class DeterministicRoleClassifier:
 
                     if has_address:
                         if is_cand_candidate or is_prompt_or_q:
-                            cand_conf = 0.95 if (other_p in cand_evaluations and cand_evaluations[other_p][1] >= 0.65) else 0.90
-                            results[other_p] = {
-                                "role": "candidate",
-                                "confidence": cand_conf,
-                                "reasoning": f"Candidate addressed as '{name_tok}' by '{speaker}' in turn: \"{text[:70]}\""
-                            }
-                            results[speaker] = {
-                                "role": "interviewer",
-                                "confidence": 0.90,
-                                "reasoning": f"Interviewer addressed candidate '{other_p}' in turn: \"{text[:70]}\""
-                            }
-                            return results
+                            # If the addressed participant matches candidate name, OR if this is a 2-participant meeting,
+                            # assign high confidence (0.95/0.90).
+                            # If there are 3+ participants and addressed participant does NOT match candidate name (e.g. HR addressing interviewer),
+                            # treat as weak signal before lock (0.40) to prevent premature candidate anchoring.
+                            if is_cand_candidate:
+                                cand_conf = 0.95 if (other_p in cand_evaluations and cand_evaluations[other_p][1] >= 0.65) else 0.90
+                                inv_conf = 0.90
+                            elif len(participants) == 2:
+                                cand_conf = 0.90
+                                inv_conf = 0.85
+                            else:
+                                cand_conf = 0.40
+                                inv_conf = 0.40
+
+                            # Update if higher confidence than previously found for these speakers
+                            if other_p not in results or results[other_p]["confidence"] < cand_conf:
+                                results[other_p] = {
+                                    "role": "candidate",
+                                    "confidence": cand_conf,
+                                    "reasoning": f"Candidate addressed as '{name_tok}' by '{speaker}' in turn: \"{text[:70]}\""
+                                }
+                            if speaker not in results or results[speaker]["confidence"] < inv_conf:
+                                results[speaker] = {
+                                    "role": "interviewer",
+                                    "confidence": inv_conf,
+                                    "reasoning": f"Interviewer addressed candidate '{other_p}' in turn: \"{text[:70]}\""
+                                }
+                            # Do not return early; continue evaluating other participants and turns
+
 
         return results
+
 
     def _analyze_linguistic_heuristics(
         self,

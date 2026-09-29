@@ -1,0 +1,12 @@
+{
+  "roles_locked": true,
+  "locked_candidate": "Candidate",
+  "candidate_locked_at": "2026-09-29T22:08:37.395062",
+  "interview_started": true,
+  "interview_started_at": "2026-09-29T22:08:37.395062",
+  "session_speaker_roles": {
+    "Interviewer1": "interviewer",
+    "Candidate": "candidate",
+    "Coordinator": "interviewer"
+  }
+}

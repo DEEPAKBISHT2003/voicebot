@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as zod from 'zod';
-import { Video, AlertCircle, Sparkles, ChevronDown, ChevronUp } from 'lucide-react';
+import { Video, AlertCircle } from 'lucide-react';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Input } from '../components/Input';
@@ -41,7 +41,6 @@ export const MeetingObserver: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isParsing, setIsParsing] = useState(false);
-  const [showAdvancedPrompt, setShowAdvancedPrompt] = useState(false);
 
   // File upload state
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
@@ -179,7 +178,7 @@ export const MeetingObserver: React.FC = () => {
           />
 
           {/* Advanced / Optional System Prompt Accordion */}
-          <div className="border-t border-border-gray pt-4">
+          {/* <div className="border-t border-border-gray pt-4">
             <button
               type="button"
               onClick={() => setShowAdvancedPrompt(!showAdvancedPrompt)}
@@ -210,7 +209,7 @@ export const MeetingObserver: React.FC = () => {
                 </p>
               </div>
             )}
-          </div>
+          </div> */}
         </Card>
 
         {/* Action Buttons */}

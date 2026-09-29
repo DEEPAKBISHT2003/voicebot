@@ -84,12 +84,14 @@ class QAStateMachine:
         session_id: str,
         silence_threshold: float = Settings.QA_FSM_SILENCE_THRESHOLD,
         on_qa_completed: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
-        loop: Optional[asyncio.AbstractEventLoop] = None
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+        roles_locked: bool = False
     ):
         self.session_id = session_id
         self.silence_threshold = silence_threshold
         self.on_qa_completed = on_qa_completed
         self.loop = loop
+        self.roles_locked = roles_locked
 
         self.state: QAState = QAState.WAITING_FOR_QUESTION
         self.current_question: Optional[Dict[str, Any]] = None
@@ -286,11 +288,24 @@ class QAStateMachine:
             # STATE 1: WAITING_FOR_QUESTION
             # -----------------------------------------------------------------
             if self.state == QAState.WAITING_FOR_QUESTION:
-                if role == "interviewer" or (role == "unknown" and self._is_question(text)):
+                # Part 7: QA FSM Safety Net
+                # If speaker has role == "candidate" BUT roles_locked == False AND text is a substantive interview question
+                # (and NOT an audio check / greeting):
+                # Rescue it so an interviewer erroneously tagged as candidate doesn't starve the FSM.
+                t_lower = text.lower()
+                is_greeting_or_audio_check = any(t_lower.startswith(g) or f" {g}" in t_lower for g in self.GREETINGS)
+                is_substantive_q = self._is_question(text) and not is_greeting_or_audio_check
+                is_rescued = (role == "candidate" and not self.roles_locked and is_substantive_q)
+
+                if role == "interviewer" or (role == "unknown" and self._is_question(text)) or is_rescued:
                     self.last_question = None
                     self.last_answer_turns = []
                     self.last_completion_reason = ""
                     if self._is_question(text):
+                        if is_rescued:
+                            logger.warning(
+                                f"[FSMRescue] speaker={speaker} reason=question_detected_before_role_lock"
+                            )
                         self.current_question = {
                             "turn_id": turn.get("turn_id"),
                             "id": turn.get("id"),
@@ -326,12 +341,14 @@ class QAStateMachine:
                         self.current_question["turn_id"] = turn.get("turn_id", self.current_question["turn_id"])
                     return None
 
-                elif role == "candidate":
+                elif role == "candidate" or role == "unknown":
                     # Candidate starts speaking: transition to CANDIDATE_ANSWERING
                     self._transition_to(QAState.CANDIDATE_ANSWERING, f"Candidate {speaker} started answering")
                     self.current_answer_turns.append(turn)
                     self._schedule_silence_timer()
                     return None
+
+
 
             # -----------------------------------------------------------------
             # STATE 3: CANDIDATE_ANSWERING

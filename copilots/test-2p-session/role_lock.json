@@ -1,0 +1,11 @@
+{
+  "roles_locked": true,
+  "locked_candidate": "Deepak Bisht",
+  "candidate_locked_at": "2026-09-29T22:08:26.366445",
+  "interview_started": true,
+  "interview_started_at": "2026-09-29T22:08:26.366445",
+  "session_speaker_roles": {
+    "Ankit Kumar": "interviewer",
+    "Deepak Bisht": "candidate"
+  }
+}

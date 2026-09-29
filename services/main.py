@@ -137,12 +137,25 @@ async def startup_auth_and_schema():
                 if "meeting_duration_seconds" not in cols:
                     await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN meeting_duration_seconds INT;")
                     logger.info("[DB] Added meeting_duration_seconds column to copilot_sessions (SQLite)")
+
+            # Check users table columns
+            _, u_rows = await conn.execute_query("PRAGMA table_info(users);")
+            if u_rows:
+                u_cols = [r["name"] for r in u_rows]
+                if "name" not in u_cols:
+                    await conn.execute_query("ALTER TABLE users ADD COLUMN name VARCHAR(255);")
+                    logger.info("[DB] Added name column to users (SQLite)")
+                if "employee_id" not in u_cols:
+                    await conn.execute_query("ALTER TABLE users ADD COLUMN employee_id BIGINT UNIQUE;")
+                    logger.info("[DB] Added employee_id column to users (SQLite)")
         else:
             await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS final_report JSONB;")
             await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS meeting_started_at TIMESTAMPTZ;")
             await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS meeting_ended_at TIMESTAMPTZ;")
             await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS meeting_duration_seconds INT;")
-            logger.info("[DB] Verified copilot_sessions schema (duration and report columns present)")
+            await conn.execute_query("ALTER TABLE users ADD COLUMN IF NOT EXISTS name VARCHAR(255);")
+            await conn.execute_query("ALTER TABLE users ADD COLUMN IF NOT EXISTS employee_id BIGINT;")
+            logger.info("[DB] Verified schema (copilot_sessions and users columns present)")
     except Exception as e:
         logger.warning(f"[DB] Schema migration check notice: {e}")
 

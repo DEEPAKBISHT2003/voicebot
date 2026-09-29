@@ -3,13 +3,15 @@ from tortoise import fields, models
 
 class UserModel(models.Model):
     """
-    User entity for Phase 1 Authentication and Role-Based Access Control (RBAC).
+    User entity for Authentication and Role-Based Access Control (RBAC).
     
     Roles:
       - 'ADMIN'
       - 'USER'
     """
     id = fields.UUIDField(pk=True, default=uuid.uuid4)
+    name = fields.CharField(max_length=255, null=True)
+    employee_id = fields.BigIntField(null=True, unique=True, index=True)
     email = fields.CharField(max_length=255, unique=True, index=True)
     password_hash = fields.TextField()
     role = fields.CharField(max_length=20, default="USER")
@@ -21,4 +23,5 @@ class UserModel(models.Model):
         table = "users"
 
     def __str__(self):
-        return f"User({self.email}, role={self.role}, active={self.is_active})"
+        return f"User({self.email}, name={self.name}, emp_id={self.employee_id}, role={self.role}, active={self.is_active})"
+

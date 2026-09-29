@@ -1,0 +1,12 @@
+{
+  "roles_locked": true,
+  "locked_candidate": "Deepak",
+  "candidate_locked_at": "2026-09-29T22:08:34.715992",
+  "interview_started": true,
+  "interview_started_at": "2026-09-29T22:08:34.713982",
+  "session_speaker_roles": {
+    "Mahima": "interviewer",
+    "Ankit": "interviewer",
+    "Deepak": "candidate"
+  }
+}

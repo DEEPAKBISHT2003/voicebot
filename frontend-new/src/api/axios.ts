@@ -46,9 +46,10 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      // Do not redirect if already on login page or attempting login
-      const isLoginRequest = error.config?.url?.includes('/auth/login');
-      if (!isLoginRequest && !window.location.pathname.startsWith('/login')) {
+      // Do not redirect if already on login/signup page or attempting login/signup
+      const isAuthRequest = error.config?.url?.includes('/auth/login') || error.config?.url?.includes('/auth/signup');
+      const isAuthPage = window.location.pathname.startsWith('/login') || window.location.pathname.startsWith('/signup');
+      if (!isAuthRequest && !isAuthPage) {
         localStorage.removeItem('voicebot_token');
         sessionStorage.setItem('auth_expired_notice', 'Session expired. Please sign in again.');
         window.location.href = '/login';

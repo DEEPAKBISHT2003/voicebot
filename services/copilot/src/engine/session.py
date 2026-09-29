@@ -24,6 +24,8 @@ from services.copilot.src.services.final_evaluation_comparator import (
     get_optimized_final_eval_production_metrics
 )
 from services.copilot.src.services.usage_service import usage_service
+from services.copilot.src.services.interview_start_detector import InterviewStartDetector
+from services.copilot.src.services.candidate_evidence_tracker import CandidateEvidenceTracker
 
 
 def clean_json_loads(text: str) -> dict:
@@ -62,6 +64,17 @@ class CopilotSessionEngine:
         # Incident INC-2026-0924-02: Turn buffering and deterministic role resolution
         self._unresolved_role_buffer: List[Dict[str, Any]] = []
         self._role_resolution_lock = asyncio.Lock()
+
+        # Candidate Stabilization Layer (Parts 1-6)
+        self.roles_locked: bool = False
+        self.interview_started: bool = False
+        self.interview_started_at: Optional[str] = None
+        self.locked_candidate: Optional[str] = None
+        self.candidate_locked_at: Optional[str] = None
+        self.interview_start_detector = InterviewStartDetector()
+        self.candidate_evidence_tracker = CandidateEvidenceTracker(start_detector=self.interview_start_detector)
+        if self.resume:
+            self.candidate_evidence_tracker.set_resume_keywords(self.resume)
         
         # Normalize and map transcript entries for backward-compatibility with interview role keys
         self.transcript: List[Dict[str, Any]] = []
@@ -78,7 +91,7 @@ class CopilotSessionEngine:
                     speaker = "System"
                 else:
                     speaker = "System"
-            if speaker in ("Candidate", "Interviewer", "System"):
+            if speaker and speaker != "System":
                 self.detected_speakers.add(speaker)
             
             raw_role = msg.get("speaker_role")
@@ -91,6 +104,7 @@ class CopilotSessionEngine:
                     raw_role = "unknown"
             if speaker and speaker != "System":
                 self.session_speaker_roles[speaker] = raw_role
+
 
             t_id = msg.get("turn_id", idx + 1)
             e_id = msg.get("id") or f"{self.session_id}-turn-{t_id}"
@@ -148,8 +162,10 @@ class CopilotSessionEngine:
         self.qa_fsm = QAStateMachine(
             session_id=str(self.session_id),
             silence_threshold=getattr(Settings, "QA_FSM_SILENCE_THRESHOLD", 3.0),
-            on_qa_completed=self._handle_fsm_completed_qa
+            on_qa_completed=self._handle_fsm_completed_qa,
+            roles_locked=self.roles_locked
         )
+
 
         # Phase 2V: Answer Accuracy Evaluation State
         self.evaluated_qa_ids: Set[str] = set()
@@ -257,29 +273,156 @@ class CopilotSessionEngine:
                 except Exception as cp_err:
                     logger.debug(f"[SessionEngine] Error reading compact_profile.json: {cp_err}")
 
-
+        # Restore persisted role lock state from disk cache if present (pod restart / reconnect resilience)
+        repo_dir = getattr(self.repo, "directory", None)
+        target_dirs = [os.path.join(repo_dir, str(self.session_id))] if repo_dir else []
+        for target_dir in target_dirs:
+            p = os.path.join(target_dir, "role_lock.json")
+            if os.path.exists(p):
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        rl_data = json.load(f)
+                        if rl_data.get("roles_locked"):
+                            self.roles_locked = True
+                            self.locked_candidate = rl_data.get("locked_candidate")
+                            self.candidate_locked_at = rl_data.get("candidate_locked_at")
+                            self.interview_started = rl_data.get("interview_started", True)
+                            self.interview_started_at = rl_data.get("interview_started_at")
+                            saved_roles = rl_data.get("session_speaker_roles", {})
+                            if saved_roles:
+                                self.session_speaker_roles.update(saved_roles)
+                            if self.qa_fsm:
+                                self.qa_fsm.roles_locked = True
+                            break
+                except Exception as rl_err:
+                    logger.debug(f"[SessionEngine] Error reading role_lock.json: {rl_err}")
 
     def _are_roles_resolved(self) -> bool:
         """
         Checks if detected human speakers have resolved roles ('candidate' or 'interviewer').
-        Returns True if every detected human speaker has a confident role assigned.
+        Returns True if roles are locked or every detected human speaker has a confident role assigned.
         """
+        if self.roles_locked:
+            return True
         human_speakers = [s for s in self.detected_speakers if s and s != "System"]
         if not human_speakers:
             return False
         return all(self.session_speaker_roles.get(s) in ("candidate", "interviewer") for s in human_speakers)
+
+    async def _update_candidate_stabilization(self, message: Dict[str, Any]) -> None:
+        """
+        Candidate Stabilization Layer (Parts 1-6):
+        - Tracks evidence scores per speaker using CandidateEvidenceTracker.
+        - Detects Interview Start using InterviewStartDetector.
+        - Once interview starts, selects candidate (argmax score) and locks roles.
+        - Enforces candidate_count <= 1 and locks all other human participants as interviewers.
+        """
+        spk = message.get("speaker")
+        if not spk or spk == "System":
+            return
+
+        # If roles already locked, enforce locked role on the turn
+        if self.roles_locked:
+            if spk == self.locked_candidate:
+                self.session_speaker_roles[spk] = "candidate"
+            else:
+                self.session_speaker_roles[spk] = "interviewer"
+            message["speaker_role"] = self.session_speaker_roles[spk]
+            return
+
+
+        # 1. Update evidence score for current turn
+        self.candidate_evidence_tracker.process_turn(message, resume_text=self.resume)
+
+        # 2. Check for interview start
+        if not self.interview_started:
+            start_res = self.interview_start_detector.detect(self.transcript)
+            if start_res.interview_started:
+                self.interview_started = True
+                self.interview_started_at = datetime.datetime.now().isoformat()
+                logger.info(f"[InterviewStart] trigger={start_res.trigger} turn_id={start_res.turn_id}")
+
+        # 3. Role lock evaluation if interview has started
+        if self.interview_started and not self.roles_locked:
+            human_speakers = [s for s in self.detected_speakers if s and s != "System"]
+            winner, interviewers = self.candidate_evidence_tracker.get_candidate_and_interviewers(
+                human_speakers, threshold=0.10
+            )
+
+            # Fallback for 2-participant interviews with confident candidate match
+            if not winner and len(human_speakers) == 2:
+                cand_candidates = [
+                    s for s in human_speakers
+                    if self.session_speaker_roles.get(s) == "candidate"
+                ]
+                if len(cand_candidates) == 1:
+                    winner = cand_candidates[0]
+                    interviewers = [s for s in human_speakers if s != winner]
+
+            if winner:
+                self.roles_locked = True
+                self.locked_candidate = winner
+                self.candidate_locked_at = datetime.datetime.now().isoformat()
+                self.session_speaker_roles[winner] = "candidate"
+                for inv in interviewers:
+                    self.session_speaker_roles[inv] = "interviewer"
+
+                logger.info(f"[RoleLock] candidate={winner} interviewers={interviewers}")
+
+                # Propagate locked state to QA FSM
+                if self.qa_fsm:
+                    self.qa_fsm.roles_locked = True
+
+                # Backfill transcript turns
+                for t in self.transcript:
+                    s = t.get("speaker")
+                    if s in self.session_speaker_roles:
+                        t["speaker_role"] = self.session_speaker_roles[s]
+
+                if spk in self.session_speaker_roles:
+                    message["speaker_role"] = self.session_speaker_roles[spk]
+
+                # Persist role lock state to disk cache and database (pod restart & reconnect resilience)
+                rl_payload = {
+                    "roles_locked": True,
+                    "locked_candidate": winner,
+                    "candidate_locked_at": self.candidate_locked_at,
+                    "interview_started": self.interview_started,
+                    "interview_started_at": self.interview_started_at,
+                    "session_speaker_roles": self.session_speaker_roles
+                }
+                repo_dir = getattr(self.repo, "directory", None)
+                if repo_dir:
+                    target_dir = os.path.join(repo_dir, str(self.session_id))
+                    try:
+                        os.makedirs(target_dir, exist_ok=True)
+                        p = os.path.join(target_dir, "role_lock.json")
+                        with open(p, "w", encoding="utf-8") as rf:
+                            json.dump(rl_payload, rf, indent=2)
+                    except Exception as rl_write_err:
+                        logger.debug(f"[SessionEngine] Could not persist role_lock.json to {target_dir}: {rl_write_err}")
+
+                try:
+                    await self.repo.save_session(str(self.session_id), rl_payload)
+                except Exception as repo_err:
+                    logger.debug(f"[SessionEngine] Could not persist role lock to repo: {repo_err}")
+
+                await self._flush_unresolved_buffer()
 
     async def _resolve_initial_roles(self) -> bool:
         """
         Attempts synchronous deterministic role resolution before feeding turns to QA FSM.
         Returns True if roles are fully resolved.
         """
+        if self.roles_locked:
+            return True
+
         human_speakers = sorted([s for s in self.detected_speakers if s and s != "System"])
         if not human_speakers:
             return False
 
         async with self._role_resolution_lock:
-            if self._are_roles_resolved():
+            if self.roles_locked:
                 return True
 
             try:
@@ -337,19 +480,17 @@ class CopilotSessionEngine:
     def should_identify_roles(self) -> bool:
         """
         Determines whether conversational role identification should be triggered.
-        Triggers when there are unresolved human speakers and meaningful conversational
-        dialogue (>= 2 distinct human speakers, question + answer exchange, non-greeting).
+        Triggers when roles are not yet locked and there is meaningful conversational dialogue.
         """
         if self._role_identification_in_progress:
             return False
 
-        human_speakers = [s for s in self.detected_speakers if s and s != "System"]
-        if len(human_speakers) < 2:
+        # Part 1: Once roles are locked, no further re-classification
+        if self.roles_locked:
             return False
 
-        # If all human speakers already have confident roles, no need to rerun
-        unresolved = [s for s in human_speakers if self.session_speaker_roles.get(s, "unknown") == "unknown"]
-        if not unresolved:
+        human_speakers = [s for s in self.detected_speakers if s and s != "System"]
+        if len(human_speakers) < 2:
             return False
 
         # Valid non-empty turns
@@ -366,6 +507,7 @@ class CopilotSessionEngine:
         )
 
         return total_words >= 6 and (has_substantive_turn or has_question_or_answer)
+
 
     async def _update_all_background_llm_tasks(self, message: Dict[str, Any], last_question: str, websocket: Any = None):
         """Runs conversational role identification, candidate evaluation, conversation intelligence, and copilot suggestions concurrently in the background."""
@@ -389,6 +531,12 @@ class CopilotSessionEngine:
                         r = info.get("role", "unknown")
                         conf = info.get("confidence", 0.0)
                         if r in ("candidate", "interviewer") and conf >= DeterministicRoleClassifier.CONFIDENCE_THRESHOLD:
+                            # Preserve locked roles once locked
+                            if self.roles_locked and self.locked_candidate:
+                                if spk == self.locked_candidate and r != "candidate":
+                                    continue
+                                if spk != self.locked_candidate and r == "candidate":
+                                    continue
                             if self.session_speaker_roles.get(spk) != r:
                                 self.session_speaker_roles[spk] = r
                                 newly_resolved = True
@@ -417,6 +565,10 @@ class CopilotSessionEngine:
                     logger.error(f"Error in background conversational role identification: {role_err}")
                 finally:
                     self._role_identification_in_progress = False
+
+            # Update candidate stabilization layer
+            await self._update_candidate_stabilization(message)
+
 
             # Check if current message is resolved as candidate
             is_candidate_turn = (message.get("speaker_role") == "candidate" or message.get("speaker") == "Candidate")
@@ -583,12 +735,19 @@ class CopilotSessionEngine:
         entry_id = msg_id or f"{self.session_id}-turn-{curr_turn_id}"
 
         speaker_role = self.session_speaker_roles.get(speaker, "unknown")
-        if speaker == "Candidate":
+        if self.roles_locked and speaker and speaker != "System":
+            if speaker == self.locked_candidate:
+                speaker_role = "candidate"
+            else:
+                speaker_role = "interviewer"
+            self.session_speaker_roles[speaker] = speaker_role
+        elif speaker == "Candidate":
             speaker_role = "candidate"
             self.session_speaker_roles[speaker] = "candidate"
         elif speaker == "Interviewer":
             speaker_role = "interviewer"
             self.session_speaker_roles[speaker] = "interviewer"
+
 
         # Same-Speaker Utterance Stitching Engine (Merges rapid consecutive chunks if allow_merge is True)
         if allow_merge and self.transcript:
@@ -617,6 +776,9 @@ class CopilotSessionEngine:
                     await self.repo.save_session(self.session_id, {"transcript": self.transcript})
                 except Exception as save_err:
                     logger.debug(f"Immediate transcript save warning: {save_err}")
+
+                # Candidate Stabilization Layer turn processing
+                await self._update_candidate_stabilization(last_entry)
 
                 # Synchronous Initial Role Resolution with updated transcript
                 if not self._are_roles_resolved():
@@ -662,6 +824,10 @@ class CopilotSessionEngine:
                     await self.repo.save_session(self.session_id, {"transcript": self.transcript})
                 except Exception as save_err:
                     logger.debug(f"Immediate transcript save warning: {save_err}")
+
+                # Candidate Stabilization Layer turn processing
+                await self._update_candidate_stabilization(msg)
+
                 # Synchronous Initial Role Resolution with updated transcript
                 if not self._are_roles_resolved():
                     await self._resolve_initial_roles()
@@ -704,6 +870,9 @@ class CopilotSessionEngine:
         except Exception as save_err:
             logger.debug(f"Immediate transcript save warning: {save_err}")
 
+        # Candidate Stabilization Layer turn processing
+        await self._update_candidate_stabilization(message)
+
         # Synchronous Initial Role Resolution with newly appended turn in transcript
         if not self._are_roles_resolved():
             await self._resolve_initial_roles()
@@ -728,6 +897,7 @@ class CopilotSessionEngine:
                     self._unresolved_role_buffer.append(message)
 
         return message
+
 
     def get_transcript(self) -> List[Dict[str, Any]]:
         """Returns the current transcript history list."""

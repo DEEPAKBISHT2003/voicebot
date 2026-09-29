@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api from '../api/axios';
 import { Lock, Mail, AlertCircle, Loader2 } from 'lucide-react';
@@ -66,7 +66,9 @@ export const Login: React.FC = () => {
       if (err.response?.status === 401) {
         setErrorMessage('Invalid email or password.');
       } else if (err.response?.status === 403) {
-        setErrorMessage('This account is disabled. Please contact an administrator.');
+        setErrorMessage(
+          err.response?.data?.detail || 'Account is inactive or pending administrator approval. Inactive users cannot log in.'
+        );
       } else if (err.response?.data?.detail) {
         setErrorMessage(
           typeof err.response.data.detail === 'string'
@@ -173,6 +175,15 @@ export const Login: React.FC = () => {
               </button>
             </div>
           </form>
+
+          <div className="mt-6 text-center">
+            <p className="text-sm text-slate-600">
+              Don't have an account?{' '}
+              <Link to="/signup" className="font-semibold text-indigo-600 hover:text-indigo-500">
+                Sign up
+              </Link>
+            </p>
+          </div>
         </div>
       </div>
     </div>

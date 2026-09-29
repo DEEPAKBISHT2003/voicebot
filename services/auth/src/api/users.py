@@ -17,11 +17,20 @@ async def create_user(
 ):
     """
     Admin-only: Create a new user.
+    - Restricts email domain strictly to @appzlogic.com.
     - Normalizes email to lowercase.
     - Validates password strength policy.
     - Enforces unique email.
     """
     normalized_email = req.email.strip().lower()
+
+    # Enforce domain restriction: Only @appzlogic.com accounts permitted
+    parts = normalized_email.split("@")
+    if len(parts) != 2 or not parts[0] or parts[1] != "appzlogic.com":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Only @appzlogic.com email addresses are allowed.",
+        )
 
     # Check for existing user with normalized email
     existing_user = await UserModel.get_or_none(email=normalized_email)
@@ -31,20 +40,33 @@ async def create_user(
             detail=f"User with email '{normalized_email}' already exists.",
         )
 
+    # Check for existing employee ID if provided
+    if req.employee_id is not None:
+        existing_emp = await UserModel.get_or_none(employee_id=req.employee_id)
+        if existing_emp:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"User with Employee ID '{req.employee_id}' already exists.",
+            )
+
     # Validate password against security policy
     validate_password_strength(req.password)
 
     password_hash = hash_password(req.password)
     new_user = await UserModel.create(
+        name=req.name,
+        employee_id=req.employee_id,
         email=normalized_email,
         password_hash=password_hash,
         role=req.role,
-        is_active=True,
+        is_active=req.is_active if req.is_active is not None else True,
     )
 
     logger.info(f"[Auth] Admin {current_admin.email} created user: {new_user.email} (Role: {new_user.role})")
     return {
         "id": str(new_user.id),
+        "name": new_user.name,
+        "employee_id": new_user.employee_id,
         "email": new_user.email,
         "role": new_user.role,
         "is_active": new_user.is_active,
@@ -65,6 +87,8 @@ async def list_users(
     return [
         {
             "id": str(u.id),
+            "name": u.name,
+            "employee_id": u.employee_id,
             "email": u.email,
             "role": u.role,
             "is_active": u.is_active,
@@ -125,6 +149,8 @@ async def update_user(
 
     return {
         "id": str(target_user.id),
+        "name": target_user.name,
+        "employee_id": target_user.employee_id,
         "email": target_user.email,
         "role": target_user.role,
         "is_active": target_user.is_active,

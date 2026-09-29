@@ -5,14 +5,15 @@ import { ProtectedRoute } from './components/ProtectedRoute';
 import { AdminRoute } from './components/AdminRoute';
 import { Layout } from './layouts/Layout';
 import { Login } from './pages/Login';
+import { SignUp } from './pages/SignUp';
 import { InterviewsList } from './pages/InterviewsList';
 import { NewInterview } from './pages/NewInterview';
 import { MeetingObserver } from './pages/MeetingObserver';
 import { InterviewSession } from './pages/InterviewSession';
-import { NewCopilot } from './copilot/pages/NewCopilot';
+// import { NewCopilot } from './copilot/pages/NewCopilot';
 import { CopilotSession } from './copilot/pages/CopilotSession';
 import { UsageDashboard } from './pages/UsageDashboard';
-import { UserControlPlaceholder } from './pages/AdminPlaceholders';
+import { UserControl } from './pages/UserControl';
 
 // Instantiate Query Client for server state caching
 const queryClient = new QueryClient({
@@ -30,8 +31,9 @@ function App() {
       <AuthProvider>
         <BrowserRouter>
           <Routes>
-            {/* Public Login Route */}
+            {/* Public Auth Routes */}
             <Route path="/login" element={<Login />} />
+            <Route path="/signup" element={<SignUp />} />
 
             {/* Protected Routes (USER and ADMIN) */}
             <Route element={<ProtectedRoute />}>
@@ -45,14 +47,14 @@ function App() {
                       <Route path="/meeting-observer" element={<MeetingObserver />} />
                       <Route path="/meeting-observer/new" element={<MeetingObserver />} />
                       <Route path="/observer/new" element={<MeetingObserver />} />
-                      <Route path="/copilots/new" element={<NewCopilot />} />
+                      {/* <Route path="/copilots/new" element={<NewCopilot />} /> */}
                       <Route path="/copilots/:id" element={<CopilotSession />} />
 
                       {/* Admin-only Routes */}
                       <Route element={<AdminRoute />}>
                         <Route path="/analytics" element={<UsageDashboard />} />
                         <Route path="/usage" element={<UsageDashboard />} />
-                        <Route path="/user-control" element={<UserControlPlaceholder />} />
+                        <Route path="/user-control" element={<UserControl />} />
                       </Route>
 
                       <Route path="*" element={<Navigate to="/" replace />} />
