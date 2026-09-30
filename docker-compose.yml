@@ -44,6 +44,11 @@ services:
       - BROWSER_URL=${BROWSER_URL:-http://localhost:${BROWSER_PORT:-8002}}
       - BACKEND_WS_BASE=${BACKEND_WS_BASE:-ws://localhost:${COPILOT_PORT:-8000}}
       - COPILOT_WS_BASE=${COPILOT_WS_BASE:-ws://localhost:${COPILOT_PORT:-8000}}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-voicebot_super_secret_jwt_key_2026_change_in_production}
+      - JWT_ALGORITHM=${JWT_ALGORITHM:-HS256}
+      - JWT_EXPIRATION_MINUTES=${JWT_EXPIRATION_MINUTES:-480}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@voicebot.com}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-AdminPassword123!}
     volumes:
       - ./interviews:/app/interviews
     depends_on:
