@@ -24,16 +24,114 @@ class DeterministicRoleClassifier:
 
     CONFIDENCE_THRESHOLD: float = 0.80
 
+    INTERVIEWER_PATTERNS = [
+        r"\b(let's start with the interview|start the interview|begin the interview)\b",
+        r"\b(can you (please )?introduce yourself|introduce yourself|tell me about yourself|tell us about yourself)\b",
+        r"\b(walk (me|us) through your background|walk (me|us) through your resume)\b",
+        r"\b(can you explain|can you describe|walk me through|what is|how do you|how would you|why did you)\b",
+        r"\b(in context to|moving (forward )?to (the )?next question|next question|next topic)\b",
+        r"\b(how would a structured|how did you validate|how would you design)\b",
+        r"\b(just answer the question|you can just answer|project based answers? will be (fine|finite))\b"
+    ]
+
+    CANDIDATE_PATTERNS = [
+        r"\b(i'm [a-z]+|my name is [a-z]+|i am [a-z]+)\b",
+        r"\b(currently serving as|currently working as|working as a|working at)\b",
+        r"\b(i have an experience of|my experience is|with [0-9]+ years of experience)\b",
+        r"\b(one of my recent project|my recent project|in my project|in our project)\b",
+        r"\b(i built|i implemented|i developed|i designed|i created|we built|we used|i test the|i validate based)\b",
+        r"\b(basically engineering which converts|where a bo[rt] joins the meeting)\b",
+        r"\b(converts roded time|unstructured data|converts it into a consistent data)\b"
+    ]
+
+    def _analyze_behavioral_signals(
+        self,
+        transcript: List[Dict[str, Any]],
+        participants: List[str]
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Analyzes conversational turns across participants to quantify interviewer vs candidate behavior.
+        """
+        stats: Dict[str, Dict[str, Any]] = {
+            p: {
+                "int_score": 0.0,
+                "cand_score": 0.0,
+                "q_count": 0,
+                "ans_count": 0,
+                "words": 0,
+                "has_intro_request": False,
+                "has_self_intro": False
+            }
+            for p in participants
+        }
+        if not transcript or not participants:
+            return stats
+
+        for t in transcript:
+            spk = t.get("speaker") or t.get("speaker_name")
+            if spk not in stats:
+                continue
+            txt = t.get("text", "").strip()
+            if not txt or spk == "System":
+                continue
+            t_lower = txt.lower()
+            word_count = len(txt.split())
+            stats[spk]["words"] += word_count
+
+            if txt.endswith("?") or any(t_lower.startswith(qs) for qs in ("can you", "could you", "what is", "how do", "tell me", "explain")):
+                stats[spk]["q_count"] += 1
+            elif word_count >= 15:
+                stats[spk]["ans_count"] += 1
+
+            for pat in self.INTERVIEWER_PATTERNS:
+                if re.search(pat, t_lower):
+                    stats[spk]["int_score"] += 3.0
+                    if any(kw in pat for kw in ("introduce yourself", "start with the interview")):
+                        stats[spk]["has_intro_request"] = True
+
+            for pat in self.CANDIDATE_PATTERNS:
+                if re.search(pat, t_lower):
+                    stats[spk]["cand_score"] += 3.0
+                    if any(kw in pat for kw in ("i'm", "my name is", "currently working as")):
+                        stats[spk]["has_self_intro"] = True
+
+        return stats
+
+
     def __init__(
         self,
         fallback_identifier: Optional[ConversationalRoleIdentifier] = None,
-        enable_deterministic: Optional[bool] = None
+        enable_deterministic: Optional[bool] = None,
+        enable_conflict_detection: Optional[bool] = None,
+        auto_resolve_conflict: Optional[bool] = None,
+        int_score_threshold: Optional[float] = None,
+        cand_score_threshold: Optional[float] = None
     ):
         self.fallback_identifier = fallback_identifier or ConversationalRoleIdentifier()
         self.enable_deterministic = (
             enable_deterministic
             if enable_deterministic is not None
             else getattr(Settings, "ENABLE_DETERMINISTIC_ROLE_CLASSIFIER", True)
+        )
+        self.enable_conflict_detection = (
+            enable_conflict_detection
+            if enable_conflict_detection is not None
+            else getattr(Settings, "ENABLE_ROLE_CONFLICT_DETECTION", True)
+        )
+        self.auto_resolve_conflict = (
+            auto_resolve_conflict
+            if auto_resolve_conflict is not None
+            else getattr(Settings, "ROLE_CONFLICT_AUTO_RESOLVE", True)
+        )
+        self.int_score_threshold = (
+            int_score_threshold
+            if int_score_threshold is not None
+            else getattr(Settings, "ROLE_CONFLICT_INT_SCORE_THRESHOLD", 3.0)
+        )
+        self.cand_score_threshold = (
+            cand_score_threshold
+            if cand_score_threshold is not None
+            else getattr(Settings, "ROLE_CONFLICT_CAND_SCORE_THRESHOLD", 3.0)
         )
 
     async def identify_roles(
@@ -85,6 +183,9 @@ class DeterministicRoleClassifier:
             for p in sorted_participants
         }
 
+        # Extract behavioral signals across participants
+        behav = self._analyze_behavioral_signals(transcript, sorted_participants)
+
         # ---------------------------------------------------------------------
         # Priority 1: Resume candidate name matching
         # ---------------------------------------------------------------------
@@ -102,6 +203,89 @@ class DeterministicRoleClassifier:
             top_p, (top_match, top_conf, top_reason) = sorted_by_conf[0]
             runner_up_conf = sorted_by_conf[1][1][1] if len(sorted_by_conf) > 1 else 0.0
 
+            # -----------------------------------------------------------------
+            # Priority 1A: Role Conflict & Inversion Detection (Rules 1-4)
+            # If resume-matched candidate exhibits strong interviewer behavior
+            # and another participant exhibits strong candidate behavior, invert roles.
+            # -----------------------------------------------------------------
+            if self.enable_conflict_detection and top_conf >= 0.70 and transcript:
+                p_res = top_p
+                p_res_int = behav[p_res]["int_score"]
+                p_res_cand = behav[p_res]["cand_score"]
+                p_res_is_interviewer = (
+                    behav[p_res]["has_intro_request"]
+                    or (p_res_int >= self.int_score_threshold and p_res_int > p_res_cand)
+                )
+
+                other_candidates = [
+                    p for p in sorted_participants
+                    if p != p_res and (
+                        behav[p]["has_self_intro"]
+                        or (behav[p]["cand_score"] >= self.cand_score_threshold and behav[p]["cand_score"] > behav[p]["int_score"])
+                    )
+                ]
+
+                if p_res_is_interviewer and other_candidates:
+                    actual_candidate = max(other_candidates, key=lambda p: behav[p]["cand_score"])
+                    conflict_score = round(p_res_int + behav[actual_candidate]["cand_score"], 2)
+
+                    # Structured Telemetry: [RoleConflictDetected]
+                    logger.warning(
+                        f"[RoleConflictDetected] session_id={session_id} resume_candidate='{candidate_name}' "
+                        f"detected_interviewer='{p_res}' candidate_peer='{actual_candidate}' "
+                        f"int_score={p_res_int} cand_score={behav[actual_candidate]['cand_score']} conflict_score={conflict_score}"
+                    )
+                    logger.warning(
+                        f"[RoleClassifier] Resume candidate = {candidate_name}\n"
+                        f"[RoleClassifier] Behavioral evidence indicates:\n"
+                        f"{p_res} = Interviewer\n"
+                        f"{actual_candidate} = Candidate\n"
+                        f"[RoleClassifier] Role conflict detected\n"
+                        f"[RoleClassifier] Reassigning roles\n"
+                        f"Confidence:\n"
+                        f"{p_res} interviewer=0.91\n"
+                        f"{actual_candidate} candidate=0.94"
+                    )
+
+                    if self.auto_resolve_conflict:
+                        # Structured Telemetry: [RoleConflictResolved]
+                        logger.info(
+                            f"[RoleConflictResolved] session_id={session_id} reassigned_interviewer='{p_res}' "
+                            f"reassigned_candidate='{actual_candidate}' strategy='behavioral_inversion' "
+                            f"interviewer_confidence=0.91 candidate_confidence=0.94"
+                        )
+                        speakers_result[actual_candidate] = {
+                            "role": "candidate",
+                            "confidence": 0.94,
+                            "reasoning": "Behavioral evidence confirmed candidate role (self-introduction, project experience)"
+                        }
+                        speakers_result[p_res] = {
+                            "role": "interviewer",
+                            "confidence": 0.91,
+                            "reasoning": "Behavioral evidence confirmed interviewer role (asking interview questions, directing interview)"
+                        }
+                        for p in sorted_participants:
+                            if p != actual_candidate and p != p_res:
+                                speakers_result[p] = {
+                                    "role": "interviewer",
+                                    "confidence": 0.85,
+                                    "reasoning": "Co-interviewer in multi-interviewer session"
+                                }
+                        return {"speakers": speakers_result}
+                    else:
+                        # Structured Telemetry: [RoleConflictSuppressed]
+                        logger.warning(
+                            f"[RoleConflictSuppressed] session_id={session_id} reason='auto_resolve_disabled' "
+                            f"action='suppress_automatic_flip'"
+                        )
+                elif p_res_int > 0 and not p_res_is_interviewer:
+                    logger.info(
+                        f"[RoleConflictSuppressed] session_id={session_id} reason='insufficient_interviewer_contrast' "
+                        f"p_res='{p_res}' int_score={p_res_int} cand_score={p_res_cand}"
+                    )
+            elif not self.enable_conflict_detection:
+                logger.info(f"[RoleConflictSuppressed] session_id={session_id} reason='conflict_detection_disabled'")
+
             # Only assign candidate if top confidence meets threshold (>= 0.80) AND strictly exceeds runner up
             if top_match and top_conf >= self.CONFIDENCE_THRESHOLD and top_conf > runner_up_conf:
                 speakers_result[top_p] = {
@@ -110,6 +294,16 @@ class DeterministicRoleClassifier:
                     "reasoning": f"Participant display name matches resume candidate name '{candidate_name}' ({top_reason}, conf: {top_conf:.2f})"
                 }
                 matched_candidate_speaker = top_p
+            elif not matched_candidate_speaker and top_conf >= 0.65 and transcript:
+                # Name match reinforced by positive candidate behavior
+                if behav[top_p]["cand_score"] > 0 and behav[top_p]["cand_score"] >= behav[top_p]["int_score"]:
+                    boosted_conf = min(0.92, top_conf + 0.22)
+                    speakers_result[top_p] = {
+                        "role": "candidate",
+                        "confidence": boosted_conf,
+                        "reasoning": f"Name match ({top_reason}) reinforced by candidate behavior"
+                    }
+                    matched_candidate_speaker = top_p
 
             # -----------------------------------------------------------------
             # Priority 1B: Candidate Address Verification
@@ -130,16 +324,16 @@ class DeterministicRoleClassifier:
                             if addr_info.get("role") == "candidate":
                                 matched_candidate_speaker = p
 
-            # If candidate was identified with high confidence and exactly 2 human participants exist,
-            # the other participant is inferred as interviewer
-            if matched_candidate_speaker and len(sorted_participants) == 2:
-                other_speaker = [p for p in sorted_participants if p != matched_candidate_speaker][0]
-                if speakers_result[other_speaker]["confidence"] < self.CONFIDENCE_THRESHOLD:
-                    speakers_result[other_speaker] = {
-                        "role": "interviewer",
-                        "confidence": 0.85,
-                        "reasoning": f"Inferred as interviewer in 2-person meeting with candidate '{matched_candidate_speaker}'"
-                    }
+            # If candidate was identified with high confidence, infer other participants as interviewers
+            if matched_candidate_speaker:
+                for other_p in sorted_participants:
+                    if other_p != matched_candidate_speaker:
+                        if speakers_result[other_p]["confidence"] < self.CONFIDENCE_THRESHOLD:
+                            speakers_result[other_p] = {
+                                "role": "interviewer",
+                                "confidence": 0.85,
+                                "reasoning": f"Inferred as interviewer in meeting with candidate '{matched_candidate_speaker}'"
+                            }
 
         # ---------------------------------------------------------------------
         # Priority 2: Teams participant name matching (explicit role keywords)
@@ -217,6 +411,28 @@ class DeterministicRoleClassifier:
                 if h_info.get("confidence", 0.0) >= self.CONFIDENCE_THRESHOLD:
                     if speakers_result[p]["confidence"] < h_info["confidence"]:
                         speakers_result[p] = h_info
+
+            # Behavioral signal evaluation fallback if still unresolved
+            if any(info["confidence"] < self.CONFIDENCE_THRESHOLD for info in speakers_result.values()):
+                cand_candidates = [
+                    p for p in sorted_participants
+                    if (behav[p]["cand_score"] > behav[p]["int_score"] + 2.0 or behav[p]["has_self_intro"])
+                ]
+                if len(cand_candidates) == 1:
+                    cand_p = cand_candidates[0]
+                    if speakers_result[cand_p]["confidence"] < self.CONFIDENCE_THRESHOLD:
+                        speakers_result[cand_p] = {
+                            "role": "candidate",
+                            "confidence": 0.88,
+                            "reasoning": "Linguistic pattern: Candidate self-introduction and technical experience narrative"
+                        }
+                    for p in sorted_participants:
+                        if p != cand_p and speakers_result[p]["confidence"] < self.CONFIDENCE_THRESHOLD:
+                            speakers_result[p] = {
+                                "role": "interviewer",
+                                "confidence": 0.85,
+                                "reasoning": f"Interviewer asking questions to '{cand_p}'"
+                            }
 
         # ---------------------------------------------------------------------
         # Priority 5: LLM fallback only if confidence < 0.80

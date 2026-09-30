@@ -39,6 +39,10 @@ class Settings:
 
     # Optimization Flags
     ENABLE_DETERMINISTIC_ROLE_CLASSIFIER: bool = os.getenv("ENABLE_DETERMINISTIC_ROLE_CLASSIFIER", "true").lower() in ("true", "1", "yes")
+    ENABLE_ROLE_CONFLICT_DETECTION: bool = os.getenv("ENABLE_ROLE_CONFLICT_DETECTION", "true").lower() in ("true", "1", "yes")
+    ROLE_CONFLICT_AUTO_RESOLVE: bool = os.getenv("ROLE_CONFLICT_AUTO_RESOLVE", "true").lower() in ("true", "1", "yes")
+    ROLE_CONFLICT_INT_SCORE_THRESHOLD: float = float(os.getenv("ROLE_CONFLICT_INT_SCORE_THRESHOLD", "3.0"))
+    ROLE_CONFLICT_CAND_SCORE_THRESHOLD: float = float(os.getenv("ROLE_CONFLICT_CAND_SCORE_THRESHOLD", "3.0"))
     ENABLE_QA_FSM: bool = os.getenv("ENABLE_QA_FSM", "true").lower() in ("true", "1", "yes")
     QA_FSM_SILENCE_THRESHOLD: float = float(os.getenv("QA_FSM_SILENCE_THRESHOLD", "10.0"))
     ENABLE_UNIFIED_QA_WORKER_SHADOW: bool = os.getenv("ENABLE_UNIFIED_QA_WORKER_SHADOW", "true").lower() in ("true", "1", "yes")

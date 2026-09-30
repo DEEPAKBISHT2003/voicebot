@@ -1,4 +1,5 @@
 import re
+import time
 import asyncio
 import datetime
 from enum import Enum
@@ -75,13 +76,19 @@ class QAStateMachine:
         "what were", "what did", "what do", "what does", "what have", "what would",
         "what should", "what could", "what can", "what's", "what kind", "what type",
         "what specific", "what components", "how do", "how would", "how did", "how does",
-        "how can", "how could", "how is", "how are", "why did", "why do", "why does",
+        "how can", "how could", "how is", "how are", "how have", "how have you",
+        "what have you", "what did you", "how did you", "why did", "why do", "why does",
         "why is", "why would", "explain", "walk me through", "walk us through", "describe",
         "have you worked", "which", "when did", "so tell", "let's talk about",
         "do you have experience", "how do you approach", "what's your approach",
         "would you mind", "what was your role", "please walk", "please explain",
         "please describe", "please introduce", "introduce yourself", "could", "would",
-        "do you", "did you", "have you", "can we", "is it"
+        "do you", "did you", "have you", "can we", "is it",
+        "the first question", "first question", "the next question", "next question",
+        "another question", "my question is", "one question i have", "one question from my side",
+        "question from my side", "a question from my side", "the second question",
+        "second question", "the third question", "third question", "to start with",
+        "could you tell", "can you tell", "do you want to", "would you like to"
     )
 
     GREETINGS = (
@@ -122,6 +129,7 @@ class QAStateMachine:
         self.last_question: Optional[Dict[str, Any]] = None
         self.last_answer_turns: List[Dict[str, Any]] = []
         self.last_completion_reason: str = ""
+        self.last_completion_time: Optional[float] = None
 
     def get_state(self) -> QAState:
         """Returns the current state of the FSM."""
@@ -159,8 +167,10 @@ class QAStateMachine:
             r"\b(neural network|rag|vector|database|postgres|sql|nosql|system|framework|crewai|agent)\b",
             r"\b(api|microservice|frontend|backend|cloud|kubernetes|docker|react|python|java|c\+\+)\b",
             r"\b(index|indexing|deadlock|concurrency|latency|throughput|cache|redis|kafka)\b",
+            r"\b(garbage collection|mark-and-sweep|memory|pointers|threads|async|event loop|gc|heap|stack)\b",
+            r"\b(fastapi|mcp|rag|llm|ollama|grc|iso|compliance|risk)\b",
             r"\b(introduce yourself|introduction|resume|background|experience|previous project)\b",
-            r"\b(walk me through|tell me about|explain how|what did you build|how would you)\b",
+            r"\b(walk me through|tell me about|explain|describe|what is|what are|how does|how do|what did you build|how would you)\b",
             r"\b(feature|components|implementation|tradeoff|design pattern|unit test|integration)\b"
         ]
         has_tech_domain = any(re.search(pat, t_lower) for pat in technical_domain)
@@ -264,6 +274,14 @@ class QAStateMachine:
         if any(t_lower.startswith(qs) for qs in self.QUESTION_STARTERS):
             return True
 
+        # Check after repeatedly stripping leading conversational filler prefixes
+        words = t_lower.split()
+        while words and re.sub(r"^[^\w]+|[^\w]+$", "", words[0]) in self.FILLER_PREFIXES:
+            words.pop(0)
+        stripped_prefix = " ".join(words)
+        if stripped_prefix and any(stripped_prefix.startswith(qs) for qs in self.QUESTION_STARTERS):
+            return True
+
         # Clause-based analysis for compound utterances with conversational prefixes/names
         clauses = [c.strip() for c in re.split(r"[,;.!?\n]+", cleaned) if c.strip()]
         for clause in clauses:
@@ -280,8 +298,13 @@ class QAStateMachine:
                 if any(without_name.startswith(qs) for qs in self.QUESTION_STARTERS):
                     return True
 
-        # Regex matching for core modal/interrogative verbs
-        pattern = r"\b(can you|could you|tell me|tell us|how do you|how would you|what is|what are|explain|walk me through|describe|introduce yourself)\b"
+        # Regex matching for core modal/interrogative verbs and question declarations
+        pattern = (
+            r"\b(can you|could you|tell me|tell us|how do you|how would you|how have you|"
+            r"how did you|what is|what are|what did you|what have you|explain|walk me through|"
+            r"describe|introduce yourself|first question|next question|another question|"
+            r"question from my side|my question is)\b"
+        )
         if re.search(pattern, t_lower):
             return True
 
@@ -355,6 +378,27 @@ class QAStateMachine:
             return True
 
         return False
+
+    def _is_candidate_answer_concluded(self, text: str) -> bool:
+        """
+        Determines if a candidate utterance explicitly concludes the current answer,
+        e.g., 'And that's all about me.', 'That's it.', 'That covers it.',
+        preventing any subsequent candidate turn from re-opening or continuing this answer.
+        """
+        cleaned = text.strip()
+        if not cleaned:
+            return False
+        t_lower = cleaned.lower()
+        t_clean = re.sub(r"^[^\w]+|[^\w]+$", "", t_lower)
+
+        conclusion_patterns = [
+            r"\b(that'?s|that is)\s+(all\s+about\s+me|all\s+from\s+my\s+side|all\s+i\s+have|pretty\s+much\s+it|about\s+it|everything|all)\b",
+            r"\b(that\s+concludes\s+my\s+(answer|intro|introduction|background))\b",
+            r"\b(that'?s|that is)\s+(my\s+background|my\s+introduction)\b",
+            r"\b(that\s+covers\s+it|that\s+answers\s+(the|your)\s+question|that'?s\s+it\s+from\s+me)\b",
+            r"\b(nothing\s+(more|else)\s+to\s+add)\b"
+        ]
+        return any(re.search(pat, t_clean) for pat in conclusion_patterns)
 
     def _is_interviewer_clarification_response(self, text: str, cand_text: str) -> bool:
         """
@@ -509,15 +553,25 @@ class QAStateMachine:
         self._transition_to(QAState.QA_COMPLETED, reason)
         qa_fsm_metrics["qa_fsm_completed_pairs_total"] += 1
 
-        # Track for candidate continuation if completed via silence timeout
-        if "silence threshold exceeded" in reason.lower():
+        # Check if the candidate explicitly concluded their answer
+        cand_full_text = " ".join(t.get("text", "") for t in self.current_answer_turns).strip()
+        last_turn_text = self.current_answer_turns[-1].get("text", "").strip() if self.current_answer_turns else ""
+        is_concluded = (
+            self._is_candidate_answer_concluded(cand_full_text)
+            or self._is_candidate_answer_concluded(last_turn_text)
+        )
+
+        # Track for candidate continuation if completed via silence timeout and NOT explicitly concluded
+        if "silence threshold exceeded" in reason.lower() and not is_concluded:
             self.last_question = dict(self.current_question) if self.current_question else None
             self.last_answer_turns = list(self.current_answer_turns)
             self.last_completion_reason = reason
+            self.last_completion_time = time.monotonic()
         else:
             self.last_question = None
             self.last_answer_turns = []
             self.last_completion_reason = ""
+            self.last_completion_time = None
 
         if self.on_qa_completed:
             try:
@@ -560,6 +614,7 @@ class QAStateMachine:
                     self.last_question = None
                     self.last_answer_turns = []
                     self.last_completion_reason = ""
+                    self.last_completion_time = None
                     if self._is_question(text):
                         qa_fsm_metrics["qa_fsm_question_candidates_total"] += 1
                     if self._is_interview_question(text):
@@ -581,6 +636,7 @@ class QAStateMachine:
                                 f"intent={intent.value} text='{text}'"
                             )
                 elif role == "candidate":
+                    is_valid_continuation = False
                     if self.last_question is not None:
                         # Guard: clarification or unheard request is NOT a continuation of previous answer
                         if self._is_candidate_unheard_request(text) or self._is_candidate_clarification(text):
@@ -591,8 +647,27 @@ class QAStateMachine:
                             self.last_question = None
                             self.last_answer_turns = []
                             self.last_completion_reason = ""
+                            self.last_completion_time = None
                             return None
 
+                        # Guard: Continuation window timeout (5.0s maximum between silence completion and candidate resume)
+                        if self.last_completion_time is not None:
+                            elapsed = time.monotonic() - self.last_completion_time
+                            if elapsed <= 5.0:
+                                is_valid_continuation = True
+                            else:
+                                logger.info(
+                                    f"[QA_FSM] session_id={self.session_id} Candidate continuation window expired "
+                                    f"(elapsed={elapsed:.2f}s > 5.0s). Discarding prior question {self.last_question.get('turn_id')}."
+                                )
+                                self.last_question = None
+                                self.last_answer_turns = []
+                                self.last_completion_reason = ""
+                                self.last_completion_time = None
+                        else:
+                            is_valid_continuation = True
+
+                    if is_valid_continuation and self.last_question is not None:
                         logger.info(
                             f"[QA_FSM] session_id={self.session_id} Candidate continuation detected for question "
                             f"{self.last_question.get('turn_id')}. Re-opening answer."
@@ -602,6 +677,7 @@ class QAStateMachine:
                         self.last_question = None
                         self.last_answer_turns = []
                         self.last_completion_reason = ""
+                        self.last_completion_time = None
                         self._transition_to(QAState.CANDIDATE_ANSWERING, "Candidate continuation after silence")
                         self._schedule_silence_timer()
                 return None
@@ -647,6 +723,34 @@ class QAStateMachine:
             # -----------------------------------------------------------------
             elif self.state == QAState.CANDIDATE_ANSWERING:
                 if role == "candidate":
+                    # Check if previous answer turn already explicitly concluded
+                    if self.current_answer_turns and self._is_candidate_answer_concluded(self.current_answer_turns[-1].get("text", "")):
+                        logger.info(
+                            f"[QA_FSM] session_id={self.session_id} Candidate spoke after previous answer explicitly concluded. "
+                            f"Finalizing concluded answer pair before processing new candidate utterance."
+                        )
+                        self._cancel_silence_timer()
+                        reason = "Candidate answered previous question and started new topic"
+                        completed_qa = self._build_completed_qa(reason)
+                        self._transition_to(QAState.QA_COMPLETED, reason)
+                        qa_fsm_metrics["qa_fsm_completed_pairs_total"] += 1
+                        if self.on_qa_completed:
+                            try:
+                                res = self.on_qa_completed(completed_qa)
+                                if asyncio.iscoroutine(res):
+                                    await res
+                            except Exception as cb_err:
+                                logger.error(f"[QA_FSM] Error executing on_qa_completed callback: {cb_err}")
+
+                        self.last_question = None
+                        self.last_answer_turns = []
+                        self.last_completion_reason = ""
+                        self.last_completion_time = None
+                        self.current_question = None
+                        self.current_answer_turns = []
+                        self._transition_to(QAState.WAITING_FOR_QUESTION, "Awaiting next interviewer question")
+                        return completed_qa
+
                     # Candidate continues speaking: accumulate turn and reset silence timer
                     self.current_answer_turns.append(turn)
                     self._schedule_silence_timer()
@@ -698,6 +802,10 @@ class QAStateMachine:
 
                     # Priority 1 or 3: Speaker Change or New Question!
                     self._cancel_silence_timer()
+                    self.last_question = None
+                    self.last_answer_turns = []
+                    self.last_completion_reason = ""
+                    self.last_completion_time = None
                     qa_fsm_metrics["qa_fsm_speaker_change_completions_total"] += 1
                     
                     reason = "New interviewer question arrived" if is_new_q else "Speaker change from candidate to interviewer"

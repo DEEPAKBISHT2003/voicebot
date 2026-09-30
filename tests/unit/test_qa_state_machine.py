@@ -1141,5 +1141,204 @@ async def test_scenario_21_question_state_replacement_after_silence_timeout():
     fsm.close()
 
 
+@pytest.mark.asyncio
+async def test_scenario_22_session_e62541a3_clean_pair_isolation_intro_and_mcp():
+    """
+    Scenario 22: Session e62541a3 Regression Verification.
+    Verifies that Question 1 (Introduction) and Question 2 (MCP) are cleanly isolated into
+    distinct Q&A pairs without answer merging, even when:
+    - Candidate concludes Turn 11 with 'And that's all about me.'
+    - Silence timeout completes Turn 7
+    - Interviewer asks Turn 12 starting with 'OK. OK. The first question from my side will be...' without a trailing '?'
+    - Candidate answers Turns 13-19 with MCP details
+    - Interviewer asks Turn 20 about GRC system
+    """
+    completed_pairs = []
+
+    async def on_qa(rec):
+        completed_pairs.append(rec)
+
+    fsm = QAStateMachine(session_id="test_sess_e62541a3", silence_threshold=0.1, on_qa_completed=on_qa)
+
+    # 1. Interviewer asks Question 1 (Intro)
+    await fsm.on_turn({
+        "turn_id": 7,
+        "speaker": "Ankit Kumar",
+        "speaker_role": "interviewer",
+        "text": "No, you we can start just right now. OK. Deepak, can you please introduce yourself?"
+    })
+    assert fsm.get_state() == QAState.QUESTION_CAPTURED
+
+    # 2. Candidate answers Turns 8, 9, 10, 11
+    await fsm.on_turn({
+        "turn_id": 8,
+        "speaker": "Deepak Bisht",
+        "speaker_role": "candidate",
+        "text": "Yes, so I'm Deepak. So currently I'm working as AI developer at tab Logic."
+    })
+    assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
+
+    await fsm.on_turn({
+        "turn_id": 9,
+        "speaker": "Deepak Bisht",
+        "speaker_role": "candidate",
+        "text": "Then I did my graduation from College of Engineering, which is in Gurgaon."
+    })
+
+    await fsm.on_turn({
+        "turn_id": 10,
+        "speaker": "Deepak Bisht",
+        "speaker_role": "candidate",
+        "text": "75 and now I have joined apps logic as I end up with."
+    })
+
+    await fsm.on_turn({
+        "turn_id": 11,
+        "speaker": "Deepak Bisht",
+        "speaker_role": "candidate",
+        "text": "And that's all about me."
+    })
+
+    # 3. Candidate silence timeout fires (0.1s threshold)
+    await asyncio.sleep(0.15)
+    assert fsm.get_state() == QAState.WAITING_FOR_QUESTION
+    assert len(completed_pairs) == 1
+
+    pair1 = completed_pairs[0]
+    assert pair1["pair_id"] == "Q7_A8_9_10_11"
+    assert pair1["question_turn_id"] == 7
+    assert pair1["answer_turn_ids"] == [8, 9, 10, 11]
+    assert "Deepak" in pair1["answer"]
+    assert "MCP" not in pair1["answer"]
+    # Because Turn 11 had 'And that's all about me.', last_question MUST be None!
+    assert fsm.last_question is None
+
+    # 4. Interviewer asks Question 2 (MCP) with conversational prefix, no question mark
+    await fsm.on_turn({
+        "turn_id": 12,
+        "speaker": "Ankit Kumar",
+        "speaker_role": "interviewer",
+        "text": "OK. OK. The first question from my side will be like given this roles focus on fast API RAG and MCP, how have you used MCP in practice or how would you apply it to one of your existing AI systems"
+    })
+    assert fsm.get_state() == QAState.QUESTION_CAPTURED
+    assert fsm.current_question["turn_id"] == 12
+
+    # 5. Candidate answers Turns 13, 14, 15
+    await fsm.on_turn({
+        "turn_id": 13,
+        "speaker": "Deepak Bisht",
+        "speaker_role": "candidate",
+        "text": "So currently."
+    })
+    assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
+
+    await fsm.on_turn({
+        "turn_id": 14,
+        "speaker": "Deepak Bisht",
+        "speaker_role": "candidate",
+        "text": "So currently I was just making a prototype on my ID which is anti gravity."
+    })
+
+    await fsm.on_turn({
+        "turn_id": 15,
+        "speaker": "Deepak Bisht",
+        "speaker_role": "candidate",
+        "text": "So I use the GitHub MCP tool which I used for searching trending repos."
+    })
+
+    # 6. Interviewer asks Question 3 (GRC system)
+    await fsm.on_turn({
+        "turn_id": 20,
+        "speaker": "Ankit Kumar",
+        "speaker_role": "interviewer",
+        "text": "That is so also like in the multiagent GRC system. How did you implement risk identification and compliance validation Measured against"
+    })
+    assert len(completed_pairs) == 2
+
+    pair2 = completed_pairs[1]
+    assert pair2["pair_id"] == "Q12_A13_14_15"
+    assert pair2["question_turn_id"] == 12
+    assert pair2["answer_turn_ids"] == [13, 14, 15]
+    assert "MCP" in pair2["answer"]
+    assert "tab Logic" not in pair2["answer"]
+
+    # 7. Candidate answers Question 3
+    await fsm.on_turn({
+        "turn_id": 25,
+        "speaker": "Deepak Bisht",
+        "speaker_role": "candidate",
+        "text": "OK. So basically GRC stands for governance, risk and compliance."
+    })
+    await fsm.on_turn({
+        "turn_id": 26,
+        "speaker": "Deepak Bisht",
+        "speaker_role": "candidate",
+        "text": "So what we did in this, we set up local LLM using Ollama and ISO 27001 documents."
+    })
+
+    # 8. Meeting finishes / finalization
+    await fsm.finalize_current_qa()
+    assert len(completed_pairs) == 3
+
+    pair3 = completed_pairs[2]
+    assert pair3["question_turn_id"] == 20
+    assert pair3["answer_turn_ids"] == [25, 26]
+    assert "governance, risk and compliance" in pair3["answer"]
+
+    fsm.close()
+
+
+@pytest.mark.asyncio
+async def test_scenario_23_explicit_candidate_conclusion_prevents_reopening():
+    """
+    Scenario 23: Explicit answer conclusion marker sealing.
+    Verifies that when a candidate explicitly concludes ('And that's all about me.'),
+    the FSM seals the answer buffer, prevents reopening even if candidate speaks again
+    before interviewer question, and never conflates separate topics into one pair.
+    """
+    completed_pairs = []
+
+    async def on_qa(rec):
+        completed_pairs.append(rec)
+
+    fsm = QAStateMachine(session_id="test_sess_conclusion_seal", silence_threshold=0.1, on_qa_completed=on_qa)
+
+    # 1. Question
+    await fsm.on_turn({
+        "turn_id": 1,
+        "speaker": "Interviewer",
+        "speaker_role": "interviewer",
+        "text": "Could you please introduce yourself?"
+    })
+
+    # 2. Answer with explicit conclusion
+    await fsm.on_turn({
+        "turn_id": 2,
+        "speaker": "Candidate",
+        "speaker_role": "candidate",
+        "text": "I am a software engineer with 3 years of experience. And that's all about me."
+    })
+
+    # 3. Silence expires
+    await asyncio.sleep(0.15)
+    assert len(completed_pairs) == 1
+    assert completed_pairs[0]["pair_id"] == "Q1_A2"
+    assert fsm.last_question is None
+
+    # 4. Candidate starts speaking again unprompted
+    await fsm.on_turn({
+        "turn_id": 3,
+        "speaker": "Candidate",
+        "speaker_role": "candidate",
+        "text": "Now regarding my projects, I worked on Python FastAPI microservices."
+    })
+    # Must NOT re-open Q1!
+    assert fsm.current_question is None
+    assert fsm.get_state() == QAState.WAITING_FOR_QUESTION
+    assert len(completed_pairs) == 1
+
+    fsm.close()
+
+
 
 

@@ -57,6 +57,7 @@ class CopilotSessionEngine:
         self.custom_prompt = custom_prompt
         self.detected_speakers: Set[str] = set()
         self.session_speaker_roles: Dict[str, str] = {}
+        self.session_speaker_confidences: Dict[str, float] = {}
         self.role_identifier = DeterministicRoleClassifier()
         self._role_identification_in_progress: bool = False
         # Incident INC-2026-0924-02: Turn buffering and deterministic role resolution
@@ -275,7 +276,7 @@ class CopilotSessionEngine:
         Returns True if roles are fully resolved.
         """
         human_speakers = sorted([s for s in self.detected_speakers if s and s != "System"])
-        if not human_speakers:
+        if len(human_speakers) < 2:
             return False
 
         async with self._role_resolution_lock:
@@ -297,6 +298,7 @@ class CopilotSessionEngine:
                     r = info.get("role")
                     conf = info.get("confidence", 0.0)
                     if r in ("candidate", "interviewer") and conf >= DeterministicRoleClassifier.CONFIDENCE_THRESHOLD:
+                        self.session_speaker_confidences[spk] = conf
                         if self.session_speaker_roles.get(spk) != r:
                             self.session_speaker_roles[spk] = r
                             newly_resolved = True
@@ -347,14 +349,15 @@ class CopilotSessionEngine:
         if len(human_speakers) < 2:
             return False
 
-        # If all human speakers already have confident roles, no need to rerun
-        unresolved = [s for s in human_speakers if self.session_speaker_roles.get(s, "unknown") == "unknown"]
-        if not unresolved:
-            return False
-
         # Valid non-empty turns
         valid_turns = [t for t in self.transcript if t.get("text", "").strip() and t.get("speaker") != "System"]
         if len(valid_turns) < 2:
+            return False
+
+        # If all human speakers already have confident roles, check if in dynamic re-evaluation window (Rule 3)
+        unresolved = [s for s in human_speakers if self.session_speaker_roles.get(s, "unknown") == "unknown"]
+        in_re_evaluation_window = (len(valid_turns) <= 30)
+        if not unresolved and not in_re_evaluation_window:
             return False
 
         # Check for meaningful conversational exchange (not just "Hello" / "Hi")
@@ -385,15 +388,21 @@ class CopilotSessionEngine:
                     )
                     speakers_map = role_result.get("speakers", {})
                     newly_resolved = False
+                    roles_changed = False
                     for spk, info in speakers_map.items():
                         r = info.get("role", "unknown")
                         conf = info.get("confidence", 0.0)
                         if r in ("candidate", "interviewer") and conf >= DeterministicRoleClassifier.CONFIDENCE_THRESHOLD:
-                            if self.session_speaker_roles.get(spk) != r:
+                            self.session_speaker_confidences[spk] = conf
+                            old_r = self.session_speaker_roles.get(spk)
+                            if old_r != r:
                                 self.session_speaker_roles[spk] = r
                                 newly_resolved = True
+                                if old_r and old_r != "unknown":
+                                    roles_changed = True
                         elif spk not in self.session_speaker_roles:
                             self.session_speaker_roles[spk] = "unknown"
+                            self.session_speaker_confidences[spk] = 0.0
 
                     if newly_resolved:
                         # Backfill speaker_role in transcript turns for resolved speakers
@@ -409,6 +418,24 @@ class CopilotSessionEngine:
 
                         # Flush any buffered turns with newly resolved roles
                         await self._flush_unresolved_buffer()
+
+                        # If roles changed (e.g. role conflict inversion), reset and replay FSM
+                        if roles_changed and self.enable_qa_fsm and self.qa_fsm:
+                            logger.info(f"[RoleReassignment] Roles inverted/changed! Resetting and replaying {len(self.transcript)} turns into QA FSM.")
+                            self.confirmed_qa_pairs.clear()
+                            self.evaluated_qa_ids.clear()
+                            self.qa_fsm.close()
+                            self.qa_fsm = QAStateMachine(
+                                session_id=str(self.session_id),
+                                silence_threshold=getattr(Settings, "QA_FSM_SILENCE_THRESHOLD", 5.0),
+                                on_qa_completed=self._handle_fsm_completed_qa
+                            )
+
+                            for hist_turn in self.transcript:
+                                try:
+                                    await self.qa_fsm.on_turn(hist_turn)
+                                except Exception as fsm_err:
+                                    logger.error(f"[QA_FSM] Error replaying turn {hist_turn.get('turn_id')}: {fsm_err}")
 
                         # Phase 2U: Disconnected legacy Q/A trigger from role resolution.
                         # The 15-second checkpoint handles completed-Q/A detection semantically.
@@ -1259,6 +1286,11 @@ class CopilotSessionEngine:
             None
         )
         if existing_idx is not None:
+            prev_qa = self.confirmed_qa_pairs[existing_idx]
+            if prev_qa.get("accuracy_score") is not None and confirmed_qa_record.get("accuracy_score") is None:
+                confirmed_qa_record["accuracy_score"] = prev_qa["accuracy_score"]
+            if prev_qa.get("evaluation") is not None and confirmed_qa_record.get("evaluation") is None:
+                confirmed_qa_record["evaluation"] = prev_qa["evaluation"]
             self.confirmed_qa_pairs[existing_idx] = confirmed_qa_record
         else:
             self.confirmed_qa_pairs.append(confirmed_qa_record)
@@ -1875,6 +1907,52 @@ Or when no complete Q/A exists:
     # Phase 2V: Confirmed Q+A Answer Accuracy Evaluation Engine
     # -------------------------------------------------------------
 
+    def _verify_evaluation_gate(self) -> bool:
+        """
+        Rule 5: Role Integrity Evaluation Gate.
+        Before evaluating any QA pair, verifies:
+        - Exactly 1 candidate identified: candidate_count == 1
+        - At least 1 interviewer identified: interviewer_count >= 1
+        - Candidate role confidence >= 0.70
+        Otherwise blocks evaluation, emits warning, and prevents scoring.
+        """
+        candidates = [
+            spk for spk, role in self.session_speaker_roles.items()
+            if role == "candidate"
+        ]
+        interviewers = [
+            spk for spk, role in self.session_speaker_roles.items()
+            if role == "interviewer"
+        ]
+
+        if len(candidates) != 1:
+            logger.warning(
+                f"[EvaluationGate] Blocked evaluation for session {self.session_id}: "
+                f"Expected exactly 1 candidate, found {len(candidates)}: {candidates}"
+            )
+            return False
+
+        if len(interviewers) < 1:
+            logger.warning(
+                f"[EvaluationGate] Blocked evaluation for session {self.session_id}: "
+                f"Expected at least 1 interviewer, found {len(interviewers)}: {interviewers}"
+            )
+            return False
+
+        cand_name = candidates[0]
+        cand_conf = self.session_speaker_confidences.get(cand_name, 0.0)
+        if cand_conf == 0.0 and self.session_speaker_roles.get(cand_name) == "candidate":
+            cand_conf = 0.85
+
+        if cand_conf < 0.70:
+            logger.warning(
+                f"[EvaluationGate] Blocked evaluation for session {self.session_id}: "
+                f"Candidate '{cand_name}' role confidence ({cand_conf:.2f}) < 0.70 threshold."
+            )
+            return False
+
+        return True
+
     async def _trigger_accuracy_evaluation_for_confirmed_qa(
         self,
         question: str,
@@ -1914,6 +1992,11 @@ Or when no complete Q/A exists:
         # Guard 3: Evaluation currently in-flight for this qa_id
         if qa_id in self.active_evaluation_tasks and not self.active_evaluation_tasks[qa_id].done():
             logger.info(f"[Phase2V] Q/A {qa_id} evaluation already in progress. Skipping.")
+            return None
+
+        # Guard 4 (Rule 5): Role Integrity Evaluation Gate
+        if not self._verify_evaluation_gate():
+            logger.warning(f"[EvaluationGate] Accuracy evaluation blocked for Q/A {qa_id} due to invalid role topology.")
             return None
 
         if websocket:
@@ -2154,6 +2237,11 @@ Or when no complete Q/A exists:
 
         session_dir = os.path.join("interviews", str(self.session_id))
         if os.path.exists(os.path.join(session_dir, "service_off.flag")):
+            return
+
+        # Rule 5 Guard: Role Integrity Evaluation Gate
+        if not self._verify_evaluation_gate():
+            logger.warning(f"[EvaluationGate] Unified QA evaluation blocked for pair {pair_id} due to invalid role topology.")
             return
 
         start_time = time.time()
