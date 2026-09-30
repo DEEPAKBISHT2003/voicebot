@@ -126,7 +126,7 @@ class NativeLogicalTurnAggregator:
         self,
         session_id: Optional[str] = None,
         candidate_speaker_name: Optional[str] = None,
-        inactivity_threshold_ms: float = 1800.0
+        inactivity_threshold_ms: float = 3000.0
     ):
         self.session_id = session_id
         self.candidate_speaker_name = candidate_speaker_name
@@ -389,7 +389,7 @@ class NativeShadowTurnController:
         session_id: str,
         shadow_adapter: NativeShadowEvaluationAdapter,
         candidate_speaker_name: Optional[str] = None,
-        inactivity_threshold_ms: float = 1800.0
+        inactivity_threshold_ms: float = 3000.0
     ):
         self.session_id = session_id
         self.shadow_adapter = shadow_adapter

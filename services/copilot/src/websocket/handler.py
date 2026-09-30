@@ -658,7 +658,7 @@ async def websocket_endpoint(
                             sequence_id=seq_num,
                             speaker_name=raw_speaker,
                             text=text,
-                            current_time=detected_dt if detected_at_str else received_at_dt
+                            current_time=received_at_dt
                         )
                         eng = sess.get("engine")
                         if active_prog and eng:

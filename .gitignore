@@ -184,4 +184,8 @@ AGENTS.md
 tests/test_phase2*.py
 tests/unit/test_phase2*.py
 tests/test_phase3*.py
-tests/unit/test_phase3*.py
+tests/unit/test_phase3*.py
+tests/unit/test_phase_a_usage_service.py
+tests/unit/test_phase_b_llm_instrumentation.py
+tests/unit/test_phase_c_duration_tracking.py
+tests/unit/test_phase_d_usage_dashboard.py
