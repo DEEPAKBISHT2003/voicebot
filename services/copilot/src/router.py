@@ -29,6 +29,8 @@ class StartCopilotRequest(BaseModel):
     resume: str
     custom_prompt: str = ""
     session_id: str = ""  # Optional: use existing interview session_id
+    interviewer: Optional[str] = None
+    candidate_name: Optional[str] = None
 
 @router.post("/start")
 async def start_copilot(
@@ -42,7 +44,11 @@ async def start_copilot(
             jd=req.jd,
             resume=req.resume,
             custom_prompt=req.custom_prompt,
-            session_id=req.session_id or None
+            session_id=req.session_id or None,
+            user_id=current_user.id if current_user else None,
+            organizer_email=current_user.email if current_user else None,
+            interviewer=req.interviewer or None,
+            candidate_name=req.candidate_name or None,
         )
         
         # Track session in active memory
@@ -56,6 +62,11 @@ async def start_copilot(
             "status": "Connecting to audio stream...",
             "transcript": engine.get_transcript(),
             "timestamp": datetime.datetime.now().isoformat(),
+            "user_id": str(current_user.id) if current_user else None,
+            "organizer_email": current_user.email if current_user else None,
+            "organizer": current_user.email if current_user else None,
+            "interviewer": req.interviewer or None,
+            "candidate_name": req.candidate_name or None,
             "jd": req.jd,
             "resume": req.resume,
             "custom_prompt": req.custom_prompt,
@@ -361,7 +372,10 @@ async def list_copilot_sessions(
     current_user=Depends(get_current_user),
 ):
     try:
-        return await repo.list_sessions()
+        is_admin = (getattr(current_user, "role", "") == "ADMIN")
+        user_id_str = str(current_user.id) if current_user else None
+        user_email = current_user.email if current_user else None
+        return await repo.list_sessions(user_id=user_id_str, is_admin=is_admin, organizer_email=user_email)
     except Exception as e:
         logger.error(f"Failed to list copilot sessions: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -373,7 +387,20 @@ async def get_copilot_session(
     current_user=Depends(get_current_user),
 ):
     try:
-        return await repo.load_session(session_id)
+        sess = await repo.load_session(session_id)
+        is_admin = (getattr(current_user, "role", "") == "ADMIN")
+        user_id_str = str(current_user.id) if current_user else None
+        user_email = current_user.email if current_user else None
+        if not is_admin:
+            owner_id = str(sess.get("user_id") or "")
+            owner_email = sess.get("organizer_email")
+            if owner_id and owner_id != user_id_str:
+                raise HTTPException(status_code=403, detail="You do not have permission to view this session.")
+            if owner_email and owner_email.strip().lower() != (user_email or "").strip().lower():
+                raise HTTPException(status_code=403, detail="You do not have permission to view this session.")
+        return sess
+    except HTTPException:
+        raise
     except FileNotFoundError as fnf:
         raise HTTPException(status_code=404, detail=str(fnf))
     except Exception as e:

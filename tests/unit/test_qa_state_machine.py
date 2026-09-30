@@ -524,3 +524,622 @@ async def test_scenario_13_candidate_continuation_after_silence():
     assert completed_pairs[1]["answer_turn_ids"] == [2, 3, 4]
     fsm.close()
 
+
+@pytest.mark.asyncio
+async def test_scenario_14_candidate_clarification_flow():
+    """
+    Scenario 14: Candidate Clarification Flow inside a single QA Exchange.
+    Interviewer Question -> Candidate Clarification Question -> Interviewer Clarification Response -> Candidate Actual Answer.
+    Verifies that the FSM does not prematurely finalize the QA pair on candidate clarification,
+    integrates the interviewer clarification into question context, and accurately captures the actual answer.
+    """
+    completed_pairs = []
+
+    async def on_qa(rec):
+        completed_pairs.append(rec)
+
+    fsm = QAStateMachine(session_id="test_sess_clarification", silence_threshold=5.0, on_qa_completed=on_qa)
+
+    # 1. Interviewer asks Question
+    turn1 = {
+        "turn_id": 1,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "Can you walk me through a specific AI feature or API you built at Appzlogic?"
+    }
+    await fsm.on_turn(turn1)
+    assert fsm.get_state() == QAState.QUESTION_CAPTURED
+
+    # 2. Candidate asks Clarification Question
+    turn2 = {
+        "turn_id": 2,
+        "speaker": "Mahima",
+        "speaker_role": "candidate",
+        "text": "OK, so talking about AI like. AI capabilities or like challenges?"
+    }
+    await fsm.on_turn(turn2)
+    assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
+    assert len(completed_pairs) == 0
+
+    # 3. Interviewer responds with Clarification / Guidance (NOT a new question topic)
+    turn3 = {
+        "turn_id": 3,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "The like I want to know the experience what you had like what you implemented."
+    }
+    res3 = await fsm.on_turn(turn3)
+    # MUST NOT finalize QA pair!
+    assert res3 is None
+    assert len(completed_pairs) == 0
+    assert fsm.get_state() == QAState.QUESTION_CAPTURED
+    assert "Clarification: The like I want to know" in fsm.current_question["text"]
+
+    # 4. Candidate delivers Actual Technical Answer
+    turn4 = {
+        "turn_id": 4,
+        "speaker": "Mahima",
+        "speaker_role": "candidate",
+        "text": "OK, so I implemented different RAG projects, fine-tuning, and function calling with tool selection."
+    }
+    await fsm.on_turn(turn4)
+    assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
+    assert len(completed_pairs) == 0
+
+    turn5 = {
+        "turn_id": 5,
+        "speaker": "Mahima",
+        "speaker_role": "candidate",
+        "text": "Functions perform retrieval and execute actions based on user query requirements."
+    }
+    await fsm.on_turn(turn5)
+    assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
+    assert len(completed_pairs) == 0
+
+    # 5. Interviewer moves to Next Question
+    turn6 = {
+        "turn_id": 6,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "Great. How would you design a simple multi agent AI system?"
+    }
+    res6 = await fsm.on_turn(turn6)
+    assert res6 is not None
+    assert len(completed_pairs) == 1
+
+    record = completed_pairs[0]
+    assert "Can you walk me through a specific AI feature" in record["question"]
+    assert "Clarification: The like I want to know the experience" in record["question"]
+    assert "implemented different RAG projects" in record["answer"]
+    assert "Functions perform retrieval and execute actions" in record["answer"]
+    assert record["answer_turn_ids"] == [4, 5]
+
+    # Verify FSM is now in QUESTION_CAPTURED for the new multi-agent question
+    assert fsm.get_state() == QAState.QUESTION_CAPTURED
+    assert fsm.current_question["turn_id"] == 6
+    assert "multi agent AI system" in fsm.current_question["text"]
+
+    metrics = get_qa_fsm_metrics()
+    assert metrics["qa_fsm_clarification_exchanges_total"] == 1
+
+    fsm.close()
+
+
+@pytest.mark.asyncio
+async def test_scenario_15_audio_check_and_noise_filtering():
+    """
+    Scenario 15: Audio check, troubleshooting, and transcription noise filtering.
+    Verifies that utterances such as 'Can you also hear a noise from my end?',
+    'Is it still merging from my side?', 'Am I audible?', 'What's the picnic?'
+    are filtered as non-evaluable and never enter QA pair creation or evaluation.
+    """
+    completed_pairs = []
+
+    async def on_qa_done(record):
+        completed_pairs.append(record)
+
+    fsm = QAStateMachine(session_id="test_sess_15", silence_threshold=5.0, on_qa_completed=on_qa_done)
+
+    # 1. Real interview question: Introduction
+    await fsm.on_turn({
+        "turn_id": 1,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "OK. Hi, Deepak, can you please introduce yourself?"
+    })
+    assert fsm.get_state() == QAState.QUESTION_CAPTURED
+
+    await fsm.on_turn({
+        "turn_id": 2,
+        "speaker": "Deepak",
+        "speaker_role": "candidate",
+        "text": "I'm Deepak, working as an AI developer developing LLM applications."
+    })
+    assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
+
+    # 2. Audio check occurs immediately after:
+    # "OK, that is very different. Can you also hear a noise from my end?"
+    turn3 = {
+        "turn_id": 3,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "OK, that is very different. Can you also hear a noise from my end?"
+    }
+    res3 = await fsm.on_turn(turn3)
+    # The previous valid QA pair (Introduction) should be finalized cleanly
+    assert res3 is not None
+    assert len(completed_pairs) == 1
+    assert "introduce yourself" in completed_pairs[0]["question"]
+
+    # BUT the FSM should NOT capture "Can you also hear a noise" as a new question!
+    # It must transition to WAITING_FOR_QUESTION, filtering out the audio check.
+    assert fsm.get_state() == QAState.WAITING_FOR_QUESTION
+    assert fsm.current_question is None
+
+    # Candidate responds to the audio check
+    await fsm.on_turn({
+        "turn_id": 4,
+        "speaker": "Deepak",
+        "speaker_role": "candidate",
+        "text": "Yeah, yeah, it's very noisy this."
+    })
+    assert fsm.get_state() == QAState.WAITING_FOR_QUESTION
+    assert len(completed_pairs) == 1
+
+    # Additional troubleshooting turns
+    await fsm.on_turn({
+        "turn_id": 5,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "OK. Is it still merging from my side or? Is it?"
+    })
+    assert fsm.get_state() == QAState.WAITING_FOR_QUESTION
+
+    await fsm.on_turn({
+        "turn_id": 6,
+        "speaker": "Deepak",
+        "speaker_role": "candidate",
+        "text": "Sorry, you are not audible at all."
+    })
+    assert fsm.get_state() == QAState.WAITING_FOR_QUESTION
+
+    # ASR noise / hallucination
+    await fsm.on_turn({
+        "turn_id": 7,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "What's the picnic?"
+    })
+    assert fsm.get_state() == QAState.WAITING_FOR_QUESTION
+
+    await fsm.on_turn({
+        "turn_id": 8,
+        "speaker": "Deepak",
+        "speaker_role": "candidate",
+        "text": "I'm."
+    })
+    assert fsm.get_state() == QAState.WAITING_FOR_QUESTION
+
+    # Meeting ends
+    await fsm.finalize_current_qa()
+
+    # Verify ONLY the 1 real interview question was completed, and 0 noise/audio checks
+    assert len(completed_pairs) == 1
+    metrics = get_qa_fsm_metrics()
+    assert metrics["qa_fsm_non_evaluable_filtered_total"] >= 2
+    fsm.close()
+
+
+@pytest.mark.asyncio
+async def test_scenario_16_candidate_unheard_reprompt_flow():
+    """
+    Scenario 16: Candidate did not hear question / audio cut out.
+    Verifies that when a candidate says 'Sorry, I didn't hear the question',
+    the FSM does NOT finalize a 0% QA pair. Instead it stays in QUESTION_CAPTURED,
+    allows the interviewer to re-prompt, and captures the actual subsequent answer.
+    """
+    completed_pairs = []
+
+    async def on_qa_done(record):
+        completed_pairs.append(record)
+
+    fsm = QAStateMachine(session_id="test_sess_16", silence_threshold=5.0, on_qa_completed=on_qa_done)
+
+    # 1. Interviewer asks technical question
+    turn1 = {
+        "turn_id": 26,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "You claim you developed an enterprise RAG platform. Can you walk me through that?"
+    }
+    await fsm.on_turn(turn1)
+    assert fsm.get_state() == QAState.QUESTION_CAPTURED
+
+    # 2. Candidate could not hear the question due to audio packet loss
+    turn2 = {
+        "turn_id": 27,
+        "speaker": "Deepak",
+        "speaker_role": "candidate",
+        "text": "Sorry, I didn't hear the question."
+    }
+    await fsm.on_turn(turn2)
+    # Crucial: Must NOT transition to CANDIDATE_ANSWERING, must NOT create a QA pair
+    assert fsm.get_state() == QAState.QUESTION_CAPTURED
+    assert len(completed_pairs) == 0
+
+    # 3. Interviewer re-prompts the question
+    turn3 = {
+        "turn_id": 28,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "Yeah, I'm saying, can you walk me through where did you use your RAG platform using Postgres?"
+    }
+    await fsm.on_turn(turn3)
+    assert fsm.get_state() == QAState.QUESTION_CAPTURED
+    assert "Re-prompt:" in fsm.current_question["text"]
+    assert "RAG platform using Postgres" in fsm.current_question["text"]
+
+    # 4. Candidate now answers substantively
+    turn4 = {
+        "turn_id": 29,
+        "speaker": "Deepak",
+        "speaker_role": "candidate",
+        "text": "So I used RAG in my previous project where we built a customer support chatbot using pgvector embeddings."
+    }
+    await fsm.on_turn(turn4)
+    assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
+    assert len(completed_pairs) == 0
+
+    # 5. Next interviewer turn completes the QA pair
+    turn5 = {
+        "turn_id": 30,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "That makes sense. What embedding model did you choose?"
+    }
+    res = await fsm.on_turn(turn5)
+    assert res is not None
+    assert len(completed_pairs) == 1
+
+    record = completed_pairs[0]
+    assert "enterprise RAG platform" in record["question"]
+    assert "RAG platform using Postgres" in record["question"]
+    assert "pgvector embeddings" in record["answer"]
+    assert "didn't hear" not in record["answer"]
+    assert record["answer_turn_ids"] == [29]
+
+    metrics = get_qa_fsm_metrics()
+    assert metrics["qa_fsm_unheard_reprompts_total"] == 1
+    fsm.close()
+
+
+@pytest.mark.asyncio
+async def test_scenario_17_follow_up_question_distinction():
+    """
+    Scenario 17: Follow-up question distinction (Risk 1).
+    Verifies that when an interviewer asks a follow-up question (e.g., 'Why did you choose pgvector?')
+    after a candidate's substantive answer, it is treated as a NEW question (Q2), NOT merged
+    into the previous question as a clarification response.
+    Expected: Q1 -> A1 and Q2 -> A2.
+    """
+    completed_pairs = []
+
+    async def on_qa_done(record):
+        completed_pairs.append(record)
+
+    fsm = QAStateMachine(session_id="test_sess_17", silence_threshold=5.0, on_qa_completed=on_qa_done)
+
+    # Q1: Tell me about your RAG system
+    await fsm.on_turn({
+        "turn_id": 1,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "Tell me about your RAG system."
+    })
+    assert fsm.get_state() == QAState.QUESTION_CAPTURED
+
+    # A1: Candidate explains architecture
+    await fsm.on_turn({
+        "turn_id": 2,
+        "speaker": "Candidate",
+        "speaker_role": "candidate",
+        "text": "We built a RAG pipeline using LangChain and pgvector for semantic retrieval of enterprise documentation."
+    })
+    assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
+
+    # Q2: Follow-up question (NOT a clarification!)
+    await fsm.on_turn({
+        "turn_id": 3,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "Why did you choose pgvector?"
+    })
+    # Q1 must be completed immediately upon Q2 arrival
+    assert len(completed_pairs) == 1
+    q1 = completed_pairs[0]
+    assert q1["question"] == "Tell me about your RAG system."
+    assert "pgvector for semantic retrieval" in q1["answer"]
+    assert "Clarification:" not in q1["question"]
+
+    # FSM must now be captured on Q2
+    assert fsm.get_state() == QAState.QUESTION_CAPTURED
+    assert fsm.current_question["turn_id"] == 3
+    assert fsm.current_question["text"] == "Why did you choose pgvector?"
+
+    # A2: Candidate explains pgvector
+    await fsm.on_turn({
+        "turn_id": 4,
+        "speaker": "Candidate",
+        "speaker_role": "candidate",
+        "text": "Because pgvector runs natively inside PostgreSQL, saving us from hosting and synchronizing a dedicated vector database cluster."
+    })
+    assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
+
+    # Next turn ends meeting
+    await fsm.finalize_current_qa()
+
+    assert len(completed_pairs) == 2
+    q2 = completed_pairs[1]
+    assert q2["question"] == "Why did you choose pgvector?"
+    assert "natively inside PostgreSQL" in q2["answer"]
+    assert "Clarification:" not in q2["question"]
+
+    fsm.close()
+
+
+@pytest.mark.asyncio
+async def test_scenario_18_interruption_hold_keeps_answer_open():
+    """
+    Scenario 18: Interruption / brief hold handling (Risk 2).
+    Verifies that when an interviewer briefly pauses the conversation
+    (e.g., 'Sorry, one second.', 'Hold on a moment.'), the candidate's active answer
+    is NOT prematurely finalized as a speaker change. The answer remains open and
+    accumulates subsequent turns seamlessly.
+    """
+    completed_pairs = []
+
+    async def on_qa_done(record):
+        completed_pairs.append(record)
+
+    fsm = QAStateMachine(session_id="test_sess_18", silence_threshold=5.0, on_qa_completed=on_qa_done)
+
+    # Q: Interviewer asks question
+    await fsm.on_turn({
+        "turn_id": 10,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "Can you explain how CrewAI coordinates multiple agents?"
+    })
+    assert fsm.get_state() == QAState.QUESTION_CAPTURED
+
+    # A (partial): Candidate begins answering
+    await fsm.on_turn({
+        "turn_id": 11,
+        "speaker": "Candidate",
+        "speaker_role": "candidate",
+        "text": "In our project, CrewAI organized agents into sequential and hierarchical processes—"
+    })
+    assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
+
+    # Interviewer brief interruption / hold
+    res_int = await fsm.on_turn({
+        "turn_id": 12,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "Sorry, one second."
+    })
+    # Must NOT finalize the answer!
+    assert res_int is None
+    assert len(completed_pairs) == 0
+    assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
+
+    # A (resumed): Candidate continues answering
+    await fsm.on_turn({
+        "turn_id": 13,
+        "speaker": "Candidate",
+        "speaker_role": "candidate",
+        "text": "where a manager agent delegated tasks to specialized scraping and formatting agents."
+    })
+    assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
+    assert len(completed_pairs) == 0
+
+    # Next interview question completes the answer
+    res_next = await fsm.on_turn({
+        "turn_id": 14,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "How did you monitor agent tool calling errors?"
+    })
+    assert res_next is not None
+    assert len(completed_pairs) == 1
+
+    record = completed_pairs[0]
+    assert "CrewAI coordinates multiple agents" in record["question"]
+    # Both partial and resumed turns should be united in the answer
+    assert "organized agents into sequential" in record["answer"]
+    assert "delegated tasks to specialized scraping" in record["answer"]
+    assert record["answer_turn_ids"] == [11, 13]
+
+    metrics = get_qa_fsm_metrics()
+    assert metrics["qa_fsm_interruption_pauses_total"] >= 1
+    fsm.close()
+
+
+@pytest.mark.asyncio
+async def test_scenario_19_qa_fsm_filtered_ratio_and_telemetry():
+    """
+    Scenario 19: Operational telemetry and filtered ratio tracking.
+    Verifies that qa_fsm_question_candidates_total and qa_fsm_filtered_ratio accurately
+    reflect the proportion of non-evaluable questions filtered.
+    """
+    completed_pairs = []
+
+    fsm = QAStateMachine(session_id="test_sess_19", silence_threshold=5.0, on_qa_completed=lambda r: completed_pairs.append(r))
+
+    # Candidate Question 1: Real interview question
+    await fsm.on_turn({"turn_id": 1, "speaker": "Ankit", "speaker_role": "interviewer", "text": "What is eventual consistency?"})
+    await fsm.on_turn({"turn_id": 2, "speaker": "Candidate", "speaker_role": "candidate", "text": "Replicas eventually reach identical state."})
+
+    # Candidate Question 2: Audio check (filtered)
+    await fsm.on_turn({"turn_id": 3, "speaker": "Ankit", "speaker_role": "interviewer", "text": "Can you also hear a noise from my end?"})
+    await fsm.on_turn({"turn_id": 4, "speaker": "Candidate", "speaker_role": "candidate", "text": "Yeah, very noisy."})
+
+    # Candidate Question 3: Troubleshooting (filtered)
+    await fsm.on_turn({"turn_id": 5, "speaker": "Ankit", "speaker_role": "interviewer", "text": "Is it still merging from my side or? Is it?"})
+
+    metrics = get_qa_fsm_metrics()
+    # 3 question candidates, 2 filtered -> filtered ratio = 2 / 3 = 0.667
+    assert metrics["qa_fsm_question_candidates_total"] == 3
+    assert metrics["qa_fsm_non_evaluable_filtered_total"] == 2
+    assert 0.66 <= metrics["qa_fsm_filtered_ratio"] <= 0.67
+
+    fsm.close()
+
+
+@pytest.mark.asyncio
+async def test_scenario_20_asr_quality_evaluation_and_gating():
+    """
+    Scenario 20: ASR quality tagging (Risk 3).
+    Verifies that severely degraded transcription tokens (e.g., phonetic garbage)
+    are flagged as asr_quality='low' with reduced confidence to prevent punitive scoring.
+    """
+    completed_pairs = []
+
+    fsm = QAStateMachine(session_id="test_sess_20", silence_threshold=5.0, on_qa_completed=lambda r: completed_pairs.append(r))
+
+    # Normal high-quality QA
+    await fsm.on_turn({"turn_id": 1, "speaker": "Ankit", "speaker_role": "interviewer", "text": "Explain indexing in PostgreSQL."})
+    await fsm.on_turn({"turn_id": 2, "speaker": "Candidate", "speaker_role": "candidate", "text": "PostgreSQL uses B-Tree indexes for fast log(N) lookups."})
+    await fsm.on_turn({"turn_id": 3, "speaker": "Ankit", "speaker_role": "interviewer", "text": "Great."})
+
+    assert len(completed_pairs) == 1
+    assert completed_pairs[0]["asr_quality"] == "high"
+    assert completed_pairs[0]["confidence"] == 1.0
+
+    # Degraded transcription turn containing ASR corruptions
+    await fsm.on_turn({"turn_id": 4, "speaker": "Ankit", "speaker_role": "interviewer", "text": "How do you integrate components into the platform?"})
+    await fsm.on_turn({"turn_id": 5, "speaker": "Candidate", "speaker_role": "candidate", "text": "Maybe honey. Yes, honey Singh badsha. Kalaran Kismeli Karan Kaka. Dek."})
+    await fsm.finalize_current_qa()
+
+    assert len(completed_pairs) == 2
+    assert completed_pairs[1]["asr_quality"] == "low"
+    assert completed_pairs[1]["confidence"] == 0.4
+
+    fsm.close()
+
+
+@pytest.mark.asyncio
+async def test_scenario_21_question_state_replacement_after_silence_timeout():
+    """
+    Scenario 21: Question state replacement after silence timeout (Session 6b4bcd20 regression).
+    Verifies that when Q1 (Introduction) is completed via silence timeout, and then:
+    - Q2 is asked ("how did you validate and test the reliability claims...")
+    - Candidate asks for repetition ("Sorry, could you repeat that?")
+    - Interviewer re-prompts / clarifies
+    - Candidate answers ("I validate based on the test cases...")
+    The resulting Q2 record strictly captures the reliability claims question and does NOT
+    reuse or inherit the Q1 introduction question text!
+    """
+    completed_pairs = []
+
+    async def on_qa_done(record):
+        completed_pairs.append(record)
+
+    fsm = QAStateMachine(session_id="test_sess_21", silence_threshold=0.1, on_qa_completed=on_qa_done)
+
+    # 1. Q1: Introduction
+    await fsm.on_turn({
+        "turn_id": 2,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "Deepak, can you please introduce yourself?"
+    })
+    assert fsm.get_state() == QAState.QUESTION_CAPTURED
+
+    # 2. A1: Candidate introduces himself
+    await fsm.on_turn({
+        "turn_id": 3,
+        "speaker": "Deepak",
+        "speaker_role": "candidate",
+        "text": "Yes, I am Deepak, currently working as an AI developer."
+    })
+    assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
+
+    # 3. Silence timeout fires for Q1
+    await asyncio.sleep(0.15)
+    assert len(completed_pairs) == 1
+    assert "introduce yourself" in completed_pairs[0]["question"]
+    assert fsm.get_state() == QAState.WAITING_FOR_QUESTION
+
+    # 4. Q2: Interviewer asks technical question
+    await fsm.on_turn({
+        "turn_id": 9,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "OK. So moving forward to next question, like how did you validate and test the reliability claims you mentioned in your resume?"
+    })
+    assert fsm.get_state() == QAState.QUESTION_CAPTURED
+
+    # 5. Candidate asks for repetition (unheard query)
+    await fsm.on_turn({
+        "turn_id": 10,
+        "speaker": "Deepak",
+        "speaker_role": "candidate",
+        "text": "Sorry, could you repeat that?"
+    })
+    # Must remain in QUESTION_CAPTURED awaiting re-prompt without finalizing
+    assert fsm.get_state() == QAState.QUESTION_CAPTURED
+    assert len(completed_pairs) == 1
+
+    # 6. Interviewer re-prompts
+    await fsm.on_turn({
+        "turn_id": 11,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "Yes, I am asking how did you validate the test and reliability claims mentioned in?"
+    })
+    assert fsm.get_state() == QAState.QUESTION_CAPTURED
+
+    # 7. Candidate asks scoping clarification
+    await fsm.on_turn({
+        "turn_id": 12,
+        "speaker": "Deepak",
+        "speaker_role": "candidate",
+        "text": "So do you want me to give a product based answer or points?"
+    })
+    assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
+
+    # 8. Interviewer provides clarification
+    await fsm.on_turn({
+        "turn_id": 14,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "So project based answers will be finite."
+    })
+    assert fsm.get_state() == QAState.QUESTION_CAPTURED
+
+    # 9. Candidate delivers actual technical answer
+    await fsm.on_turn({
+        "turn_id": 15,
+        "speaker": "Deepak",
+        "speaker_role": "candidate",
+        "text": "OK so I validate based on the test cases that I will be performing on the project."
+    })
+    assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
+
+    # 10. Silence timeout completes Q2
+    await asyncio.sleep(0.15)
+    assert len(completed_pairs) == 2
+
+    q2_pair = completed_pairs[1]
+    # Q2 question MUST NOT inherit Q1 introduction text!
+    assert "introduce yourself" not in q2_pair["question"]
+    assert "reliability claims" in q2_pair["question"]
+    assert "validate based on the test cases" in q2_pair["answer"]
+    assert q2_pair["answer_turn_ids"] == [15]
+
+    fsm.close()
+
+
+
+

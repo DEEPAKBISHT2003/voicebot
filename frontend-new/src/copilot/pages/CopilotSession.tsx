@@ -16,10 +16,12 @@ import {
   ChevronUp,
   Volume2,
   VolumeX,
-  Pin
+  Pin,
+  Download,
+  Loader2
 } from 'lucide-react';
 import { useCopilotAudio, getTranscriptEntryKey, type CopilotTranscriptEntry } from '../hooks/useCopilotAudio';
-import { stopCopilot, serviceOffCopilot, getCopilotStatus, finalizeCopilotReport } from '../../api/copilot';
+import { stopCopilot, serviceOffCopilot, getCopilotStatus, finalizeCopilotReport, downloadReportPdf } from '../../api/copilot';
 import type { CopilotFinalReport } from '../../types/copilot-report';
 
 export const getSpeakerDisplayName = (
@@ -74,6 +76,7 @@ export const CopilotSession: React.FC = () => {
 
   const [isSimulationFinished, setIsSimulationFinished] = useState<boolean>(false);
   const [isGeneratingReport, setIsGeneratingReport] = useState<boolean>(false);
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState<boolean>(false);
   const [isServiceOff, setIsServiceOff] = useState<boolean>(false);
   const [isServiceOffLoading, setIsServiceOffLoading] = useState<boolean>(false);
   const [isMuted, setIsMuted] = useState<boolean>(false);
@@ -306,6 +309,27 @@ export const CopilotSession: React.FC = () => {
       }
     }
     navigate('/');
+  };
+
+  const handleDownloadPdf = async () => {
+    if (!id) return;
+    try {
+      setIsDownloadingPdf(true);
+      const blob = await downloadReportPdf(id);
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `candidate-report-${id}.pdf`);
+      document.body.appendChild(link);
+      link.click();
+      link.parentNode?.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+      console.error('Failed to download PDF report:', err);
+      alert('Failed to download PDF report. Please ensure the evaluation is finalized.');
+    } finally {
+      setIsDownloadingPdf(false);
+    }
   };
 
   return (
@@ -1010,12 +1034,32 @@ export const CopilotSession: React.FC = () => {
                 )}
               </p>
             </div>
-            {finalReport?.is_finalized && (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-green-50 text-green-700 border border-green-200 rounded-lg text-xs font-black uppercase tracking-wider self-start sm:self-auto">
-                <CheckCircle className="h-3.5 w-3.5" />
-                Verified & Finalized
-              </span>
-            )}
+            <div className="flex items-center gap-3 flex-wrap">
+              {finalReport?.is_finalized && (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-green-50 text-green-700 border border-green-200 rounded-lg text-xs font-black uppercase tracking-wider self-start sm:self-auto">
+                  <CheckCircle className="h-3.5 w-3.5" />
+                  Verified & Finalized
+                </span>
+              )}
+              <button
+                onClick={handleDownloadPdf}
+                disabled={isDownloadingPdf}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-secondary hover:bg-opacity-90 rounded-lg text-xs font-bold transition-all shadow-sm disabled:opacity-50 cursor-pointer"
+                title="Download ATS-Friendly Candidate Evaluation Dossier as PDF"
+              >
+                {isDownloadingPdf ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span>Generating PDF...</span>
+                  </>
+                ) : (
+                  <>
+                    <Download className="h-4 w-4" />
+                    <span>Download PDF</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
 
           {/* Top Score Cards Grid */}

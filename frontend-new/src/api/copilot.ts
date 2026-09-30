@@ -7,6 +7,8 @@ export interface StartCopilotRequest {
   resume: string;
   custom_prompt?: string;
   session_id?: string;
+  interviewer?: string;
+  candidate_name?: string;
 }
 
 export interface StartCopilotResponse {
@@ -51,6 +53,12 @@ export const finalizeCopilotReport = async (sessionId: string): Promise<CopilotF
   return res.data;
 };
 
+export const downloadReportPdf = async (sessionId: string): Promise<Blob> => {
+  const res = await copilotApi.get(`/reports/${sessionId}/pdf`, { responseType: 'blob' });
+  return res.data;
+};
+
+
 export const updateCopilotPrompt = async (sessionId: string, custom_prompt: string): Promise<{ status: string; custom_prompt: string }> => {
   const res = await copilotApi.patch<{ status: string; custom_prompt: string }>(`/copilot/${sessionId}/prompt`, {
     custom_prompt,
@@ -85,7 +93,7 @@ export const joinCopilotMeeting = async (
   sessionId: string,
   meetingUrl: string,
   botRole: string = 'observer',
-  botName: string = 'Appzlogic Moderator'
+  botName: string = 'Appz Meeting Observer'
 ): Promise<JoinCopilotMeetingResponse> => {
   const res = await copilotApi.post<JoinCopilotMeetingResponse>(`/copilot/${sessionId}/join-meeting`, {
     meeting_url: meetingUrl,

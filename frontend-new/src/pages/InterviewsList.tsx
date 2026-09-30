@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { listInterviews, getRecordingUrl, getResumeUrl } from '../api/interview';
 import type { InterviewSession } from '../types';
+import { useAuth } from '../context/AuthContext';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
 import { Badge } from '../components/Badge';
@@ -316,8 +317,64 @@ const extractCandidateName = (resumeText: string): string => {
   return 'Unknown Candidate';
 };
 
+export const getInterviewerDisplayName = (session: InterviewSession): { name: string; isDetected: boolean } => {
+  const ignoredNames = new Set([
+    'appz meeting observer', 'mia', 'mia (ai)', 'appz interviewer',
+    'observer', 'system', 'candidate', 'speaker 3', '0', '1', 'none', 'null'
+  ]);
+
+  if (session.interviewer && session.interviewer.trim()) {
+    const trimmed = session.interviewer.trim();
+    if (!ignoredNames.has(trimmed.toLowerCase()) && !/^\d+$/.test(trimmed)) {
+      return { name: trimmed, isDetected: true };
+    }
+  }
+
+  // Backup extraction from transcript if not already populated
+  if (Array.isArray(session.transcript) && session.transcript.length > 0) {
+    const candName = (session.candidate_name || extractCandidateName(session.resume)).toLowerCase();
+
+    // 1. Look for explicit interviewer / assistant roles
+    for (const item of session.transcript) {
+      const spk = (item.speaker || item.speaker_name || '').trim();
+      const role = (item.speaker_role || item.role || '').toLowerCase();
+      if (
+        spk &&
+        !ignoredNames.has(spk.toLowerCase()) &&
+        !/^\d+$/.test(spk) &&
+        !spk.toLowerCase().startsWith('speaker') &&
+        spk.toLowerCase() !== candName
+      ) {
+        if (role === 'interviewer' || role === 'assistant') {
+          return { name: spk, isDetected: true };
+        }
+      }
+    }
+
+    // 2. Look for non-candidate human speakers
+    for (const item of session.transcript) {
+      const spk = (item.speaker || item.speaker_name || '').trim();
+      const role = (item.speaker_role || item.role || '').toLowerCase();
+      if (
+        spk &&
+        !ignoredNames.has(spk.toLowerCase()) &&
+        !/^\d+$/.test(spk) &&
+        !spk.toLowerCase().startsWith('speaker') &&
+        spk.toLowerCase() !== candName &&
+        role !== 'candidate'
+      ) {
+        return { name: spk, isDetected: true };
+      }
+    }
+  }
+
+  return { name: 'Not detected yet', isDetected: false };
+};
+
 export const InterviewsList: React.FC = () => {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'ADMIN';
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSession, setSelectedSession] = useState<InterviewSession | null>(null);
 
@@ -347,10 +404,13 @@ export const InterviewsList: React.FC = () => {
 
   // Filter records
   const filteredSessions = sessions.filter((session) => {
-    const candidate = extractCandidateName(session.resume).toLowerCase();
+    const candidate = (session.candidate_name || extractCandidateName(session.resume)).toLowerCase();
     const id = session.session_id.toLowerCase();
+    const interviewerInfo = getInterviewerDisplayName(session);
+    const interviewer = interviewerInfo.isDetected ? interviewerInfo.name.toLowerCase() : '';
+    const organizer = (session.organizer_email || session.organizer || '').toLowerCase();
     const query = searchQuery.toLowerCase();
-    return candidate.includes(query) || id.includes(query);
+    return candidate.includes(query) || id.includes(query) || interviewer.includes(query) || organizer.includes(query);
   });
 
   return (
@@ -358,9 +418,22 @@ export const InterviewsList: React.FC = () => {
       {/* Header section */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-xl font-bold text-primary">Interviews Directory</h1>
+          <div className="flex items-center gap-2.5">
+            <h1 className="text-xl font-bold text-primary">Interviews & Meetings Directory</h1>
+            {isAdmin ? (
+              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-purple-100 text-purple-800 border border-purple-200">
+                Admin View (All Meetings)
+              </span>
+            ) : (
+              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-100 text-blue-800 border border-blue-200">
+                My Organized Meetings
+              </span>
+            )}
+          </div>
           <p className="text-sm text-muted-gray mt-1">
-            Access previous mock session logs, audio recordings, and transcripts.
+            {isAdmin
+              ? 'Complete company directory of meetings observed by Appz Meeting Observer across all organizers.'
+              : 'Access your organized meeting observer logs, audio recordings, and evaluation dossiers.'}
           </p>
         </div>
       </div>
@@ -371,7 +444,7 @@ export const InterviewsList: React.FC = () => {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-gray" />
           <input
             type="text"
-            placeholder="Search by candidate name or session ID..."
+            placeholder="Search by candidate, session ID, interviewer, or organizer..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="flex h-10 w-full rounded-lg border border-border-gray bg-white pl-9 pr-3 py-2 text-sm text-primary placeholder:text-muted-gray focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
@@ -396,14 +469,16 @@ export const InterviewsList: React.FC = () => {
         </div>
       ) : filteredSessions.length === 0 ? (
         <EmptyState
-          title={searchQuery ? 'No matching records' : 'No interview sessions'}
+          title={searchQuery ? 'No matching records' : 'No meeting sessions'}
           description={
             searchQuery
               ? `We couldn't find any session matching "${searchQuery}". Try adjusting your keywords.`
-              : 'You haven\'t conducted any mock interviews yet. Start one to see it listed here.'
+              : isAdmin
+              ? 'No meeting observer sessions have been recorded yet.'
+              : 'You haven\'t launched any meeting observer sessions yet. Launch one to see it listed here.'
           }
-          actionLabel={searchQuery ? undefined : 'Start Mock Session'}
-          onAction={searchQuery ? undefined : () => navigate('/interviews/new')}
+          actionLabel={searchQuery ? undefined : 'Launch Meeting Observer'}
+          onAction={searchQuery ? undefined : () => navigate('/meeting-observer')}
           icon={<FolderOpen className="h-6 w-6" />}
         />
       ) : (
@@ -411,37 +486,57 @@ export const InterviewsList: React.FC = () => {
           <table className="w-full text-left border-collapse table-fixed">
             <thead>
               <tr className="border-b border-border-gray bg-secondary text-xs font-semibold text-primary">
-                <th className="px-6 py-4 w-[26%] whitespace-nowrap">Candidate Name</th>
-                <th className="px-6 py-4 w-[18%] whitespace-nowrap">Session ID</th>
-                <th className="px-6 py-4 w-[24%] whitespace-nowrap">Date & Time</th>
-                <th className="px-6 py-4 w-[14%] whitespace-nowrap">Status</th>
-                <th className="px-6 py-4 w-[18%] text-right whitespace-nowrap">Actions</th>
+                <th className="px-5 py-4 w-[18%] whitespace-nowrap">Candidate Name</th>
+                <th className="px-5 py-4 w-[12%] whitespace-nowrap">Session ID</th>
+                <th className="px-5 py-4 w-[17%] whitespace-nowrap">Interviewer</th>
+                <th className="px-5 py-4 w-[17%] whitespace-nowrap">Organizer</th>
+                <th className="px-5 py-4 w-[16%] whitespace-nowrap">Date & Time</th>
+                <th className="px-5 py-4 w-[10%] whitespace-nowrap">Status</th>
+                <th className="px-5 py-4 w-[10%] text-right whitespace-nowrap">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border-gray text-sm">
               {filteredSessions.map((session) => {
+                const interviewerInfo = getInterviewerDisplayName(session);
                 return (
                   <tr key={session.session_id} className="hover:bg-secondary/40 transition-colors">
-                    <td className="px-6 py-4 font-medium text-primary truncate">
-                      {extractCandidateName(session.resume)}
+                    <td className="px-5 py-4 font-medium text-primary truncate" title={session.candidate_name || extractCandidateName(session.resume)}>
+                      {session.candidate_name || extractCandidateName(session.resume)}
                     </td>
-                    <td className="px-6 py-4 font-mono text-xs text-muted-gray whitespace-nowrap">
+                    <td className="px-5 py-4 font-mono text-xs text-muted-gray whitespace-nowrap">
                       {session.session_id.substring(0, 8)}...
                     </td>
-                    <td className="px-6 py-4 text-muted-gray whitespace-nowrap">
+                    <td className="px-5 py-4 text-xs text-primary whitespace-nowrap">
+                      {interviewerInfo.isDetected ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-800 border border-slate-200">
+                          {interviewerInfo.name}
+                        </span>
+                      ) : (
+                        <span className="text-muted-gray text-xs italic">
+                          {session.transcript && session.transcript.length > 0 ? "—" : "Not detected yet"}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-5 py-4 text-xs text-muted-gray whitespace-nowrap truncate" title={session.organizer_email || session.organizer || 'Unknown'}>
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
+                        <span className="truncate">{session.organizer_email || session.organizer || 'Unknown'}</span>
+                      </div>
+                    </td>
+                    <td className="px-5 py-4 text-muted-gray text-xs whitespace-nowrap">
                       <div className="inline-flex items-center gap-1.5">
                         <Calendar className="h-3.5 w-3.5" />
                         <span>{formatDate(session.timestamp)}</span>
                       </div>
                     </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
+                    <td className="px-5 py-4 whitespace-nowrap">
                       {session.transcript.length > 0 ? (
                         <Badge variant="success">Completed</Badge>
                       ) : (
                         <Badge variant="warning">No Transcript</Badge>
                       )}
                     </td>
-                    <td className="px-6 py-4 text-right whitespace-nowrap">
+                    <td className="px-5 py-4 text-right whitespace-nowrap">
                       <div className="flex items-center justify-end gap-2">
                         <Button
                           variant="outline"
@@ -512,10 +607,24 @@ export const InterviewsList: React.FC = () => {
         >
           <div className="space-y-6">
             {/* Metadata segment */}
-            <div className="grid grid-cols-2 gap-4 border-b border-border-gray pb-4 text-sm">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 border-b border-border-gray pb-4 text-sm">
               <div>
                 <span className="block font-semibold text-primary">Candidate Name</span>
-                <span className="text-muted-gray">{extractCandidateName(selectedSession.resume)}</span>
+                <span className="text-muted-gray">{selectedSession.candidate_name || extractCandidateName(selectedSession.resume)}</span>
+              </div>
+              <div>
+                <span className="block font-semibold text-primary">Interviewer</span>
+                <span className="text-muted-gray">
+                  {selectedSession && getInterviewerDisplayName(selectedSession).isDetected
+                    ? getInterviewerDisplayName(selectedSession).name
+                    : "—"}
+                </span>
+              </div>
+              <div>
+                <span className="block font-semibold text-primary">Organizer</span>
+                <span className="text-muted-gray truncate block" title={selectedSession.organizer_email || selectedSession.organizer || 'Unknown'}>
+                  {selectedSession.organizer_email || selectedSession.organizer || 'Unknown'}
+                </span>
               </div>
               <div>
                 <span className="block font-semibold text-primary">Conducted on</span>

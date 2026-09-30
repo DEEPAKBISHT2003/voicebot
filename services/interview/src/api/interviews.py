@@ -86,6 +86,8 @@ class StartSessionRequest(BaseModel):
     resume_filename: str = "resume.txt"
     resume_base64: str = ""
     meeting_url: str = ""
+    interviewer: Optional[str] = None
+    candidate_name: Optional[str] = None
 
 async def spawn_teams_bot(session_id: str, meeting_url: str):
     logger.info(f"[TeamsBot] Spawning Teams Playwright Observer Bot for session {session_id} to meeting: {meeting_url}")
@@ -155,7 +157,11 @@ async def start_interview(
             resume=req.resume,
             custom_prompt=req.custom_prompt,
             resume_filename=req.resume_filename,
-            resume_base64=req.resume_base64
+            resume_base64=req.resume_base64,
+            user_id=current_user.id if current_user else None,
+            organizer_email=current_user.email if current_user else None,
+            interviewer=req.interviewer or None,
+            candidate_name=req.candidate_name or None,
         )
     except Exception as e:
         logger.error(f"Failed to create session folder: {e}")
@@ -165,6 +171,11 @@ async def start_interview(
         "status": "Connecting to audio stream...",
         "transcript": [],
         "timestamp": datetime.datetime.now().isoformat(),
+        "user_id": str(current_user.id) if current_user else None,
+        "organizer_email": current_user.email if current_user else None,
+        "organizer": current_user.email if current_user else None,
+        "interviewer": req.interviewer or None,
+        "candidate_name": req.candidate_name or None,
         "jd": req.jd,
         "resume": req.resume,
         "custom_prompt": req.custom_prompt,
@@ -173,7 +184,7 @@ async def start_interview(
         "meeting_url": req.meeting_url
     }
 
-    # If meeting URL is provided, launch Mia browser bot directly via Browser Service
+    # If meeting URL is provided, launch observer bot directly via Browser Service
     if req.meeting_url and req.meeting_url.strip():
         async def _spawn_interview_browser_bot():
             try:
@@ -185,18 +196,18 @@ async def start_interview(
                         json={
                             "session_id": session_id,
                             "meeting_url": req.meeting_url,
-                            "bot_role": "interviewer",
-                            "bot_name": "Mia - Appz Interviewer"
+                            "bot_role": "observer",
+                            "bot_name": "Appz Meeting Observer"
                         }
                     )
                     resp.raise_for_status()
                     data = resp.json()
-                    logger.info(f"[MiaBot] Browser service spawned Mia interviewer bot: PID={data.get('pid')}")
+                    logger.info(f"[MeetingObserverBot] Browser service spawned observer bot: PID={data.get('pid')}")
             except Exception as e:
-                logger.error(f"[MiaBot] Failed to request browser service to spawn bot: {type(e).__name__}: {e}")
+                logger.error(f"[MeetingObserverBot] Failed to request browser service to spawn bot: {type(e).__name__}: {e}")
 
         asyncio.create_task(_spawn_interview_browser_bot())
-        active_sessions[session_id]["status"] = "Mia joining meeting..."
+        active_sessions[session_id]["status"] = "Observer joining meeting..."
 
     return {"session_id": session_id, "status": active_sessions[session_id]["status"]}
 
@@ -459,6 +470,87 @@ async def get_session_status(
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Session not found.")
 
+def is_valid_human_name(name: Optional[str]) -> bool:
+    if not name:
+        return False
+    s = name.strip()
+    if not s or s.isdigit():
+        return False
+    lower = s.lower()
+    if lower in {
+        "appz meeting observer", "mia", "mia (ai)", "appz interviewer",
+        "observer", "system", "candidate", "unknown", "user",
+        "bot", "assistant", "none", "null"
+    }:
+        return False
+    if lower.startswith("speaker") or lower.startswith("channel"):
+        return False
+    return True
+
+def resolve_actual_interviewer(rec: dict) -> Optional[str]:
+    """
+    Extracts the actual name of the person who took the interview.
+    Prioritizes:
+    1. Explicit human interviewer name if set on session.
+    2. Speaker names marked with speaker_role == 'interviewer' in transcript.
+    3. Human speaker in transcript that is not the candidate.
+    4. Literal 'Interviewer' if no specific name was captured.
+    Never returns observer bot names or numeric channel IDs.
+    """
+    stored = rec.get("interviewer")
+    if stored and is_valid_human_name(stored):
+        return stored.strip()
+
+    transcript = rec.get("transcript") or []
+    if not isinstance(transcript, list) or len(transcript) == 0:
+        return None
+
+    cand_name = rec.get("candidate_name")
+
+    # 1. Search for speakers tagged as interviewer
+    interviewers = []
+    seen = set()
+    for t in transcript:
+        if not isinstance(t, dict):
+            continue
+        role = (t.get("speaker_role") or t.get("role") or "").lower()
+        spk = (t.get("speaker") or t.get("speaker_name") or "").strip()
+        if not is_valid_human_name(spk):
+            continue
+        if cand_name and spk.lower() == cand_name.lower():
+            continue
+        if role in ("interviewer", "assistant"):
+            if spk not in seen:
+                seen.add(spk)
+                interviewers.append(spk)
+
+    if interviewers:
+        return ", ".join(interviewers)
+
+    # 2. Search for any non-candidate human speakers
+    for t in transcript:
+        if not isinstance(t, dict):
+            continue
+        spk = (t.get("speaker") or t.get("speaker_name") or "").strip()
+        if not is_valid_human_name(spk):
+            continue
+        if cand_name and spk.lower() == cand_name.lower():
+            continue
+        role = (t.get("speaker_role") or t.get("role") or "").lower()
+        if role != "candidate" and spk not in seen:
+            seen.add(spk)
+            interviewers.append(spk)
+
+    if interviewers:
+        return ", ".join(interviewers)
+
+    # 3. Check for literal 'Interviewer' label
+    for t in transcript:
+        if isinstance(t, dict) and t.get("speaker") == "Interviewer":
+            return "Interviewer"
+
+    return None
+
 @router.get("/interviews")
 async def list_interviews(
     request: Request,
@@ -470,10 +562,18 @@ async def list_interviews(
 ):
     try:
         fetch_limit = (offset + limit) if limit else None
+        is_admin = (getattr(current_user, "role", "") == "ADMIN")
+        user_id_str = str(current_user.id) if current_user else None
+        user_email = current_user.email if current_user else None
 
-        # 1. Fetch sessions in a single optimized query
+        # 1. Fetch sessions in a single optimized query with RBAC
         if hasattr(repo, "list_all_sessions"):
-            interview_sessions = await repo.list_all_sessions(limit=fetch_limit)
+            interview_sessions = await repo.list_all_sessions(
+                limit=fetch_limit,
+                user_id=user_id_str,
+                is_admin=is_admin,
+                organizer_email=user_email
+            )
         else:
             session_ids = await repo.list_sessions()
             if fetch_limit:
@@ -481,7 +581,9 @@ async def list_interviews(
             interview_sessions = []
             for sid in session_ids:
                 try:
-                    interview_sessions.append(await repo.load_session(sid))
+                    s_rec = await repo.load_session(sid)
+                    if is_admin or (s_rec.get("user_id") == user_id_str) or (s_rec.get("organizer_email") == user_email):
+                        interview_sessions.append(s_rec)
                 except Exception:
                     pass
 
@@ -490,18 +592,29 @@ async def list_interviews(
             str(rec.get("session_id")): rec for rec in interview_sessions if rec and rec.get("session_id")
         }
 
-        # Merge active in-memory sessions (override DB if active)
+        # Merge active in-memory sessions (override DB if active, obeying RBAC)
         for sid, sess in active_sessions.items():
+            sess_uid = str(sess.get("user_id") or "")
+            sess_email = sess.get("organizer_email")
+            if not is_admin:
+                if sess_uid != user_id_str and sess_email != user_email:
+                    continue
+
             records_by_id[str(sid)] = {
                 "session_id": str(sid),
                 "timestamp": sess.get("timestamp"),
+                "user_id": sess_uid or None,
+                "organizer_email": sess_email or user_email,
+                "organizer": sess_email or user_email,
+                "interviewer": sess.get("interviewer"),
+                "candidate_name": sess.get("candidate_name"),
                 "jd": sess.get("jd", ""),
                 "resume": sess.get("resume", ""),
                 "custom_prompt": sess.get("custom_prompt", ""),
                 "transcript": sess.get("transcript", [])
             }
 
-        # 2. Retrieve and merge persisted Copilot sessions
+        # 2. Retrieve and merge persisted Copilot sessions with RBAC
         copilot_repo = getattr(request.app.state, "copilot_repo", None)
         if copilot_repo is None:
             try:
@@ -512,7 +625,12 @@ async def list_interviews(
 
         if copilot_repo:
             try:
-                copilot_sessions = await copilot_repo.list_sessions(limit=fetch_limit)
+                copilot_sessions = await copilot_repo.list_sessions(
+                    limit=fetch_limit,
+                    user_id=user_id_str,
+                    is_admin=is_admin,
+                    organizer_email=user_email
+                )
                 copilot_active = getattr(request.app.state, "copilot_sessions", {})
                 for cs in copilot_sessions:
                     cs_id = str(cs.get("session_id", ""))
@@ -532,6 +650,11 @@ async def list_interviews(
                         records_by_id[cs_id] = {
                             "session_id": cs_id,
                             "timestamp": cs.get("timestamp"),
+                            "user_id": cs.get("user_id"),
+                            "organizer_email": cs.get("organizer_email") or ("admin@voicebot.com" if is_admin else user_email),
+                            "organizer": cs.get("organizer") or cs.get("organizer_email") or ("admin@voicebot.com" if is_admin else user_email),
+                            "interviewer": cs.get("interviewer"),
+                            "candidate_name": cs.get("candidate_name"),
                             "jd": cs.get("jd", ""),
                             "resume": cs.get("resume", ""),
                             "custom_prompt": cs.get("custom_prompt", ""),
@@ -544,8 +667,20 @@ async def list_interviews(
                             existing_rec["transcript"] = cs.get("transcript")
                         if not existing_rec.get("final_report") and cs.get("final_report"):
                             existing_rec["final_report"] = cs.get("final_report")
+                        if not existing_rec.get("interviewer") and cs.get("interviewer"):
+                            existing_rec["interviewer"] = cs.get("interviewer")
+                        if not existing_rec.get("organizer_email"):
+                            existing_rec["organizer_email"] = cs.get("organizer_email") or ("admin@voicebot.com" if is_admin else user_email)
+                            existing_rec["organizer"] = existing_rec["organizer_email"]
             except Exception as c_err:
                 logger.warning(f"Failed to list copilot sessions for merge: {c_err}")
+
+        # Resolve actual interviewer name and organizer fields for every record
+        for rec in records_by_id.values():
+            rec["interviewer"] = resolve_actual_interviewer(rec)
+            if not rec.get("organizer_email") and not rec.get("organizer"):
+                rec["organizer_email"] = "admin@voicebot.com" if is_admin else user_email
+                rec["organizer"] = rec["organizer_email"]
 
         detailed_records = list(records_by_id.values())
         detailed_records.sort(key=lambda x: x.get("timestamp") or "", reverse=True)
@@ -563,56 +698,92 @@ async def get_interview(
     active_sessions=Depends(get_active_sessions),
     current_user=Depends(get_current_user),
 ):
+    is_admin = (getattr(current_user, "role", "") == "ADMIN")
+    user_id_str = str(current_user.id) if current_user else None
+    user_email = current_user.email if current_user else None
+
+    session_data = None
     if session_id in active_sessions:
         sess = active_sessions[session_id]
-        return {
+        session_data = {
             "session_id": session_id,
-            "timestamp": sess["timestamp"],
-            "jd": sess["jd"],
-            "resume": sess["resume"],
-            "custom_prompt": sess["custom_prompt"],
-            "transcript": sess["transcript"],
+            "timestamp": sess.get("timestamp"),
+            "user_id": sess.get("user_id"),
+            "organizer_email": sess.get("organizer_email"),
+            "organizer": sess.get("organizer") or sess.get("organizer_email"),
+            "interviewer": sess.get("interviewer"),
+            "candidate_name": sess.get("candidate_name"),
+            "jd": sess.get("jd", ""),
+            "resume": sess.get("resume", ""),
+            "custom_prompt": sess.get("custom_prompt", ""),
+            "transcript": sess.get("transcript", []),
             "final_report": sess.get("final_report")
         }
-    try:
-        return await repo.load_session(session_id)
-    except FileNotFoundError:
-        # Fallback to check copilot session repository
-        copilot_repo = getattr(request.app.state, "copilot_repo", None)
-        if copilot_repo is None:
-            try:
-                from services.copilot.src.services.repository import CopilotRepository
-                copilot_repo = CopilotRepository()
-            except Exception:
-                copilot_repo = None
-        if copilot_repo:
-            try:
-                copilot_active = getattr(request.app.state, "copilot_sessions", {})
-                if session_id in copilot_active:
-                    sess = copilot_active[session_id]
-                    engine = sess.get("engine")
-                    return {
-                        "session_id": session_id,
-                        "timestamp": sess.get("timestamp"),
-                        "jd": sess.get("jd", ""),
-                        "resume": sess.get("resume", ""),
-                        "custom_prompt": sess.get("custom_prompt", ""),
-                        "transcript": engine.get_transcript() if engine else sess.get("transcript", []),
-                        "final_report": sess.get("final_report")
-                    }
-                cs = await copilot_repo.load_session(session_id)
-                return {
-                    "session_id": session_id,
-                    "timestamp": cs.get("timestamp"),
-                    "jd": cs.get("jd", ""),
-                    "resume": cs.get("resume", ""),
-                    "custom_prompt": cs.get("custom_prompt", ""),
-                    "transcript": cs.get("transcript", []),
-                    "final_report": cs.get("final_report")
-                }
-            except FileNotFoundError:
-                pass
+    else:
+        try:
+            session_data = await repo.load_session(session_id)
+        except FileNotFoundError:
+            copilot_repo = getattr(request.app.state, "copilot_repo", None)
+            if copilot_repo is None:
+                try:
+                    from services.copilot.src.services.repository import CopilotRepository
+                    copilot_repo = CopilotRepository()
+                except Exception:
+                    copilot_repo = None
+            if copilot_repo:
+                try:
+                    copilot_active = getattr(request.app.state, "copilot_sessions", {})
+                    if session_id in copilot_active:
+                        sess = copilot_active[session_id]
+                        engine = sess.get("engine")
+                        session_data = {
+                            "session_id": session_id,
+                            "timestamp": sess.get("timestamp"),
+                            "user_id": sess.get("user_id"),
+                            "organizer_email": sess.get("organizer_email"),
+                            "organizer": sess.get("organizer") or sess.get("organizer_email"),
+                            "interviewer": sess.get("interviewer"),
+                            "candidate_name": sess.get("candidate_name"),
+                            "jd": sess.get("jd", ""),
+                            "resume": sess.get("resume", ""),
+                            "custom_prompt": sess.get("custom_prompt", ""),
+                            "transcript": engine.get_transcript() if engine else sess.get("transcript", []),
+                            "final_report": sess.get("final_report")
+                        }
+                    else:
+                        cs = await copilot_repo.load_session(session_id)
+                        session_data = {
+                            "session_id": session_id,
+                            "timestamp": cs.get("timestamp"),
+                            "user_id": cs.get("user_id"),
+                            "organizer_email": cs.get("organizer_email"),
+                            "organizer": cs.get("organizer") or cs.get("organizer_email"),
+                            "interviewer": cs.get("interviewer"),
+                            "candidate_name": cs.get("candidate_name"),
+                            "jd": cs.get("jd", ""),
+                            "resume": cs.get("resume", ""),
+                            "custom_prompt": cs.get("custom_prompt", ""),
+                            "transcript": cs.get("transcript", []),
+                            "final_report": cs.get("final_report")
+                        }
+                except FileNotFoundError:
+                    pass
+
+    if not session_data:
         raise HTTPException(status_code=404, detail="Session not found.")
+
+    # Check RBAC access
+    if not is_admin:
+        owner_id = str(session_data.get("user_id") or "")
+        owner_email = session_data.get("organizer_email")
+        if owner_id and owner_id != user_id_str:
+            raise HTTPException(status_code=403, detail="You do not have permission to view this session.")
+        if owner_email and owner_email.strip().lower() != (user_email or "").strip().lower():
+            raise HTTPException(status_code=403, detail="You do not have permission to view this session.")
+
+    # Resolve actual interviewer name
+    session_data["interviewer"] = resolve_actual_interviewer(session_data)
+    return session_data
 
 @router.get("/interviews/{session_id}/recording")
 def get_recording(session_id: str):

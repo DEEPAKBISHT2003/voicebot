@@ -20,6 +20,8 @@ const schema = zod.object({
       (url) => url.startsWith('http://') || url.startsWith('https://'),
       'Please enter a valid URL (starting with https://)'
     ),
+  candidate_name: zod.string().optional(),
+  interviewer: zod.string().optional(),
   jd: zod.string().min(10, 'Job description must be at least 10 characters.'),
   resume: zod.string().min(10, 'Resume text is required (upload a file or paste text below).'),
   custom_prompt: zod.string().optional(),
@@ -55,6 +57,8 @@ export const MeetingObserver: React.FC = () => {
     resolver: zodResolver(schema),
     defaultValues: {
       meeting_url: '',
+      candidate_name: '',
+      interviewer: '',
       jd: '',
       resume: '',
       custom_prompt: DEFAULT_COPILOT_PROMPT,
@@ -95,6 +99,8 @@ export const MeetingObserver: React.FC = () => {
         jd: data.jd,
         resume: data.resume || '',
         custom_prompt: data.custom_prompt || DEFAULT_COPILOT_PROMPT,
+        interviewer: data.interviewer?.trim() || undefined,
+        candidate_name: data.candidate_name?.trim() || undefined,
       });
 
       // 2. Trigger the Teams observer bot to join the meeting
@@ -102,7 +108,7 @@ export const MeetingObserver: React.FC = () => {
         copilotResponse.session_id,
         data.meeting_url.trim(),
         'observer',
-        'Appzlogic Moderator'
+        'Appz Meeting Observer'
       );
 
       // 3. Redirect directly to the Copilot dashboard for live monitoring
@@ -148,6 +154,34 @@ export const MeetingObserver: React.FC = () => {
             <p className="text-[11px] text-muted-gray">
               Provide the full Microsoft Teams invitation link. A silent observer bot will join the call to stream audio for transcription.
             </p>
+          </div>
+
+          {/* Interviewer & Candidate Info */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <Input
+                label="Interviewer Name (Optional)"
+                id="interviewer"
+                placeholder="e.g. Deepak Bisht, Mahima Soni"
+                error={errors.interviewer?.message}
+                {...register('interviewer')}
+              />
+              <p className="text-[11px] text-muted-gray">
+                Name of the person taking the interview (can also be auto-detected from live captions).
+              </p>
+            </div>
+            <div className="space-y-1">
+              <Input
+                label="Candidate Name (Optional)"
+                id="candidate_name"
+                placeholder="e.g. John Doe"
+                error={errors.candidate_name?.message}
+                {...register('candidate_name')}
+              />
+              <p className="text-[11px] text-muted-gray">
+                Candidate's name (auto-extracted from resume if left empty).
+              </p>
+            </div>
           </div>
 
           {/* Job Description */}

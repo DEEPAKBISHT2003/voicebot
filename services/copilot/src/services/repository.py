@@ -17,7 +17,11 @@ class CopilotRepository:
         jd: str, 
         resume: str, 
         custom_prompt: str,
-        session_id: str = None
+        session_id: str = None,
+        user_id: Any = None,
+        organizer_email: Optional[str] = None,
+        interviewer: Optional[str] = None,
+        candidate_name: Optional[str] = None,
     ) -> str:
         # Use provided session_id or generate a new one
         if session_id:
@@ -38,15 +42,30 @@ class CopilotRepository:
             f.write(resume)
             
         # Save session metadata in database (skip if already exists)
+        clean_interviewer = interviewer if interviewer and interviewer not in ("Appz Meeting Observer", "Mia", "Mia (AI)", "Appz Interviewer") else None
         existing = await CopilotSessionModel.get_or_none(session_id=sid_uuid)
         if not existing:
             await CopilotSessionModel.create(
                 session_id=sid_uuid,
+                user_id=user_id,
+                organizer_email=organizer_email,
+                interviewer=clean_interviewer,
+                candidate_name=candidate_name,
                 jd=jd,
                 resume=resume,
                 custom_prompt=custom_prompt,
                 transcript=[]
             )
+        else:
+            update_data = {}
+            if user_id and not getattr(existing, "user_id", None):
+                update_data["user_id"] = user_id
+            if organizer_email and not getattr(existing, "organizer_email", None):
+                update_data["organizer_email"] = organizer_email
+            if candidate_name and not getattr(existing, "candidate_name", None):
+                update_data["candidate_name"] = candidate_name
+            if update_data:
+                await CopilotSessionModel.filter(session_id=sid_uuid).update(**update_data)
         return str(sid_uuid)
 
     async def save_session(self, session_id: str, data: dict) -> None:
@@ -279,6 +298,11 @@ class CopilotRepository:
         return {
             "session_id": str(session.session_id),
             "timestamp": session.timestamp.isoformat() if session.timestamp else None,
+            "user_id": str(session.user_id) if getattr(session, "user_id", None) else None,
+            "organizer_email": getattr(session, "organizer_email", None),
+            "organizer": getattr(session, "organizer_email", None),
+            "interviewer": getattr(session, "interviewer", None),
+            "candidate_name": getattr(session, "candidate_name", None),
             "jd": session.jd,
             "resume": session.resume,
             "custom_prompt": session.custom_prompt,
@@ -296,9 +320,24 @@ class CopilotRepository:
             "service_off": is_service_off
         }
 
-    async def list_sessions(self, limit: Optional[int] = None) -> List[dict]:
-        # Fetch all session details ordered by timestamp
-        query = CopilotSessionModel.all().order_by("-timestamp")
+    async def list_sessions(
+        self,
+        limit: Optional[int] = None,
+        user_id: Optional[str] = None,
+        is_admin: bool = False,
+        organizer_email: Optional[str] = None
+    ) -> List[dict]:
+        # Fetch session details ordered by timestamp with RBAC
+        query = CopilotSessionModel.all()
+        if not is_admin:
+            from tortoise.expressions import Q
+            cond = Q()
+            if user_id:
+                cond |= Q(user_id=user_id)
+            if organizer_email:
+                cond |= Q(organizer_email=organizer_email)
+            query = query.filter(cond)
+        query = query.order_by("-timestamp")
         if limit is not None and limit > 0:
             query = query.limit(limit)
         sessions = await query
@@ -306,6 +345,11 @@ class CopilotRepository:
             {
                 "session_id": str(s.session_id),
                 "timestamp": s.timestamp.isoformat() if s.timestamp else None,
+                "user_id": str(s.user_id) if getattr(s, "user_id", None) else None,
+                "organizer_email": getattr(s, "organizer_email", None),
+                "organizer": getattr(s, "organizer_email", None),
+                "interviewer": getattr(s, "interviewer", None),
+                "candidate_name": getattr(s, "candidate_name", None),
                 "jd": s.jd,
                 "resume": s.resume,
                 "custom_prompt": s.custom_prompt,

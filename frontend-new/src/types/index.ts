@@ -2,6 +2,7 @@ export interface TranscriptEntry {
   role?: 'user' | 'assistant';
   speaker?: string;
   speaker_name?: string;
+  speaker_role?: string;
   text: string;
   id?: string;
   turn_id?: number;
@@ -18,6 +19,10 @@ export interface InterviewSession {
   custom_prompt: string | null;
   transcript: TranscriptEntry[];
   final_report?: any;
+  interviewer?: string;
+  organizer?: string;
+  organizer_email?: string;
+  candidate_name?: string;
 }
 
 export interface StartSessionRequest {
@@ -27,6 +32,8 @@ export interface StartSessionRequest {
   resume_filename?: string;
   resume_base64?: string;
   meeting_url?: string;
+  interviewer?: string;
+  candidate_name?: string;
 }
 
 export interface StartSessionResponse {

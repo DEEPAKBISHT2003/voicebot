@@ -14,20 +14,37 @@ class QAState(str, Enum):
     QA_COMPLETED = "QA_COMPLETED"
 
 
+class QuestionIntent(str, Enum):
+    INTERVIEW = "INTERVIEW"
+    AUDIO_CHECK = "AUDIO_CHECK"
+    COORDINATION = "COORDINATION"
+    SMALL_TALK = "SMALL_TALK"
+    ASR_NOISE = "ASR_NOISE"
+
+
 # Observability Metrics Registry
-qa_fsm_metrics: Dict[str, int] = {
+qa_fsm_metrics: Dict[str, Any] = {
     "qa_fsm_state_transitions_total": 0,
     "qa_fsm_completed_pairs_total": 0,
     "qa_fsm_silence_completions_total": 0,
     "qa_fsm_speaker_change_completions_total": 0,
     "qa_fsm_meeting_end_completions_total": 0,
-    "qa_fsm_fallback_to_legacy_total": 0
+    "qa_fsm_fallback_to_legacy_total": 0,
+    "qa_fsm_clarification_exchanges_total": 0,
+    "qa_fsm_interruption_pauses_total": 0,
+    "qa_fsm_question_candidates_total": 0,
+    "qa_fsm_non_evaluable_filtered_total": 0,
+    "qa_fsm_unheard_reprompts_total": 0
 }
 
 
-def get_qa_fsm_metrics() -> Dict[str, int]:
-    """Returns a snapshot of the QA FSM telemetry metrics."""
-    return dict(qa_fsm_metrics)
+def get_qa_fsm_metrics() -> Dict[str, Any]:
+    """Returns a snapshot of the QA FSM telemetry metrics including qa_fsm_filtered_ratio."""
+    metrics = dict(qa_fsm_metrics)
+    total_candidates = metrics.get("qa_fsm_question_candidates_total", 0)
+    filtered = metrics.get("qa_fsm_non_evaluable_filtered_total", 0)
+    metrics["qa_fsm_filtered_ratio"] = round(filtered / total_candidates, 3) if total_candidates > 0 else 0.0
+    return metrics
 
 
 def reset_qa_fsm_metrics() -> None:
@@ -54,13 +71,17 @@ class QAStateMachine:
     """
 
     QUESTION_STARTERS = (
-        "can you", "could you", "tell me", "tell us", "what is", "what are", "how do",
-        "how would", "how did", "why did", "why do", "explain", "walk me through",
-        "walk us through", "describe", "have you worked", "which", "when did", "so tell",
-        "let's talk about", "do you have experience", "how do you approach",
-        "what's your approach", "would you mind", "how does", "what was your role",
-        "please walk", "please explain", "please describe", "please introduce", "introduce yourself",
-        "what", "how", "why", "could", "would", "do you", "did you", "have you", "can we", "is it"
+        "can you", "could you", "tell me", "tell us", "what is", "what are", "what was",
+        "what were", "what did", "what do", "what does", "what have", "what would",
+        "what should", "what could", "what can", "what's", "what kind", "what type",
+        "what specific", "what components", "how do", "how would", "how did", "how does",
+        "how can", "how could", "how is", "how are", "why did", "why do", "why does",
+        "why is", "why would", "explain", "walk me through", "walk us through", "describe",
+        "have you worked", "which", "when did", "so tell", "let's talk about",
+        "do you have experience", "how do you approach", "what's your approach",
+        "would you mind", "what was your role", "please walk", "please explain",
+        "please describe", "please introduce", "introduce yourself", "could", "would",
+        "do you", "did you", "have you", "can we", "is it"
     )
 
     GREETINGS = (
@@ -113,6 +134,115 @@ class QAStateMachine:
             self.state = new_state
             qa_fsm_metrics["qa_fsm_state_transitions_total"] += 1
             logger.info(f"[QA_FSM] session_id={self.session_id} transition: {prev.value} -> {new_state.value} ({reason})")
+
+    def _classify_question_intent(self, text: str) -> QuestionIntent:
+        """
+        Classifies the intent of an interrogative utterance to determine whether
+        it is an actual interview evaluation question or non-evaluable operational dialogue.
+        
+        Categories:
+          - INTERVIEW: Technical, architectural, experience, behavioral, or introduction inquiry.
+          - AUDIO_CHECK: Audio/mic/sound quality check, echoing, volume, audibility, or screen sharing.
+          - COORDINATION: Meeting flow, pacing, timing, wrap-up, or transition chatter.
+          - SMALL_TALK: Casual greetings, pleasantries, weather, location.
+          - ASR_NOISE: Garbled speech recognition noise or incoherent short fragments.
+        """
+        cleaned = text.strip()
+        if not cleaned:
+            return QuestionIntent.ASR_NOISE
+
+        t_lower = cleaned.lower()
+
+        # Domain/technical concepts that clearly signify an interview assessment question
+        technical_domain = [
+            r"\b(algorithm|pipeline|whisper|speech to text|stt|tts|model|architecture|deep learning)\b",
+            r"\b(neural network|rag|vector|database|postgres|sql|nosql|system|framework|crewai|agent)\b",
+            r"\b(api|microservice|frontend|backend|cloud|kubernetes|docker|react|python|java|c\+\+)\b",
+            r"\b(index|indexing|deadlock|concurrency|latency|throughput|cache|redis|kafka)\b",
+            r"\b(introduce yourself|introduction|resume|background|experience|previous project)\b",
+            r"\b(walk me through|tell me about|explain how|what did you build|how would you)\b",
+            r"\b(feature|components|implementation|tradeoff|design pattern|unit test|integration)\b"
+        ]
+        has_tech_domain = any(re.search(pat, t_lower) for pat in technical_domain)
+
+        # 1. AUDIO / CONNECTIVITY / AUDIBILITY CHECK
+        audio_check_patterns = [
+            r"\b(can you also hear|can you hear|could you hear|am i audible|are you audible|is my voice|is my audio)\b",
+            r"\b(hear (a |any )?noise|hear me|hear that|hear anything|hear properly|hear clearly)\b",
+            r"\b(audible|inaudible|unclear audio|audio quality)\b",
+            r"\b(noisy|noise|background noise|how much noisy|no noisy|is it noisy)\b",
+            r"\b(echo|echoing|merging from my side|still merging|overlapping)\b",
+            r"\b(mic|microphone|headset|speaker|volume|audio level)\b",
+            r"\b(cutting out|breaking up|choppy|distortion|static|freeze|frozen|lagging)\b",
+            r"\b(see my screen|see the screen|screen share|screen visible)\b",
+        ]
+        for pat in audio_check_patterns:
+            if re.search(pat, t_lower) and not has_tech_domain:
+                return QuestionIntent.AUDIO_CHECK
+
+        # 2. MEETING COORDINATION
+        coordination_patterns = [
+            r"\b(shall we (get )?start(ed)?|can we (get )?start(ed)?|ready to start|are you ready)\b",
+            r"\b(give me a (second|moment|minute)|wait a (second|moment|minute)|give us a (second|moment|minute))\b",
+            r"\b(let's wrap up|shall we wrap up|we can wrap up|that's all from (my|our) side|that is it from (my|our) side)\b",
+            r"\b(any questions for (me|us)|do you have any questions for (me|us))\b"
+        ]
+        for pat in coordination_patterns:
+            if re.search(pat, t_lower) and not has_tech_domain:
+                return QuestionIntent.COORDINATION
+
+        # 3. SMALL TALK
+        small_talk_patterns = [
+            r"\b(how are you( doing)?|how's your day|how is your day|having a good day|how have you been)\b",
+            r"\b(nice to meet you|pleasure to meet you|hope you are doing well)\b",
+            r"\b(where are you joining from|where are you located|how is the weather)\b"
+        ]
+        for pat in small_talk_patterns:
+            if re.search(pat, t_lower) and not has_tech_domain:
+                return QuestionIntent.SMALL_TALK
+
+        # 4. ASR NOISE / HALLUCINATION
+        words = cleaned.split()
+        if len(words) <= 3 and not has_tech_domain:
+            return QuestionIntent.ASR_NOISE
+
+        if re.search(r"\b(why is it again|what's the picnic|what is it again|is it again)\b", t_lower):
+            return QuestionIntent.ASR_NOISE
+
+        return QuestionIntent.INTERVIEW
+
+    def _is_interview_question(self, text: str) -> bool:
+        """
+        Determines deterministically if an utterance is an evaluable interview question,
+        filtering out audio checks, small talk, coordination, and transcription noise.
+        """
+        if not self._is_question(text):
+            return False
+        return self._classify_question_intent(text) == QuestionIntent.INTERVIEW
+
+    def _is_candidate_unheard_request(self, text: str) -> bool:
+        """
+        Determines if a candidate utterance indicates they did not hear the question,
+        the interviewer was inaudible, or requests a repeat of the question.
+        Such utterances are audio/connectivity issues, NOT evaluated answers.
+        """
+        cleaned = text.strip()
+        if not cleaned:
+            return False
+        t_lower = cleaned.lower()
+        unheard_patterns = [
+            r"\b(didn't hear|did not hear|couldn't hear|could not hear)\b",
+            r"\b(not audible|hardly audible|inaudible|barely audible)\b",
+            r"\b(can you repeat|could you repeat|please repeat|repeat the question|repeat that)\b",
+            r"\b(say that again|say again|come again|pardon)\b",
+            r"\b(you broke up|you're breaking up|voice broke up|audio cut out|you cut out)\b",
+            r"\b(sorry,?\s+(i didn't hear|you are not audible|could you repeat|what did you say))\b",
+            r"\b(what was the question|missed that|missed the question)\b"
+        ]
+        for pat in unheard_patterns:
+            if re.search(pat, t_lower):
+                return True
+        return False
 
     def _is_question(self, text: str) -> bool:
         """Determines deterministically if an utterance is an interview question."""
@@ -168,6 +298,108 @@ class QAStateMachine:
             return True
         return False
 
+    def _is_interviewer_pause_or_hold(self, text: str) -> bool:
+        """
+        Determines if an interviewer utterance is a brief pause, hold, or interruption
+        (e.g., 'sorry, one second', 'hold on', 'give me a moment') that should NOT
+        prematurely finalize an active candidate answer.
+        """
+        cleaned = text.strip()
+        if not cleaned:
+            return False
+        t_lower = cleaned.lower()
+        t_clean = re.sub(r"^[^\w]+|[^\w]+$", "", t_lower)
+        words = t_clean.split()
+        if len(words) > 10:
+            return False
+
+        hold_patterns = [
+            r"\b(sorry,?\s+(one second|one moment|just a second|just a moment|wait a second|hold on|give me a second))\b",
+            r"\b(one second|one moment|just a second|just a moment|give me a second|give me a moment|give us a second)\b",
+            r"\b(hold on|wait a second|wait a moment|hang on|hang on a second|take your time|no rush)\b",
+            r"\b(please continue|go ahead|excuse me (for a second|a moment))\b"
+        ]
+        return any(re.search(pat, t_lower) for pat in hold_patterns)
+
+    def _is_candidate_clarification(self, text: str) -> bool:
+        """Determines if a candidate utterance is a clarification or scoping question rather than a final answer."""
+        cleaned = text.strip()
+        if not cleaned:
+            return False
+        t_lower = cleaned.lower()
+
+        # 1. Ends with '?' and relatively short (< 25 words)
+        words = cleaned.split()
+        if cleaned.endswith("?") and len(words) <= 25:
+            return True
+
+        # 2. Clarification / scoping phrases
+        clarification_patterns = [
+            r"\b(do you mean|are you asking|are you looking for)\b",
+            r"\b(should i|should we|do you want me to|would you like me to)\b",
+            r"\b(can you clarify|could you clarify|can you repeat|could you repeat)\b",
+            r"\b(you mean|what do you mean)\b",
+            r"\b(talking about|speaking about)\b.*\b(or|versus|vs)\b",
+            r"\b(capabilities|challenges|frontend|backend|architecture|code|high level|deep dive)\b.*\?",
+            r"\b(in terms of|specifically|regarding)\b.*\b(or)\b",
+            r"\b(am i audible|can you hear me)\b",
+            r"\b(just to confirm|just to clarify|just to be clear)\b",
+            r"\b(which one|which part|any specific)\b"
+        ]
+        for pat in clarification_patterns:
+            if re.search(pat, t_lower):
+                return True
+
+        # 3. Short utterance containing ' or ' (e.g., "AI capabilities or challenges?")
+        if " or " in t_lower and len(words) <= 15:
+            return True
+
+        return False
+
+    def _is_interviewer_clarification_response(self, text: str, cand_text: str) -> bool:
+        """
+        Determines if an interviewer utterance is a clarification response or specification
+        rather than transitioning to a completely new interview topic.
+        """
+        cleaned = text.strip()
+        if not cleaned:
+            return False
+        t_lower = cleaned.lower()
+
+        # If interviewer explicitly signals a new topic or question, it is NOT clarification
+        transition_patterns = [
+            r"\b(moving on|next question|next topic|final question|final portion|let's move on|let's skip|another question)\b",
+        ]
+        for tp in transition_patterns:
+            if re.search(tp, t_lower):
+                return False
+
+        # Clarification response patterns
+        clarification_response_patterns = [
+            r"\b(i want to know|i'd like to know|i want to hear|i'm looking for|i mean)\b",
+            r"\b(what you implemented|what you built|what you did|what you had|your experience)\b",
+            r"\b(focus on|talk about|tell me about|tell us about|explain about)\b",
+            r"\b(start with|either|both|whichever|any of|the former|the latter)\b",
+            r"\b(specifically|in particular|regarding|related to)\b",
+            r"\b(yes|yeah|sure|exactly|correct|right|no)\b",
+            r"\b(go ahead|please continue|take your time|feel free)\b"
+        ]
+        for crp in clarification_response_patterns:
+            if re.search(crp, t_lower):
+                return True
+
+        # Check if interviewer mentions keywords from the candidate's options
+        cand_words = set(re.findall(r"\b[a-zA-Z]{4,}\b", cand_text.lower()))
+        interviewer_words = set(re.findall(r"\b[a-zA-Z]{4,}\b", t_lower))
+        if cand_words.intersection(interviewer_words):
+            return True
+
+        # If it is not a new interrogative question starter, treat as clarification
+        if not self._is_question(cleaned):
+            return True
+
+        return False
+
     def _cancel_silence_timer(self) -> None:
         """Cancels any pending silence timeout task."""
         if self.silence_timer_task and not self.silence_timer_task.done():
@@ -189,6 +421,14 @@ class QAStateMachine:
             await asyncio.sleep(self.silence_threshold)
             async with self._lock:
                 if self.state == QAState.CANDIDATE_ANSWERING and self.current_answer_turns:
+                    cand_text = " ".join(t.get("text", "") for t in self.current_answer_turns).strip()
+                    if self._is_candidate_clarification(cand_text):
+                        logger.info(
+                            f"[QA_FSM] session_id={self.session_id} Candidate turns represent a clarification request "
+                            f"('{cand_text}'). Silence watchdog will not finalize QA pair."
+                        )
+                        return
+
                     qa_fsm_metrics["qa_fsm_silence_completions_total"] += 1
                     logger.info(
                         f"[QA_FSM] session_id={self.session_id} candidate silence threshold ({self.silence_threshold}s) "
@@ -199,6 +439,34 @@ class QAStateMachine:
             pass
         except Exception as e:
             logger.error(f"[QA_FSM] Unexpected error in silence watchdog: {e}")
+
+    def _evaluate_asr_quality(self, question: str, answer: str) -> str:
+        """
+        Evaluates transcription quality for the Q/A pair.
+        Returns 'high', 'medium', or 'low'.
+        Pairs with 'low' transcription quality (severe corruption, phonetic garbage,
+        or fragmented non-answers) are tagged to prevent punitive evaluations.
+        """
+        q_words = question.strip().split()
+        a_words = answer.strip().split()
+
+        # Check turn-level confidence if available
+        turns = ([self.current_question["turn"]] if self.current_question and "turn" in self.current_question else []) + self.current_answer_turns
+        if any(t.get("confidence") is not None and float(t.get("confidence")) < 0.6 for t in turns):
+            return "low"
+
+        # Fragmented or single-word non-answers
+        if len(a_words) <= 3 and answer.strip().lower() in {"i'm.", "i'm", "i know you see, i mean like.", "dek."}:
+            return "low"
+            
+        corrupt_tokens = [
+            "honey singh", "badsha", "kalaran", "kismeli", "karan kaka", "tender cow",
+            "translook", "dilika", "picnic", "multiveru", "rat platform"
+        ]
+        if any(tok in answer.lower() or tok in question.lower() for tok in corrupt_tokens):
+            return "low"
+
+        return "high"
 
     def _build_completed_qa(self, reason: str) -> Dict[str, Any]:
         """Builds a confirmed Q/A record matching existing session schema."""
@@ -213,6 +481,7 @@ class QAStateMachine:
         
         q_text = q_turn.get("text", "").strip()
         a_text = " ".join(t.get("text", "").strip() for t in self.current_answer_turns).strip()
+        asr_quality = self._evaluate_asr_quality(q_text, a_text)
 
         return {
             "pair_id": pair_id,
@@ -221,7 +490,8 @@ class QAStateMachine:
             "answer_turn_ids": a_ids,
             "question": q_text,
             "answer": a_text,
-            "confidence": 1.0,
+            "confidence": 1.0 if asr_quality == "high" else 0.4,
+            "asr_quality": asr_quality,
             "reason": reason,
             "confirmed_at": datetime.datetime.now().isoformat()
         }
@@ -241,7 +511,7 @@ class QAStateMachine:
 
         # Track for candidate continuation if completed via silence timeout
         if "silence threshold exceeded" in reason.lower():
-            self.last_question = self.current_question
+            self.last_question = dict(self.current_question) if self.current_question else None
             self.last_answer_turns = list(self.current_answer_turns)
             self.last_completion_reason = reason
         else:
@@ -286,11 +556,13 @@ class QAStateMachine:
             # STATE 1: WAITING_FOR_QUESTION
             # -----------------------------------------------------------------
             if self.state == QAState.WAITING_FOR_QUESTION:
-                if role == "interviewer" or (role == "unknown" and self._is_question(text)):
+                if role == "interviewer" or (role == "unknown" and self._is_interview_question(text)):
                     self.last_question = None
                     self.last_answer_turns = []
                     self.last_completion_reason = ""
                     if self._is_question(text):
+                        qa_fsm_metrics["qa_fsm_question_candidates_total"] += 1
+                    if self._is_interview_question(text):
                         self.current_question = {
                             "turn_id": turn.get("turn_id"),
                             "id": turn.get("id"),
@@ -300,13 +572,32 @@ class QAStateMachine:
                         }
                         self.current_answer_turns = []
                         self._transition_to(QAState.QUESTION_CAPTURED, f"Question captured from {speaker}")
+                    else:
+                        intent = self._classify_question_intent(text)
+                        if intent != QuestionIntent.INTERVIEW:
+                            qa_fsm_metrics["qa_fsm_non_evaluable_filtered_total"] += 1
+                            logger.info(
+                                f"[QA_FSM] session_id={self.session_id} Filtered non-evaluable interviewer utterance: "
+                                f"intent={intent.value} text='{text}'"
+                            )
                 elif role == "candidate":
                     if self.last_question is not None:
+                        # Guard: clarification or unheard request is NOT a continuation of previous answer
+                        if self._is_candidate_unheard_request(text) or self._is_candidate_clarification(text):
+                            logger.info(
+                                f"[QA_FSM] session_id={self.session_id} Candidate utterance in WAITING_FOR_QUESTION "
+                                f"is clarification/unheard ('{text}'). Not reopening prior question {self.last_question.get('turn_id')}."
+                            )
+                            self.last_question = None
+                            self.last_answer_turns = []
+                            self.last_completion_reason = ""
+                            return None
+
                         logger.info(
                             f"[QA_FSM] session_id={self.session_id} Candidate continuation detected for question "
                             f"{self.last_question.get('turn_id')}. Re-opening answer."
                         )
-                        self.current_question = self.last_question
+                        self.current_question = dict(self.last_question)
                         self.current_answer_turns = list(self.last_answer_turns) + [turn]
                         self.last_question = None
                         self.last_answer_turns = []
@@ -320,13 +611,31 @@ class QAStateMachine:
             # -----------------------------------------------------------------
             elif self.state == QAState.QUESTION_CAPTURED:
                 if role == "interviewer":
-                    # Consecutive interviewer turn: extends or clarifies the question
+                    # Consecutive interviewer turn: extends, clarifies, or re-prompts the question
                     if self.current_question:
-                        self.current_question["text"] = f"{self.current_question['text']} {text}".strip()
+                        if self.current_question.get("candidate_unheard"):
+                            self.current_question["text"] = f"{self.current_question['text']} (Re-prompt: {text})".strip()
+                            self.current_question["candidate_unheard"] = False
+                            logger.info(
+                                f"[QA_FSM] session_id={self.session_id} Re-prompt captured from interviewer: '{text}'"
+                            )
+                        else:
+                            self.current_question["text"] = f"{self.current_question['text']} {text}".strip()
                         self.current_question["turn_id"] = turn.get("turn_id", self.current_question["turn_id"])
                     return None
 
                 elif role == "candidate":
+                    # Check if candidate reports audio issues / did not hear the question
+                    if self._is_candidate_unheard_request(text):
+                        qa_fsm_metrics["qa_fsm_unheard_reprompts_total"] += 1
+                        logger.info(
+                            f"[QA_FSM] session_id={self.session_id} Candidate could not hear question ('{text}'). "
+                            f"Remaining in QUESTION_CAPTURED awaiting interviewer reprompt."
+                        )
+                        if self.current_question:
+                            self.current_question["candidate_unheard"] = True
+                        return None
+
                     # Candidate starts speaking: transition to CANDIDATE_ANSWERING
                     self._transition_to(QAState.CANDIDATE_ANSWERING, f"Candidate {speaker} started answering")
                     self.current_answer_turns.append(turn)
@@ -344,13 +653,47 @@ class QAStateMachine:
                     return None
 
                 elif role == "interviewer" or (role == "unknown" and speaker != "Candidate"):
-                    is_new_q = self._is_question(text)
-                    if not is_new_q and self._is_backchannel(text):
+                    cand_text = " ".join(t.get("text", "") for t in self.current_answer_turns).strip()
+                    is_cand_clarification = self._is_candidate_clarification(cand_text)
+
+                    # 1. Interviewer backchannel / pause / hold check
+                    if self._is_question(text):
+                        qa_fsm_metrics["qa_fsm_question_candidates_total"] += 1
+
+                    is_new_q = self._is_interview_question(text)
+                    if not is_new_q:
+                        if self._is_backchannel(text):
+                            logger.info(
+                                f"[QA_FSM] session_id={self.session_id} Interviewer backchannel/acknowledgment detected: "
+                                f"'{text}'. Remaining in CANDIDATE_ANSWERING."
+                            )
+                            self._schedule_silence_timer()
+                            return None
+
+                        if self._is_interviewer_pause_or_hold(text):
+                            qa_fsm_metrics["qa_fsm_interruption_pauses_total"] += 1
+                            logger.info(
+                                f"[QA_FSM] session_id={self.session_id} Interviewer pause/hold detected: '{text}'. "
+                                f"Keeping candidate answer open."
+                            )
+                            self._schedule_silence_timer()
+                            return None
+
+                    # 2. Clarification Flow: Candidate asked clarification, and interviewer provides guidance/scope
+                    if is_cand_clarification and self._is_interviewer_clarification_response(text, cand_text):
                         logger.info(
-                            f"[QA_FSM] session_id={self.session_id} Interviewer backchannel/acknowledgment detected: "
-                            f"'{text}'. Remaining in CANDIDATE_ANSWERING."
+                            f"[QA_FSM] session_id={self.session_id} Clarification exchange detected. "
+                            f"Candidate asked: '{cand_text}' | Interviewer clarified: '{text}'. "
+                            f"Keeping QA pair active."
                         )
-                        self._schedule_silence_timer()
+                        self._cancel_silence_timer()
+                        qa_fsm_metrics["qa_fsm_clarification_exchanges_total"] += 1
+                        if self.current_question:
+                            self.current_question["text"] = f"{self.current_question['text']} (Clarification: {text})".strip()
+                            self.current_question["turn_id"] = turn.get("turn_id", self.current_question["turn_id"])
+                        # Reset candidate answer turns since previous turns were only the clarification query
+                        self.current_answer_turns = []
+                        self._transition_to(QAState.QUESTION_CAPTURED, f"Clarified question scope via {speaker}")
                         return None
 
                     # Priority 1 or 3: Speaker Change or New Question!
@@ -372,7 +715,7 @@ class QAStateMachine:
                         except Exception as cb_err:
                             logger.error(f"[QA_FSM] Error executing on_qa_completed callback: {cb_err}")
 
-                    # Transition based on whether new turn is a question
+                    # Transition based on whether new turn is an evaluable INTERVIEW question
                     if is_new_q:
                         self.current_question = {
                             "turn_id": turn.get("turn_id"),
@@ -384,6 +727,13 @@ class QAStateMachine:
                         self.current_answer_turns = []
                         self._transition_to(QAState.QUESTION_CAPTURED, "Captured new interviewer question")
                     else:
+                        intent = self._classify_question_intent(text)
+                        if intent != QuestionIntent.INTERVIEW:
+                            qa_fsm_metrics["qa_fsm_non_evaluable_filtered_total"] += 1
+                            logger.info(
+                                f"[QA_FSM] session_id={self.session_id} Filtered non-evaluable interviewer utterance: "
+                                f"intent={intent.value} text='{text}'"
+                            )
                         self.current_question = None
                         self.current_answer_turns = []
                         self._transition_to(QAState.WAITING_FOR_QUESTION, "Waiting for next question")

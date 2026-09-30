@@ -1,6 +1,6 @@
 import os
 import uuid
-from typing import List, Optional
+from typing import List, Optional, Any
 from services.interview.src.core.interfaces.repository import IInterviewRepository
 from services.interview.src.models.interview import InterviewSessionModel
 from services.interview.src.core.config import Settings
@@ -17,7 +17,11 @@ class PostgresInterviewRepository(IInterviewRepository):
         resume: str, 
         custom_prompt: str, 
         resume_filename: str = "resume.txt", 
-        resume_base64: str = ""
+        resume_base64: str = "",
+        user_id: Optional[Any] = None,
+        organizer_email: Optional[str] = None,
+        interviewer: Optional[str] = None,
+        candidate_name: Optional[str] = None,
     ) -> str:
         # Generate a unique session ID
         session_id = uuid.uuid4()
@@ -47,8 +51,13 @@ class PostgresInterviewRepository(IInterviewRepository):
                 logger.error(f"Error saving raw resume file: {e}")
             
         # Save session metadata in database
+        clean_interviewer = interviewer if interviewer and interviewer not in ("Appz Meeting Observer", "Mia", "Mia (AI)", "Appz Interviewer") else None
         await InterviewSessionModel.create(
             session_id=session_id,
+            user_id=user_id,
+            organizer_email=organizer_email,
+            interviewer=clean_interviewer,
+            candidate_name=candidate_name,
             jd=jd,
             resume=resume,
             custom_prompt=custom_prompt,
@@ -78,6 +87,11 @@ class PostgresInterviewRepository(IInterviewRepository):
         return {
             "session_id": str(session.session_id),
             "timestamp": session.timestamp.isoformat() if session.timestamp else None,
+            "user_id": str(session.user_id) if getattr(session, "user_id", None) else None,
+            "organizer_email": getattr(session, "organizer_email", None),
+            "organizer": getattr(session, "organizer_email", None),
+            "interviewer": getattr(session, "interviewer", None),
+            "candidate_name": getattr(session, "candidate_name", None),
             "jd": session.jd,
             "resume": session.resume,
             "custom_prompt": session.custom_prompt,
@@ -89,9 +103,24 @@ class PostgresInterviewRepository(IInterviewRepository):
         sessions = await InterviewSessionModel.all().values_list("session_id", flat=True)
         return [str(sid) for sid in sessions]
 
-    async def list_all_sessions(self, limit: Optional[int] = None) -> List[dict]:
-        """Fetch all sessions ordered by timestamp in a single query."""
-        query = InterviewSessionModel.all().order_by("-timestamp")
+    async def list_all_sessions(
+        self,
+        limit: Optional[int] = None,
+        user_id: Optional[str] = None,
+        is_admin: bool = False,
+        organizer_email: Optional[str] = None,
+    ) -> List[dict]:
+        """Fetch sessions with RBAC ordered by timestamp in a single query."""
+        query = InterviewSessionModel.all()
+        if not is_admin:
+            from tortoise.expressions import Q
+            cond = Q()
+            if user_id:
+                cond |= Q(user_id=user_id)
+            if organizer_email:
+                cond |= Q(organizer_email=organizer_email)
+            query = query.filter(cond)
+        query = query.order_by("-timestamp")
         if limit is not None and limit > 0:
             query = query.limit(limit)
         sessions = await query
@@ -99,6 +128,11 @@ class PostgresInterviewRepository(IInterviewRepository):
             {
                 "session_id": str(s.session_id),
                 "timestamp": s.timestamp.isoformat() if s.timestamp else None,
+                "user_id": str(s.user_id) if getattr(s, "user_id", None) else None,
+                "organizer_email": getattr(s, "organizer_email", None),
+                "organizer": getattr(s, "organizer_email", None),
+                "interviewer": getattr(s, "interviewer", None),
+                "candidate_name": getattr(s, "candidate_name", None),
                 "jd": s.jd,
                 "resume": s.resume,
                 "custom_prompt": s.custom_prompt,

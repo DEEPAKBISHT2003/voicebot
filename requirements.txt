@@ -17,3 +17,4 @@ playwright==1.52.0
 pipecat-ai[local,openai,groq,deepgram]>=1.5.0
 argon2-cffi>=23.1.0
 PyJWT>=2.8.0
+reportlab>=4.0.0

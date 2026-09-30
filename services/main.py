@@ -18,6 +18,7 @@ from services.interview.src.api.interviews import router as interviews_router, g
 from services.copilot.src.router import router as copilot_router
 from services.copilot.src.websocket.handler import router as copilot_ws_router
 from services.copilot.src.api.simulation import router as simulation_router
+from services.copilot.src.api.reports import router as reports_router
 from services.auth.src.api.auth import router as auth_router
 from services.auth.src.api.users import router as users_router
 from services.auth.src.seed import seed_admin_user
@@ -90,7 +91,10 @@ app.include_router(copilot_ws_router, tags=["Copilot WebSocket"])
 # 4. Simulation Router (/api/copilot/{id}/upload-audio, /api/ws/copilot/{id}/simulate)
 app.include_router(simulation_router, prefix="/api", tags=["Simulation"])
 
-# 5. Authentication & User Management Routers (/api/auth/login, /api/auth/me, /api/users)
+# 5. Reports Router (/api/reports/{session_id}/pdf)
+app.include_router(reports_router, prefix="/api", tags=["Reports"])
+
+# 6. Authentication & User Management Routers (/api/auth/login, /api/auth/me, /api/users)
 app.include_router(auth_router)
 app.include_router(users_router)
 
@@ -137,12 +141,49 @@ async def startup_auth_and_schema():
                 if "meeting_duration_seconds" not in cols:
                     await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN meeting_duration_seconds INT;")
                     logger.info("[DB] Added meeting_duration_seconds column to copilot_sessions (SQLite)")
+                if "user_id" not in cols:
+                    await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN user_id CHAR(36);")
+                    logger.info("[DB] Added user_id column to copilot_sessions (SQLite)")
+                if "organizer_email" not in cols:
+                    await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN organizer_email VARCHAR(255);")
+                    logger.info("[DB] Added organizer_email column to copilot_sessions (SQLite)")
+                if "interviewer" not in cols:
+                    await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN interviewer VARCHAR(255);")
+                    logger.info("[DB] Added interviewer column to copilot_sessions (SQLite)")
+                if "candidate_name" not in cols:
+                    await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN candidate_name VARCHAR(255);")
+                    logger.info("[DB] Added candidate_name column to copilot_sessions (SQLite)")
+
+            _, int_rows = await conn.execute_query("PRAGMA table_info(interview_sessions);")
+            if int_rows:
+                int_cols = [r["name"] for r in int_rows]
+                if "user_id" not in int_cols:
+                    await conn.execute_query("ALTER TABLE interview_sessions ADD COLUMN user_id CHAR(36);")
+                    logger.info("[DB] Added user_id column to interview_sessions (SQLite)")
+                if "organizer_email" not in int_cols:
+                    await conn.execute_query("ALTER TABLE interview_sessions ADD COLUMN organizer_email VARCHAR(255);")
+                    logger.info("[DB] Added organizer_email column to interview_sessions (SQLite)")
+                if "interviewer" not in int_cols:
+                    await conn.execute_query("ALTER TABLE interview_sessions ADD COLUMN interviewer VARCHAR(255);")
+                    logger.info("[DB] Added interviewer column to interview_sessions (SQLite)")
+                if "candidate_name" not in int_cols:
+                    await conn.execute_query("ALTER TABLE interview_sessions ADD COLUMN candidate_name VARCHAR(255);")
+                    logger.info("[DB] Added candidate_name column to interview_sessions (SQLite)")
         else:
             await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS final_report JSONB;")
             await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS meeting_started_at TIMESTAMPTZ;")
             await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS meeting_ended_at TIMESTAMPTZ;")
             await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS meeting_duration_seconds INT;")
-            logger.info("[DB] Verified copilot_sessions schema (duration and report columns present)")
+            await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS user_id UUID;")
+            await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS organizer_email VARCHAR(255);")
+            await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS interviewer VARCHAR(255);")
+            await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS candidate_name VARCHAR(255);")
+
+            await conn.execute_query("ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS user_id UUID;")
+            await conn.execute_query("ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS organizer_email VARCHAR(255);")
+            await conn.execute_query("ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS interviewer VARCHAR(255);")
+            await conn.execute_query("ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS candidate_name VARCHAR(255);")
+            logger.info("[DB] Verified copilot_sessions and interview_sessions schema (auth and interviewer columns present)")
     except Exception as e:
         logger.warning(f"[DB] Schema migration check notice: {e}")
 
