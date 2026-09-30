@@ -817,6 +817,8 @@ class TeamsMeeting:
             logger.info(f"[TeamsCaptions] Injecting native_captions.js into page (ws={ws_url})...")
             await self.page.evaluate(formatted_js)
             for frame in self.page.frames:
+                if frame == self.page.main_frame:
+                    continue
                 try:
                     await frame.evaluate(formatted_js)
                 except Exception:
@@ -839,6 +841,8 @@ class TeamsMeeting:
             try:
                 await self.page.evaluate("window.__stopMiaCaptions__ && window.__stopMiaCaptions__()")
                 for frame in self.page.frames:
+                    if frame == self.page.main_frame:
+                        continue
                     try:
                         await frame.evaluate("window.__stopMiaCaptions__ && window.__stopMiaCaptions__()")
                     except Exception:

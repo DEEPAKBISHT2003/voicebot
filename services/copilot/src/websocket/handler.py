@@ -319,8 +319,6 @@ async def websocket_endpoint(
         sess["bot_joined"] = True
         sess["status"] = "Listening to audio stream..."
         sess["last_speech_time"] = time.time()
-        await _safe_record_start(repo, session_id)
-        asyncio.create_task(broadcast_update())
 
         # Phase 2S: Trigger initial suggestions when entering IN_MEETING (audio producer connected)
         if sess.get("engine"):
@@ -388,7 +386,6 @@ async def websocket_endpoint(
                 logger.error(f"[CopilotWS] Audio pipeline error: {err}")
             finally:
                 inactivity_task.cancel()
-                await _safe_finalize_duration(repo, session_id)
                 if audio_buffer:
                     user_audio_snapshot = bytes(audio_buffer._user_audio_buffer) if hasattr(audio_buffer, "_user_audio_buffer") else b""
                     try:
@@ -426,7 +423,6 @@ async def websocket_endpoint(
                 pass
             finally:
                 inactivity_task.cancel()
-                await _safe_finalize_duration(repo, session_id)
 
     # Native Captions Branch (Teams Bot Live Captions Producer — Production Transcript Source)
     elif is_native_captions:
@@ -792,6 +788,11 @@ async def websocket_endpoint(
                         sess["transcript"] = eng.get_transcript()
                         sess["has_proven_transcript"] = True
                         await broadcast_update(last_msg, is_final=True)
+            if session_id in active_sessions:
+                active_sessions[session_id].get("native_caption_websockets", set()).discard(websocket)    
+            
+
+            await _safe_finalize_duration(repo, session_id)
 
     # Dashboard Subscriber Branch (Browser UI Window)
     else:
