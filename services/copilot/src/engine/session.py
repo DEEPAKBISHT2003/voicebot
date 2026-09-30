@@ -1287,10 +1287,33 @@ class CopilotSessionEngine:
         )
         if existing_idx is not None:
             prev_qa = self.confirmed_qa_pairs[existing_idx]
-            if prev_qa.get("accuracy_score") is not None and confirmed_qa_record.get("accuracy_score") is None:
-                confirmed_qa_record["accuracy_score"] = prev_qa["accuracy_score"]
-            if prev_qa.get("evaluation") is not None and confirmed_qa_record.get("evaluation") is None:
-                confirmed_qa_record["evaluation"] = prev_qa["evaluation"]
+            prev_a_ids = prev_qa.get("answer_turn_ids", [])
+            new_a_ids = confirmed_qa_record.get("answer_turn_ids", [])
+            answer_turn_ids_changed = (prev_a_ids != new_a_ids)
+
+            if answer_turn_ids_changed:
+                logger.info(
+                    f"[QA_FSM] Answer turn IDs changed for Q{q_id}: prev={prev_a_ids} -> new={new_a_ids}. "
+                    f"Invalidating previous score and scheduling re-evaluation."
+                )
+                qa_fsm_metrics["qa_fsm_answer_mutation_total"] += 1
+                qa_fsm_metrics["qa_fsm_re_evaluation_total"] += 1
+                confirmed_qa_record["accuracy_score"] = None
+                confirmed_qa_record["evaluation"] = None
+                confirmed_qa_record["evaluation_status"] = "pending_re_evaluation"
+
+                # Invalidate cache so that re-evaluation triggers
+                prev_pair_id = prev_qa.get("pair_id")
+                if prev_pair_id in self.evaluated_qa_ids:
+                    self.evaluated_qa_ids.discard(prev_pair_id)
+                if pair_id in self.evaluated_qa_ids:
+                    self.evaluated_qa_ids.discard(pair_id)
+            else:
+                if prev_qa.get("accuracy_score") is not None and confirmed_qa_record.get("accuracy_score") is None:
+                    confirmed_qa_record["accuracy_score"] = prev_qa["accuracy_score"]
+                if prev_qa.get("evaluation") is not None and confirmed_qa_record.get("evaluation") is None:
+                    confirmed_qa_record["evaluation"] = prev_qa["evaluation"]
+
             self.confirmed_qa_pairs[existing_idx] = confirmed_qa_record
         else:
             self.confirmed_qa_pairs.append(confirmed_qa_record)

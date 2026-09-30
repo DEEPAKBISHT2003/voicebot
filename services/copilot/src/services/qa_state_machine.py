@@ -12,6 +12,7 @@ class QAState(str, Enum):
     WAITING_FOR_QUESTION = "WAITING_FOR_QUESTION"
     QUESTION_CAPTURED = "QUESTION_CAPTURED"
     CANDIDATE_ANSWERING = "CANDIDATE_ANSWERING"
+    ANSWER_PAUSED = "ANSWER_PAUSED"
     QA_COMPLETED = "QA_COMPLETED"
 
 
@@ -35,7 +36,14 @@ qa_fsm_metrics: Dict[str, Any] = {
     "qa_fsm_interruption_pauses_total": 0,
     "qa_fsm_question_candidates_total": 0,
     "qa_fsm_non_evaluable_filtered_total": 0,
-    "qa_fsm_unheard_reprompts_total": 0
+    "qa_fsm_unheard_reprompts_total": 0,
+    "qa_fsm_answer_paused_total": 0,
+    "qa_fsm_answer_resumed_total": 0,
+    "qa_fsm_orphan_candidate_turns_total": 0,
+    "qa_fsm_reopened_answers_total": 0,
+    "qa_fsm_explicit_completion_total": 0,
+    "qa_fsm_answer_mutation_total": 0,
+    "qa_fsm_re_evaluation_total": 0
 }
 
 
@@ -130,6 +138,7 @@ class QAStateMachine:
         self.last_answer_turns: List[Dict[str, Any]] = []
         self.last_completion_reason: str = ""
         self.last_completion_time: Optional[float] = None
+        self.orphan_candidate_turns: List[Dict[str, Any]] = []
 
     def get_state(self) -> QAState:
         """Returns the current state of the FSM."""
@@ -469,16 +478,29 @@ class QAStateMachine:
                     if self._is_candidate_clarification(cand_text):
                         logger.info(
                             f"[QA_FSM] session_id={self.session_id} Candidate turns represent a clarification request "
-                            f"('{cand_text}'). Silence watchdog will not finalize QA pair."
+                            f"('{cand_text}'). Silence watchdog will not pause QA pair."
                         )
                         return
 
+                    # Priority 4: Explicit answer conclusion detection during silence
+                    last_turn_text = self.current_answer_turns[-1].get("text", "").strip() if self.current_answer_turns else ""
+                    if self._is_candidate_answer_concluded(cand_text) or self._is_candidate_answer_concluded(last_turn_text):
+                        qa_fsm_metrics["qa_fsm_explicit_completion_total"] += 1
+                        logger.info(
+                            f"[QA_FSM] session_id={self.session_id} Candidate explicitly concluded answer. "
+                            f"Finalizing QA pair on silence."
+                        )
+                        await self._complete_current_qa(reason="candidate_explicit_completion")
+                        return
+
+                    # Priority 1: Transition to ANSWER_PAUSED instead of QA_COMPLETED
+                    qa_fsm_metrics["qa_fsm_answer_paused_total"] += 1
                     qa_fsm_metrics["qa_fsm_silence_completions_total"] += 1
                     logger.info(
                         f"[QA_FSM] session_id={self.session_id} candidate silence threshold ({self.silence_threshold}s) "
-                        f"exceeded. Finalizing QA pair."
+                        f"exceeded. Transitioning to ANSWER_PAUSED."
                     )
-                    await self._complete_current_qa(reason=f"Candidate silence threshold exceeded ({self.silence_threshold}s)")
+                    self._transition_to(QAState.ANSWER_PAUSED, f"Silence threshold exceeded ({self.silence_threshold}s)")
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -553,25 +575,10 @@ class QAStateMachine:
         self._transition_to(QAState.QA_COMPLETED, reason)
         qa_fsm_metrics["qa_fsm_completed_pairs_total"] += 1
 
-        # Check if the candidate explicitly concluded their answer
-        cand_full_text = " ".join(t.get("text", "") for t in self.current_answer_turns).strip()
-        last_turn_text = self.current_answer_turns[-1].get("text", "").strip() if self.current_answer_turns else ""
-        is_concluded = (
-            self._is_candidate_answer_concluded(cand_full_text)
-            or self._is_candidate_answer_concluded(last_turn_text)
-        )
-
-        # Track for candidate continuation if completed via silence timeout and NOT explicitly concluded
-        if "silence threshold exceeded" in reason.lower() and not is_concluded:
-            self.last_question = dict(self.current_question) if self.current_question else None
-            self.last_answer_turns = list(self.current_answer_turns)
-            self.last_completion_reason = reason
-            self.last_completion_time = time.monotonic()
-        else:
-            self.last_question = None
-            self.last_answer_turns = []
-            self.last_completion_reason = ""
-            self.last_completion_time = None
+        self.last_question = None
+        self.last_answer_turns = []
+        self.last_completion_reason = ""
+        self.last_completion_time = None
 
         if self.on_qa_completed:
             try:
@@ -636,50 +643,22 @@ class QAStateMachine:
                                 f"intent={intent.value} text='{text}'"
                             )
                 elif role == "candidate":
-                    is_valid_continuation = False
-                    if self.last_question is not None:
-                        # Guard: clarification or unheard request is NOT a continuation of previous answer
-                        if self._is_candidate_unheard_request(text) or self._is_candidate_clarification(text):
-                            logger.info(
-                                f"[QA_FSM] session_id={self.session_id} Candidate utterance in WAITING_FOR_QUESTION "
-                                f"is clarification/unheard ('{text}'). Not reopening prior question {self.last_question.get('turn_id')}."
-                            )
-                            self.last_question = None
-                            self.last_answer_turns = []
-                            self.last_completion_reason = ""
-                            self.last_completion_time = None
-                            return None
-
-                        # Guard: Continuation window timeout (5.0s maximum between silence completion and candidate resume)
-                        if self.last_completion_time is not None:
-                            elapsed = time.monotonic() - self.last_completion_time
-                            if elapsed <= 5.0:
-                                is_valid_continuation = True
-                            else:
-                                logger.info(
-                                    f"[QA_FSM] session_id={self.session_id} Candidate continuation window expired "
-                                    f"(elapsed={elapsed:.2f}s > 5.0s). Discarding prior question {self.last_question.get('turn_id')}."
-                                )
-                                self.last_question = None
-                                self.last_answer_turns = []
-                                self.last_completion_reason = ""
-                                self.last_completion_time = None
-                        else:
-                            is_valid_continuation = True
-
-                    if is_valid_continuation and self.last_question is not None:
-                        logger.info(
-                            f"[QA_FSM] session_id={self.session_id} Candidate continuation detected for question "
-                            f"{self.last_question.get('turn_id')}. Re-opening answer."
-                        )
-                        self.current_question = dict(self.last_question)
-                        self.current_answer_turns = list(self.last_answer_turns) + [turn]
-                        self.last_question = None
-                        self.last_answer_turns = []
-                        self.last_completion_reason = ""
-                        self.last_completion_time = None
-                        self._transition_to(QAState.CANDIDATE_ANSWERING, "Candidate continuation after silence")
-                        self._schedule_silence_timer()
+                    # Priority 2: Never drop candidate turns!
+                    logger.warning(
+                        f"[QA_FSM] Candidate turn received without active QA context: turn_id={turn.get('turn_id')} "
+                        f"speaker='{speaker}' state={self.state.value} text='{text}'",
+                        extra={
+                            "turn_id": turn.get("turn_id"),
+                            "speaker": speaker,
+                            "state": self.state.value,
+                        }
+                    )
+                    qa_fsm_metrics["qa_fsm_orphan_candidate_turns_total"] += 1
+                    self.orphan_candidate_turns.append(turn)
+                    return {
+                        "event": "ORPHAN_CANDIDATE_TURN",
+                        "turn": turn,
+                    }
                 return None
 
             # -----------------------------------------------------------------
@@ -715,6 +694,13 @@ class QAStateMachine:
                     # Candidate starts speaking: transition to CANDIDATE_ANSWERING
                     self._transition_to(QAState.CANDIDATE_ANSWERING, f"Candidate {speaker} started answering")
                     self.current_answer_turns.append(turn)
+
+                    # Priority 4: Explicit answer conclusion check right away
+                    if self._is_candidate_answer_concluded(text):
+                        qa_fsm_metrics["qa_fsm_explicit_completion_total"] += 1
+                        logger.info(f"[QA_FSM] session_id={self.session_id} Candidate explicitly concluded answer on first turn.")
+                        return await self._complete_current_qa(reason="candidate_explicit_completion")
+
                     self._schedule_silence_timer()
                     return None
 
@@ -723,36 +709,19 @@ class QAStateMachine:
             # -----------------------------------------------------------------
             elif self.state == QAState.CANDIDATE_ANSWERING:
                 if role == "candidate":
-                    # Check if previous answer turn already explicitly concluded
-                    if self.current_answer_turns and self._is_candidate_answer_concluded(self.current_answer_turns[-1].get("text", "")):
-                        logger.info(
-                            f"[QA_FSM] session_id={self.session_id} Candidate spoke after previous answer explicitly concluded. "
-                            f"Finalizing concluded answer pair before processing new candidate utterance."
-                        )
-                        self._cancel_silence_timer()
-                        reason = "Candidate answered previous question and started new topic"
-                        completed_qa = self._build_completed_qa(reason)
-                        self._transition_to(QAState.QA_COMPLETED, reason)
-                        qa_fsm_metrics["qa_fsm_completed_pairs_total"] += 1
-                        if self.on_qa_completed:
-                            try:
-                                res = self.on_qa_completed(completed_qa)
-                                if asyncio.iscoroutine(res):
-                                    await res
-                            except Exception as cb_err:
-                                logger.error(f"[QA_FSM] Error executing on_qa_completed callback: {cb_err}")
-
-                        self.last_question = None
-                        self.last_answer_turns = []
-                        self.last_completion_reason = ""
-                        self.last_completion_time = None
-                        self.current_question = None
-                        self.current_answer_turns = []
-                        self._transition_to(QAState.WAITING_FOR_QUESTION, "Awaiting next interviewer question")
-                        return completed_qa
-
-                    # Candidate continues speaking: accumulate turn and reset silence timer
                     self.current_answer_turns.append(turn)
+
+                    # Priority 4: Explicit answer conclusion detection
+                    cand_full_text = " ".join(t.get("text", "") for t in self.current_answer_turns).strip()
+                    if self._is_candidate_answer_concluded(text) or self._is_candidate_answer_concluded(cand_full_text):
+                        qa_fsm_metrics["qa_fsm_explicit_completion_total"] += 1
+                        logger.info(
+                            f"[QA_FSM] session_id={self.session_id} Candidate explicitly concluded answer ('{text}'). "
+                            f"Finalizing QA pair."
+                        )
+                        return await self._complete_current_qa(reason="candidate_explicit_completion")
+
+                    # Candidate continues speaking: reset silence timer
                     self._schedule_silence_timer()
                     return None
 
@@ -800,30 +769,98 @@ class QAStateMachine:
                         self._transition_to(QAState.QUESTION_CAPTURED, f"Clarified question scope via {speaker}")
                         return None
 
-                    # Priority 1 or 3: Speaker Change or New Question!
+                    # Priority 5: New Question / Speaker Change finalizes the previous QA!
                     self._cancel_silence_timer()
-                    self.last_question = None
-                    self.last_answer_turns = []
-                    self.last_completion_reason = ""
-                    self.last_completion_time = None
                     qa_fsm_metrics["qa_fsm_speaker_change_completions_total"] += 1
                     
                     reason = "New interviewer question arrived" if is_new_q else "Speaker change from candidate to interviewer"
                     logger.info(f"[QA_FSM] session_id={self.session_id} {reason}. Finalizing QA pair.")
 
-                    completed_qa = self._build_completed_qa(reason)
-                    self._transition_to(QAState.QA_COMPLETED, reason)
-                    qa_fsm_metrics["qa_fsm_completed_pairs_total"] += 1
-
-                    if self.on_qa_completed:
-                        try:
-                            res = self.on_qa_completed(completed_qa)
-                            if asyncio.iscoroutine(res):
-                                await res
-                        except Exception as cb_err:
-                            logger.error(f"[QA_FSM] Error executing on_qa_completed callback: {cb_err}")
+                    completed_qa = await self._complete_current_qa(reason=reason)
 
                     # Transition based on whether new turn is an evaluable INTERVIEW question
+                    if is_new_q:
+                        self.current_question = {
+                            "turn_id": turn.get("turn_id"),
+                            "id": turn.get("id"),
+                            "text": text,
+                            "speaker": speaker,
+                            "turn": turn
+                        }
+                        self.current_answer_turns = []
+                        self._transition_to(QAState.QUESTION_CAPTURED, "Captured new interviewer question")
+                    else:
+                        intent = self._classify_question_intent(text)
+                        if intent != QuestionIntent.INTERVIEW:
+                            qa_fsm_metrics["qa_fsm_non_evaluable_filtered_total"] += 1
+                            logger.info(
+                                f"[QA_FSM] session_id={self.session_id} Filtered non-evaluable interviewer utterance: "
+                                f"intent={intent.value} text='{text}'"
+                            )
+                        self.current_question = None
+                        self.current_answer_turns = []
+                        self._transition_to(QAState.WAITING_FOR_QUESTION, "Waiting for next question")
+
+                    return completed_qa
+
+            # -----------------------------------------------------------------
+            # STATE 4: ANSWER_PAUSED (Priority 1 & Priority 3)
+            # -----------------------------------------------------------------
+            elif self.state == QAState.ANSWER_PAUSED:
+                if role == "candidate":
+                    # Priority 3: Candidate resumes answering! (No time window dependency)
+                    qa_fsm_metrics["qa_fsm_answer_resumed_total"] += 1
+                    qa_fsm_metrics["qa_fsm_reopened_answers_total"] += 1
+                    logger.info(
+                        f"[QA_FSM] session_id={self.session_id} Candidate resumed answer after pause: "
+                        f"turn_id={turn.get('turn_id')} text='{text}'"
+                    )
+                    self.current_answer_turns.append(turn)
+
+                    # Priority 4: Check if this resume turn explicitly concludes the answer
+                    cand_full_text = " ".join(t.get("text", "") for t in self.current_answer_turns).strip()
+                    if self._is_candidate_answer_concluded(text) or self._is_candidate_answer_concluded(cand_full_text):
+                        qa_fsm_metrics["qa_fsm_explicit_completion_total"] += 1
+                        logger.info(
+                            f"[QA_FSM] session_id={self.session_id} Candidate explicitly concluded answer upon resume. "
+                            f"Finalizing QA pair."
+                        )
+                        return await self._complete_current_qa(reason="candidate_explicit_completion")
+
+                    self._transition_to(QAState.CANDIDATE_ANSWERING, "Candidate resumed answering")
+                    self._schedule_silence_timer()
+                    return None
+
+                elif role == "interviewer" or (role == "unknown" and speaker != "Candidate"):
+                    if self._is_question(text):
+                        qa_fsm_metrics["qa_fsm_question_candidates_total"] += 1
+
+                    is_new_q = self._is_interview_question(text)
+
+                    # Backchannel or pause/hold by interviewer while candidate is paused: keep paused!
+                    if not is_new_q:
+                        if self._is_backchannel(text):
+                            logger.info(
+                                f"[QA_FSM] session_id={self.session_id} Interviewer backchannel detected in ANSWER_PAUSED: "
+                                f"'{text}'. Remaining in ANSWER_PAUSED."
+                            )
+                            return None
+
+                        if self._is_interviewer_pause_or_hold(text):
+                            qa_fsm_metrics["qa_fsm_interruption_pauses_total"] += 1
+                            logger.info(
+                                f"[QA_FSM] session_id={self.session_id} Interviewer pause/hold detected in ANSWER_PAUSED: '{text}'. "
+                                f"Remaining in ANSWER_PAUSED."
+                            )
+                            return None
+
+                    # Priority 5: New Question / Speaker Change in ANSWER_PAUSED finalizes the paused answer!
+                    qa_fsm_metrics["qa_fsm_speaker_change_completions_total"] += 1
+                    reason = "New interviewer question arrived while answer paused" if is_new_q else "Speaker change from candidate to interviewer while answer paused"
+                    logger.info(f"[QA_FSM] session_id={self.session_id} {reason}. Finalizing QA pair.")
+
+                    completed_qa = await self._complete_current_qa(reason=reason)
+
                     if is_new_q:
                         self.current_question = {
                             "turn_id": turn.get("turn_id"),
@@ -853,11 +890,11 @@ class QAStateMachine:
     async def finalize_current_qa(self) -> Optional[Dict[str, Any]]:
         """
         Priority 4: Meeting End / Finalization.
-        If meeting ends while candidate answer is active, automatically finalize current QA pair.
+        If meeting ends while candidate answer is active or paused, automatically finalize current QA pair.
         """
         async with self._lock:
             self._cancel_silence_timer()
-            if self.state == QAState.CANDIDATE_ANSWERING and self.current_answer_turns:
+            if self.state in (QAState.CANDIDATE_ANSWERING, QAState.ANSWER_PAUSED) and self.current_answer_turns:
                 qa_fsm_metrics["qa_fsm_meeting_end_completions_total"] += 1
                 logger.info(f"[QA_FSM] session_id={self.session_id} Meeting ended. Finalizing active QA pair.")
                 return await self._complete_current_qa(reason="Meeting ended while candidate answer was active")

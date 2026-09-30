@@ -103,16 +103,22 @@ async def test_scenario_2_candidate_silence_completion():
     # Wait for silence timer to expire (threshold is 0.1s, wait 0.25s)
     await asyncio.sleep(0.25)
 
+    # In Priority 1, silence timeout transitions to ANSWER_PAUSED instead of QA_COMPLETED!
+    assert fsm.get_state() == QAState.ANSWER_PAUSED
+    assert len(completed_records) == 0
+
+    # Next question from interviewer finalizes the paused QA pair (Priority 5)
+    await fsm.on_turn({"turn_id": 12, "speaker": "Interviewer", "speaker_role": "interviewer", "text": "What is two phase commit?"})
     assert len(completed_records) == 1
     record = completed_records[0]
     assert record["pair_id"] == "Q10_A11"
     assert record["question_turn_id"] == 10
     assert record["answer_turn_ids"] == [11]
-    assert fsm.get_state() == QAState.WAITING_FOR_QUESTION
+    assert fsm.get_state() == QAState.QUESTION_CAPTURED
 
     metrics = get_qa_fsm_metrics()
     assert metrics["qa_fsm_completed_pairs_total"] == 1
-    assert metrics["qa_fsm_silence_completions_total"] == 1
+    assert metrics["qa_fsm_answer_paused_total"] == 1
     fsm.close()
 
 
@@ -505,11 +511,10 @@ async def test_scenario_13_candidate_continuation_after_silence():
     await fsm.on_turn({"turn_id": 2, "speaker": "Candidate", "speaker_role": "candidate", "text": "I am Deepak from Delhi."})
     assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
 
-    # Silence timer expires
+    # Silence timer expires -> transitions to ANSWER_PAUSED
     await asyncio.sleep(0.25)
-    assert fsm.get_state() == QAState.WAITING_FOR_QUESTION
-    assert len(completed_pairs) == 1
-    assert completed_pairs[0]["pair_id"] == "Q1_A2"
+    assert fsm.get_state() == QAState.ANSWER_PAUSED
+    assert len(completed_pairs) == 0
 
     # Candidate resumes speaking before interviewer asks anything!
     await fsm.on_turn({"turn_id": 3, "speaker": "Candidate", "speaker_role": "candidate", "text": "I completed my degree with 75% marks."})
@@ -517,11 +522,11 @@ async def test_scenario_13_candidate_continuation_after_silence():
 
     await fsm.on_turn({"turn_id": 4, "speaker": "Candidate", "speaker_role": "candidate", "text": "Then I worked on full stack AI applications."})
 
-    # Interviewer asks next question
+    # Interviewer asks next question -> completes the comprehensive Q1 answer!
     await fsm.on_turn({"turn_id": 5, "speaker": "Interviewer", "speaker_role": "interviewer", "text": "What is FastAPI?"})
-    assert len(completed_pairs) == 2
-    assert completed_pairs[1]["pair_id"] == "Q1_A2_3_4"
-    assert completed_pairs[1]["answer_turn_ids"] == [2, 3, 4]
+    assert len(completed_pairs) == 1
+    assert completed_pairs[0]["pair_id"] == "Q1_A2_3_4"
+    assert completed_pairs[0]["answer_turn_ids"] == [2, 3, 4]
     fsm.close()
 
 
@@ -1065,13 +1070,12 @@ async def test_scenario_21_question_state_replacement_after_silence_timeout():
     })
     assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
 
-    # 3. Silence timeout fires for Q1
+    # 3. Silence timeout fires for Q1 -> transitions to ANSWER_PAUSED
     await asyncio.sleep(0.15)
-    assert len(completed_pairs) == 1
-    assert "introduce yourself" in completed_pairs[0]["question"]
-    assert fsm.get_state() == QAState.WAITING_FOR_QUESTION
+    assert fsm.get_state() == QAState.ANSWER_PAUSED
+    assert len(completed_pairs) == 0
 
-    # 4. Q2: Interviewer asks technical question
+    # 4. Q2: Interviewer asks technical question -> completes Q1 and captures Q2
     await fsm.on_turn({
         "turn_id": 9,
         "speaker": "Ankit",
@@ -1079,6 +1083,8 @@ async def test_scenario_21_question_state_replacement_after_silence_timeout():
         "text": "OK. So moving forward to next question, like how did you validate and test the reliability claims you mentioned in your resume?"
     })
     assert fsm.get_state() == QAState.QUESTION_CAPTURED
+    assert len(completed_pairs) == 1
+    assert "introduce yourself" in completed_pairs[0]["question"]
 
     # 5. Candidate asks for repetition (unheard query)
     await fsm.on_turn({
@@ -1127,8 +1133,12 @@ async def test_scenario_21_question_state_replacement_after_silence_timeout():
     })
     assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
 
-    # 10. Silence timeout completes Q2
+    # 10. Silence timeout pauses Q2
     await asyncio.sleep(0.15)
+    assert fsm.get_state() == QAState.ANSWER_PAUSED
+
+    # Meeting end / finalization completes Q2
+    await fsm.finalize_current_qa()
     assert len(completed_pairs) == 2
 
     q2_pair = completed_pairs[1]
@@ -1338,6 +1348,349 @@ async def test_scenario_23_explicit_candidate_conclusion_prevents_reopening():
     assert len(completed_pairs) == 1
 
     fsm.close()
+
+
+@pytest.mark.asyncio
+async def test_scenario_24_candidate_lead_in_pause_and_continuation():
+    """
+    Priority 8 - Test 1:
+    Interviewer Question -> Candidate Lead-in ('Yeah, of course, Ankit. So.') ->
+    Extended pause (watchdog triggers ANSWER_PAUSED) -> Candidate resumes substantive answer ->
+    Interviewer asks next question.
+    Expected: Single consolidated QA pair with all candidate turns.
+    """
+    completed_pairs = []
+
+    async def on_qa(rec):
+        completed_pairs.append(rec)
+
+    fsm = QAStateMachine(session_id="test_sess_24", silence_threshold=0.1, on_qa_completed=on_qa)
+
+    # 1. Interviewer Question
+    await fsm.on_turn({
+        "turn_id": 1,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "Can you please introduce yourself?"
+    })
+    assert fsm.get_state() == QAState.QUESTION_CAPTURED
+
+    # 2. Candidate Lead-in
+    await fsm.on_turn({
+        "turn_id": 2,
+        "speaker": "Deepak",
+        "speaker_role": "candidate",
+        "text": "Yeah, of course, Ankit. So."
+    })
+    assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
+
+    # 3. 20-second thinking pause (silence timer expires)
+    await asyncio.sleep(0.15)
+    # Must transition to ANSWER_PAUSED, NOT prematurely finalized!
+    assert fsm.get_state() == QAState.ANSWER_PAUSED
+    assert len(completed_pairs) == 0
+
+    # 4. Candidate resumes substantive answer
+    await fsm.on_turn({
+        "turn_id": 3,
+        "speaker": "Deepak",
+        "speaker_role": "candidate",
+        "text": "I am Deepak and currently working as a data engineer at Appzlogic."
+    })
+    assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
+
+    # 5. Interviewer asks next question -> finalizes Question 1
+    await fsm.on_turn({
+        "turn_id": 4,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "What is MCP?"
+    })
+    assert len(completed_pairs) == 1
+    pair = completed_pairs[0]
+    assert pair["pair_id"] == "Q1_A2_3"
+    assert pair["question_turn_id"] == 1
+    assert pair["answer_turn_ids"] == [2, 3]
+    assert "Yeah, of course, Ankit. So." in pair["answer"]
+    assert "data engineer at Appzlogic" in pair["answer"]
+    fsm.close()
+
+
+@pytest.mark.asyncio
+async def test_scenario_25_explicit_completion_prevents_orphan_attachment():
+    """
+    Priority 8 - Test 2:
+    Interviewer Question -> Candidate Answer -> Candidate explicit conclusion ('That's all about me') ->
+    Candidate attempts new answer before interviewer question.
+    Expected: Candidate turn is tracked as ORPHAN_CANDIDATE_TURN and NOT attached to concluded QA pair.
+    """
+    completed_pairs = []
+
+    async def on_qa(rec):
+        completed_pairs.append(rec)
+
+    fsm = QAStateMachine(session_id="test_sess_25", silence_threshold=0.1, on_qa_completed=on_qa)
+
+    await fsm.on_turn({
+        "turn_id": 1,
+        "speaker": "Interviewer",
+        "speaker_role": "interviewer",
+        "text": "Please walk me through your background."
+    })
+
+    # Candidate answers and explicitly concludes
+    await fsm.on_turn({
+        "turn_id": 2,
+        "speaker": "Candidate",
+        "speaker_role": "candidate",
+        "text": "I am a backend developer. That's all about me."
+    })
+    # Concludes immediately on explicit conclusion marker
+    assert fsm.get_state() == QAState.WAITING_FOR_QUESTION
+    assert len(completed_pairs) == 1
+    assert completed_pairs[0]["answer_turn_ids"] == [2]
+
+    # Candidate starts speaking unprompted
+    res = await fsm.on_turn({
+        "turn_id": 3,
+        "speaker": "Candidate",
+        "speaker_role": "candidate",
+        "text": "Also I have experience with Kubernetes and Docker."
+    })
+    assert res is not None
+    assert res.get("event") == "ORPHAN_CANDIDATE_TURN"
+    assert len(fsm.orphan_candidate_turns) == 1
+    assert fsm.orphan_candidate_turns[0]["turn_id"] == 3
+    # Prior QA pair MUST NOT be mutated
+    assert completed_pairs[0]["answer_turn_ids"] == [2]
+    fsm.close()
+
+
+@pytest.mark.asyncio
+async def test_scenario_26_interruption_pause_and_resume_answer():
+    """
+    Priority 8 - Test 3:
+    Interviewer Question -> Partial Answer -> 'Oh. Hey Cortana.' interruption ->
+    Extended pause (30s) -> Candidate resumes full answer -> Interviewer responds.
+    Expected: Single consolidated QA pair with all turns, no truncation.
+    """
+    completed_pairs = []
+
+    async def on_qa(rec):
+        completed_pairs.append(rec)
+
+    fsm = QAStateMachine(session_id="test_sess_26", silence_threshold=0.1, on_qa_completed=on_qa)
+
+    await fsm.on_turn({
+        "turn_id": 1,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "Can you please explain me what is MCP?"
+    })
+
+    # Partial answer
+    await fsm.on_turn({
+        "turn_id": 2,
+        "speaker": "Deepak",
+        "speaker_role": "candidate",
+        "text": "Yeah, MCP's model context protocol which is used to call external tools."
+    })
+
+    # Interruption
+    await fsm.on_turn({
+        "turn_id": 3,
+        "speaker": "Deepak",
+        "speaker_role": "candidate",
+        "text": "Oh. Hey Cortana."
+    })
+
+    # 30-second pause -> ANSWER_PAUSED
+    await asyncio.sleep(0.15)
+    assert fsm.get_state() == QAState.ANSWER_PAUSED
+    assert len(completed_pairs) == 0
+
+    # Candidate resumes substantive answer
+    await fsm.on_turn({
+        "turn_id": 4,
+        "speaker": "Deepak",
+        "speaker_role": "candidate",
+        "text": "Yeah. So it is introduced by Anthropic that provides a universal way for AI models to connect to tools."
+    })
+    assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
+
+    # Interviewer acknowledges/asks next question
+    await fsm.on_turn({
+        "turn_id": 5,
+        "speaker": "Ankit",
+        "speaker_role": "interviewer",
+        "text": "OK Deepak, thank you. What about RAG?"
+    })
+
+    assert len(completed_pairs) == 1
+    pair = completed_pairs[0]
+    assert pair["pair_id"] == "Q1_A2_3_4"
+    assert pair["answer_turn_ids"] == [2, 3, 4]
+    assert "Anthropic" in pair["answer"]
+    fsm.close()
+
+
+@pytest.mark.asyncio
+async def test_scenario_27_exact_incident_transcript_replay():
+    """
+    Priority 8 - Test 4:
+    Exact Incident Transcript Replay.
+    Question 1 (Intro): Turn 6 (Interviewer) -> Turns 7-12 (Candidate, with lead-in and 'That's all.')
+    Question 2 (MCP): Turn 13 (Interviewer) -> Turns 14-17 (Candidate, with 'Hey Cortana' pause & Anthropic explanation) -> Turn 18 (Interviewer)
+    Expected:
+      Q6_A7_8_9_10_11_12
+      Q13_A14_15_16_17
+    Zero truncation!
+    """
+    completed_pairs = []
+
+    async def on_qa(rec):
+        completed_pairs.append(rec)
+
+    fsm = QAStateMachine(session_id="test_sess_exact_incident", silence_threshold=0.1, on_qa_completed=on_qa)
+
+    # Turn 6: Interviewer asks Intro
+    await fsm.on_turn({
+        "turn_id": 6,
+        "speaker": "Ankit Kumar",
+        "speaker_role": "interviewer",
+        "text": "So let me start with the basic interview. Like can you please introduce yourself?"
+    })
+    assert fsm.get_state() == QAState.QUESTION_CAPTURED
+
+    # Turn 7: Candidate conversational lead-in
+    await fsm.on_turn({
+        "turn_id": 7,
+        "speaker": "Deepak Bisht",
+        "speaker_role": "candidate",
+        "text": "Yeah, of course, Ankit. So."
+    })
+    assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
+
+    # 16-second thinking pause between 12:05:50 and 12:06:06
+    await asyncio.sleep(0.15)
+    assert fsm.get_state() == QAState.ANSWER_PAUSED
+    assert len(completed_pairs) == 0
+
+    # Turn 8: Candidate resumes
+    await fsm.on_turn({
+        "turn_id": 8,
+        "speaker": "Deepak Bisht",
+        "speaker_role": "candidate",
+        "text": "I'm Deepak and currently I'm working as a data engineer at apps logic and I did my schooling from deeper wasn't good where I have scored. 85%"
+    })
+    assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
+
+    # Turn 9
+    await fsm.on_turn({
+        "turn_id": 9,
+        "speaker": "Deepak Bisht",
+        "speaker_role": "candidate",
+        "text": "85 percent 1012 and 90% and 10th and after that I I did my graduation"
+    })
+
+    # Turn 10
+    await fsm.on_turn({
+        "turn_id": 10,
+        "speaker": "Deepak Bisht",
+        "speaker_role": "candidate",
+        "text": "85 percent, 1012 and 90% and 10th and after that I I did my graduation from College of Engineering where I have where I've scored 75% in my B.Tech and after that I have AI got a job in cache Ed Tech."
+    })
+
+    # Turn 11
+    await fsm.on_turn({
+        "turn_id": 11,
+        "speaker": "Deepak Bisht",
+        "speaker_role": "candidate",
+        "text": "Now I'm working at App Logic."
+    })
+
+    # Turn 12: Candidate explicitly concludes with "That's all."
+    await fsm.on_turn({
+        "turn_id": 12,
+        "speaker": "Deepak Bisht",
+        "speaker_role": "candidate",
+        "text": "That's all."
+    })
+    assert len(completed_pairs) == 1
+    q1 = completed_pairs[0]
+    assert q1["pair_id"] == "Q6_A7_8_9_10_11_12"
+    assert q1["question_turn_id"] == 6
+    assert q1["answer_turn_ids"] == [7, 8, 9, 10, 11, 12]
+    assert "Yeah, of course, Ankit. So." in q1["answer"]
+    assert "App Logic" in q1["answer"]
+    assert "That's all." in q1["answer"]
+
+    # Turn 13: Interviewer asks MCP question
+    await fsm.on_turn({
+        "turn_id": 13,
+        "speaker": "Ankit Kumar",
+        "speaker_role": "interviewer",
+        "text": "OK, Deepak, thank you. Can you please explain me what is MCP?"
+    })
+    assert fsm.get_state() == QAState.QUESTION_CAPTURED
+
+    # Turn 14
+    await fsm.on_turn({
+        "turn_id": 14,
+        "speaker": "Deepak Bisht",
+        "speaker_role": "candidate",
+        "text": "Yeah, MCP's model context protocol which is used to call external tools for the LLM. And. It is used to."
+    })
+    assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
+
+    # Turn 15
+    await fsm.on_turn({
+        "turn_id": 15,
+        "speaker": "Deepak Bisht",
+        "speaker_role": "candidate",
+        "text": "Oh."
+    })
+
+    # Turn 16: Interruption
+    await fsm.on_turn({
+        "turn_id": 16,
+        "speaker": "Deepak Bisht",
+        "speaker_role": "candidate",
+        "text": "Hey Cortana."
+    })
+
+    # 35-second pause between 12:06:58 and 12:07:33
+    await asyncio.sleep(0.15)
+    assert fsm.get_state() == QAState.ANSWER_PAUSED
+    assert len(completed_pairs) == 1
+
+    # Turn 17: Candidate resumes with substantive MCP details
+    await fsm.on_turn({
+        "turn_id": 17,
+        "speaker": "Deepak Bisht",
+        "speaker_role": "candidate",
+        "text": "Yeah. So. It is. It is introduced by Entropic, that that provides universal way for AI model and large language models to connect securely with external tool data sources and APIs. So think MTP and the USB port for AI instead of developer writing customer integration glucose for every single AI model and data source combination. They built a single MCP compatible server that any supporting AI application can immediately use."
+    })
+    assert fsm.get_state() == QAState.CANDIDATE_ANSWERING
+
+    # Turn 18: Interviewer speaks next / asks next question
+    await fsm.on_turn({
+        "turn_id": 18,
+        "speaker": "Ankit Kumar",
+        "speaker_role": "interviewer",
+        "text": "OK Deepak, thank you. Can you tell me about your experience with FastAPI?"
+    })
+
+    assert len(completed_pairs) == 2
+    q2 = completed_pairs[1]
+    assert q2["pair_id"] == "Q13_A14_15_16_17"
+    assert q2["question_turn_id"] == 13
+    assert q2["answer_turn_ids"] == [14, 15, 16, 17]
+    assert "model context protocol" in q2["answer"]
+    assert "Hey Cortana." in q2["answer"]
+    assert "USB port for AI" in q2["answer"]
+    fsm.close()
+
 
 
 
