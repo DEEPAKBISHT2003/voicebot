@@ -15,6 +15,8 @@ from services.copilot.src.engine.session import CopilotSessionEngine
 from services.copilot.src.pipeline.builder import CopilotPipelineBuilder
 from services.copilot.src.pipeline.native_turn_finalizer import NativeTurnAggregator
 from services.copilot.src.pipeline.native_turn_aligner import NativeLogicalTurnAggregator
+from services.copilot.src.core.config import Settings
+from services.copilot.src.services.readiness import compute_readiness
 
 async def _safe_record_start(repo: Any, session_id: str) -> None:
     if hasattr(repo, "record_meeting_start"):
@@ -33,6 +35,15 @@ async def _safe_finalize_duration(repo: Any, session_id: str) -> None:
                 await res
         except Exception as e:
             logger.debug(f"[MeetingDuration] Notice finalizing duration: {e}")
+
+def stop_native_monitor(sess: dict, session_id: str, reason: str = "explicit_cleanup"):
+    """Safely cancels and cleans up the session-level native turn monitor task."""
+    mon_task = sess.get("native_monitor_task")
+    if mon_task and not mon_task.done() and not mon_task.cancelled():
+        logger.info(f"[CopilotWS] [Monitor Cancel Reason] Stopping native turn monitor for session {session_id}: reason='{reason}'")
+        mon_task.cancel()
+        logger.info(f"[CopilotWS] [Monitor Stopped] Native turn monitor stopped for session {session_id}")
+    sess["native_monitor_task"] = None
 try:
     from pipecat.pipeline.runner import PipelineRunner as WorkerRunner
 except ImportError:
@@ -209,17 +220,31 @@ async def websocket_endpoint(
     speaker_map = sess.setdefault("speaker_map", {})
 
     # Helper function to broadcast updated session state to all connected dashboard clients
-    async def broadcast_update(last_message: Optional[dict] = None):
+    async def broadcast_update(last_message: Optional[dict] = None, is_final: Optional[bool] = None):
         eng = sess.get("engine")
         if not eng:
             return
+        readiness = compute_readiness(sess)
         payload = {
             "type": "copilot_update",
             "session_id": session_id,
             "last_message": last_message,
             "transcript": eng.get_transcript(),
             "intelligence": eng.get_intelligence(),
-            "assistance": eng.get_assistance()
+            "assistance": eng.get_assistance(),
+            "readiness": readiness,
+            "interview_ready": readiness["interview_ready"],
+            "readiness_confirmed": readiness["readiness_confirmed"],
+            "readiness_state": readiness["state"],
+            "bot_joined": readiness["bot_joined"],
+            "caption_socket_connected": readiness["caption_socket_connected"],
+            "transcript_processor_initialized": readiness["transcript_processor_initialized"],
+            "first_caption_received": readiness["first_caption_received"],
+            "has_proven_transcript": readiness.get("has_proven_transcript", False),
+            "caption_count": readiness["caption_count"],
+            "unique_speakers": readiness["unique_speakers"],
+            "unique_speakers_detected": readiness["unique_speakers_detected"],
+            "first_caption_timestamp": readiness["first_caption_timestamp"],
         }
         
         dead_sockets = set()
@@ -236,6 +261,7 @@ async def websocket_endpoint(
             turn_id_val = last_message.get("turn_id")
             id_val = last_message.get("id") or (f"{session_id}-turn-{turn_id_val}" if turn_id_val else None)
             speaker_val = last_message.get("speaker", "")
+            final_flag = is_final if is_final is not None else last_message.get("is_final", True)
             transcript_frame = {
                 "type": "transcript",
                 "session_id": session_id,
@@ -246,7 +272,8 @@ async def websocket_endpoint(
                 "speaker_role": last_message.get("speaker_role", "unknown"),
                 "text": last_message.get("text", ""),
                 "timestamp": last_message.get("timestamp"),
-                "source": last_message.get("source", "teams_native")
+                "source": last_message.get("source", "teams_native"),
+                "is_final": final_flag
             }
             for dash_ws in dashboards.difference(dead_sockets):
                 try:
@@ -289,9 +316,11 @@ async def websocket_endpoint(
 
     # Audio Producer Branch (Teams Bot / Raw Audio Stream for recording.wav capture)
     if is_audio_producer:
+        sess["bot_joined"] = True
         sess["status"] = "Listening to audio stream..."
         sess["last_speech_time"] = time.time()
         await _safe_record_start(repo, session_id)
+        asyncio.create_task(broadcast_update())
 
         # Phase 2S: Trigger initial suggestions when entering IN_MEETING (audio producer connected)
         if sess.get("engine"):
@@ -414,13 +443,19 @@ async def websocket_endpoint(
             asyncio.create_task(sess["engine"].generate_static_scenario_verification_questions())
 
         # Native Captions Production Pipeline Components
+        sess["bot_joined"] = True
+        sess["caption_socket_connected"] = True
+        sess["transcript_processor_initialized"] = True
+        sess.setdefault("native_caption_websockets", set()).add(websocket)
+        asyncio.create_task(broadcast_update())
+
         turn_aggregator: NativeTurnAggregator = sess.setdefault(
             "turn_aggregator",
             NativeTurnAggregator(session_id=session_id)
         )
         logical_aggregator: NativeLogicalTurnAggregator = sess.setdefault(
             "logical_aggregator",
-            NativeLogicalTurnAggregator(session_id=session_id, inactivity_threshold_ms=3000.0)
+            NativeLogicalTurnAggregator(session_id=session_id, inactivity_threshold_ms=1800.0)
         )
         dispatched_seq_ids: Set[int] = sess.setdefault("dispatched_seq_ids", set())
         dispatched_seq_text: Dict[int, str] = sess.setdefault("dispatched_seq_text", {})
@@ -452,6 +487,10 @@ async def websocket_endpoint(
                     completed_turns = logical_aggregator.process_finalized_sequence(fseq)
                     for turn in completed_turns:
                         logger.info(f"[CopilotWS] Emitting completed turn: speaker='{turn.speaker_name}', text='{turn.text}'")
+                        logger.info(
+                            f"[Transcript] Final Turn Replaced Interim: session_id={session_id}, speaker='{turn.speaker_name}', "
+                            f"turn_id={turn.logical_turn_id}, text='{turn.text}'"
+                        )
                         last_msg = await eng.add_message(
                             speaker=turn.speaker_name,
                             text=turn.text,
@@ -462,7 +501,8 @@ async def websocket_endpoint(
                         )
                         sess["transcript"] = eng.get_transcript()
                         sess["last_speech_time"] = time.time()
-                        await broadcast_update(last_msg)
+                        sess["has_proven_transcript"] = True
+                        await broadcast_update(last_msg, is_final=True)
 
                     # Emit progressive update for active logical turn immediately (<1s display latency)
                     if logical_aggregator.active_turn:
@@ -478,36 +518,61 @@ async def websocket_endpoint(
                         )
                         sess["transcript"] = eng.get_transcript()
                         sess["last_speech_time"] = time.time()
-                        await broadcast_update(last_msg)
+                        sess["has_proven_transcript"] = True
+                        await broadcast_update(last_msg, is_final=False)
 
         async def monitor_native_turn_inactivity():
-            while True:
-                await asyncio.sleep(0.25)
-                if sess.get("service_off") or sess.get("is_active") is False or bool(sess.get("final_report")):
-                    break
-                # 1. Quiescence check on turn_aggregator (evaluates 800ms threshold)
-                q_fin = turn_aggregator.check_quiescence()
-                await dispatch_finalized_sequences(q_fin)
+            logger.info(f"[CopilotWS] [Monitor Started] Native turn monitor running for session {session_id}")
+            try:
+                while True:
+                    await asyncio.sleep(0.25)
+                    # Check shutdown conditions
+                    is_off = sess.get("service_off") or os.path.exists(os.path.join(Settings.DEFAULT_STORAGE_DIR, session_id, "service_off.flag"))
+                    is_finalizing = sess.get("session_state") in ("FINALIZING", "GENERATING_REPORT", "REPORT_READY") or bool(sess.get("final_report"))
+                    if is_off or sess.get("is_active") is False or is_finalizing:
+                        logger.info(f"[CopilotWS] [Monitor Stopped] Natural shutdown condition met for session {session_id} (is_off={is_off}, is_finalizing={is_finalizing})")
+                        break
 
-                # 2. Inactivity timeout check on logical_aggregator (finalizes turn after 3s conversational pause)
-                timeout_turns = logical_aggregator.check_inactivity()
-                eng = sess.get("engine")
-                if eng:
-                    for turn in timeout_turns:
-                        logger.info(f"[CopilotWS] Emitting production turn (inactivity timeout): speaker='{turn.speaker_name}', text='{turn.text}'")
-                        last_msg = await eng.add_message(
-                            speaker=turn.speaker_name,
-                            text=turn.text,
-                            source="teams_native",
-                            allow_merge=False,
-                            turn_id=turn.logical_turn_id,
-                            is_final=True
-                        )
-                        sess["transcript"] = eng.get_transcript()
-                        sess["last_speech_time"] = time.time()
-                        await broadcast_update(last_msg)
+                    # 1. Quiescence check on turn_aggregator (evaluates 800ms threshold)
+                    q_fin = turn_aggregator.check_quiescence()
+                    await dispatch_finalized_sequences(q_fin)
 
-        native_monitor_task = asyncio.create_task(monitor_native_turn_inactivity())
+                    # 2. Inactivity timeout check on logical_aggregator (finalizes turn after 3s conversational pause)
+                    timeout_turns = logical_aggregator.check_inactivity()
+                    eng = sess.get("engine")
+                    if eng:
+                        for turn in timeout_turns:
+                            logger.info(f"[CopilotWS] Emitting production turn (inactivity timeout): speaker='{turn.speaker_name}', text='{turn.text}'")
+                            logger.info(
+                                f"[Transcript] Final Turn Replaced Interim: session_id={session_id}, speaker='{turn.speaker_name}', "
+                                f"turn_id={turn.logical_turn_id}, text='{turn.text}'"
+                            )
+                            last_msg = await eng.add_message(
+                                speaker=turn.speaker_name,
+                                text=turn.text,
+                                source="teams_native",
+                                allow_merge=False,
+                                turn_id=turn.logical_turn_id,
+                                is_final=True
+                            )
+                            sess["transcript"] = eng.get_transcript()
+                            sess["last_speech_time"] = time.time()
+                            sess["has_proven_transcript"] = True
+                            await broadcast_update(last_msg, is_final=True)
+            except asyncio.CancelledError:
+                logger.info(f"[CopilotWS] [Monitor Stopped] Native turn monitor cancelled for session {session_id}")
+                raise
+            except Exception as mon_err:
+                logger.error(f"[CopilotWS] Native turn monitor error for session {session_id}: {mon_err}")
+            finally:
+                logger.info(f"[CopilotWS] [Monitor Stopped] Native turn monitor loop finished for session {session_id}")
+
+        existing_monitor = sess.get("native_monitor_task")
+        if existing_monitor and not existing_monitor.done() and not existing_monitor.cancelled():
+            logger.info(f"[CopilotWS] [Monitor Reused] Native turn monitor already active for session {session_id}")
+        else:
+            sess["native_monitor_task"] = asyncio.create_task(monitor_native_turn_inactivity())
+            logger.info(f"[CopilotWS] [Monitor Started] Started session-level native turn monitor for session {session_id}")
 
         try:
             while True:
@@ -585,8 +650,68 @@ async def websocket_endpoint(
                         }
 
                         # 1. In-memory runtime persistence
+                        was_first = not sess.get("first_caption_received", False)
+                        prev_ready = sess.get("readiness_confirmed", False)
+                        sess["bot_joined"] = True
+                        sess["caption_socket_connected"] = True
+                        sess["transcript_processor_initialized"] = True
+                        sess["first_caption_received"] = True
+                        sess["last_caption_time"] = time.time()
+                        if "first_caption_timestamp" not in sess or sess["first_caption_timestamp"] is None:
+                            sess["first_caption_timestamp"] = time.time()
+                        sess["caption_count"] = sess.get("caption_count", 0) + 1
+                        unique_spks = sess.get("unique_speakers")
+                        logger.error(
+                            f"[CaptionDebug] variable=unique_speakers "
+                            f"type={type(unique_spks)} "
+                            f"value={repr(unique_spks)[:500]}"
+                        )
+                        if not isinstance(sess.get("unique_speakers"), set):
+                            sess["unique_speakers"] = set(sess.get("unique_speakers") or [])
+                        if raw_speaker and raw_speaker.lower() != "unknown":
+                            sess["unique_speakers"].add(raw_speaker)
+                        sess["unique_speakers_detected"] = len(sess["unique_speakers"])
+
                         sess["native_captions"].append(event_record)
                         sess["last_speech_time"] = time.time()
+
+                        # PROGRESSIVE TRANSCRIPT STREAMING (INC-2026-0928-01)
+                        # Immediately update active logical turn while the speaker is talking
+                        active_prog = logical_aggregator.update_interim_text(
+                            sequence_id=seq_num,
+                            speaker_name=raw_speaker,
+                            text=text,
+                            current_time=detected_dt if detected_at_str else received_at_dt
+                        )
+                        eng = sess.get("engine")
+                        if active_prog and eng:
+                            logger.info(
+                                f"[Transcript] Progressive Turn Emitted: session_id={session_id}, speaker='{active_prog.speaker_name}', "
+                                f"sequence_id={seq_num}, turn_id={active_prog.logical_turn_id}, timestamp='{received_at_str}'"
+                            )
+                            prog_msg = await eng.add_message(
+                                speaker=active_prog.speaker_name,
+                                text=active_prog.text,
+                                source="teams_native",
+                                allow_merge=False,
+                                turn_id=active_prog.logical_turn_id,
+                                is_final=False
+                            )
+                            sess["transcript"] = eng.get_transcript()
+                            sess["has_proven_transcript"] = True
+                            await broadcast_update(prog_msg, is_final=False)
+                            logger.info(
+                                f"[Transcript] Interim Broadcast Sent: session_id={session_id}, speaker='{active_prog.speaker_name}', "
+                                f"turn_id={active_prog.logical_turn_id}, text='{active_prog.text}'"
+                            )
+
+                        readiness = compute_readiness(sess)
+                        if readiness["readiness_confirmed"]:
+                            sess["readiness_confirmed"] = True
+
+                        now_ready = sess.get("readiness_confirmed", False)
+                        if was_first or (now_ready and not prev_ready) or sess["caption_count"] <= 3:
+                            asyncio.create_task(broadcast_update())
 
                         # 2. Append to interview session artifact
                         with open(captions_file_path, "a", encoding="utf-8") as f:
@@ -623,29 +748,50 @@ async def websocket_endpoint(
         except WebSocketDisconnect:
             logger.info(f"[CopilotWS] Native captions client disconnected: {session_id}")
         finally:
-            native_monitor_task.cancel()
-            # Flush pending sequences and turns to production transcript
-            flushed_seqs = turn_aggregator.finalize_all_pending()
-            await dispatch_finalized_sequences(flushed_seqs)
-
-            final_flushed_turns = logical_aggregator.flush()
-            eng = sess.get("engine")
-            if eng:
-                for turn in final_flushed_turns:
-                    logger.info(f"[CopilotWS] Emitting flushed production turn: speaker='{turn.speaker_name}', text='{turn.text}'")
-                    last_msg = await eng.add_message(
-                        speaker=turn.speaker_name,
-                        text=turn.text,
-                        source="teams_native",
-                        allow_merge=False,
-                        turn_id=turn.logical_turn_id,
-                        is_final=True
-                    )
-                    sess["transcript"] = eng.get_transcript()
-                    await broadcast_update(last_msg)
-
+            # 1. Transport cleanup only: remove this websocket from session-level socket set
             if session_id in active_sessions:
                 active_sessions[session_id].get("native_caption_websockets", set()).discard(websocket)
+            remaining_sockets = len(sess.get("native_caption_websockets", set()))
+
+            # 2. Check if this is a transient reconnect or permanent session termination
+            is_off = sess.get("service_off") or os.path.exists(os.path.join(Settings.DEFAULT_STORAGE_DIR, session_id, "service_off.flag"))
+            is_finalizing = sess.get("session_state") in ("FINALIZING", "GENERATING_REPORT", "REPORT_READY") or bool(sess.get("final_report"))
+            is_session_ended = is_off or sess.get("is_active") is False or is_finalizing
+
+            if not is_session_ended:
+                # Session is still active: DO NOT cancel monitor, DO NOT flush logical turn aggregator
+                logger.info(
+                    f"[CopilotWS] [Monitor Survived Reconnect] Native caption transport disconnected for session {session_id}; "
+                    f"session monitor task remains active (remaining_sockets={remaining_sockets})"
+                )
+            else:
+                # Genuine session termination: cancel monitor and flush final buffers
+                stop_native_monitor(sess, session_id, reason=f"session_ended(is_off={is_off}, is_finalizing={is_finalizing})")
+
+                # Flush pending sequences and turns to production transcript
+                flushed_seqs = turn_aggregator.finalize_all_pending()
+                await dispatch_finalized_sequences(flushed_seqs)
+
+                final_flushed_turns = logical_aggregator.flush()
+                eng = sess.get("engine")
+                if eng:
+                    for turn in final_flushed_turns:
+                        logger.info(f"[CopilotWS] Emitting flushed production turn on session shutdown: speaker='{turn.speaker_name}', text='{turn.text}'")
+                        logger.info(
+                            f"[Transcript] Final Turn Replaced Interim: session_id={session_id}, speaker='{turn.speaker_name}', "
+                            f"turn_id={turn.logical_turn_id}, text='{turn.text}'"
+                        )
+                        last_msg = await eng.add_message(
+                            speaker=turn.speaker_name,
+                            text=turn.text,
+                            source="teams_native",
+                            allow_merge=False,
+                            turn_id=turn.logical_turn_id,
+                            is_final=True
+                        )
+                        sess["transcript"] = eng.get_transcript()
+                        sess["has_proven_transcript"] = True
+                        await broadcast_update(last_msg, is_final=True)
 
     # Dashboard Subscriber Branch (Browser UI Window)
     else:
@@ -657,13 +803,27 @@ async def websocket_endpoint(
             eng = sess["engine"]
             if not getattr(eng, "static_questions_generated", False) and eng.jd and eng.resume:
                 asyncio.create_task(eng.generate_static_scenario_verification_questions())
+            readiness = compute_readiness(sess)
             await websocket.send_json({
                 "type": "copilot_update",
                 "session_id": session_id,
                 "last_message": eng.get_transcript()[-1] if eng.get_transcript() else None,
                 "transcript": eng.get_transcript(),
                 "intelligence": eng.get_intelligence(),
-                "assistance": eng.get_assistance()
+                "assistance": eng.get_assistance(),
+                "readiness": readiness,
+                "interview_ready": readiness["interview_ready"],
+                "readiness_confirmed": readiness["readiness_confirmed"],
+                "readiness_state": readiness["state"],
+                "bot_joined": readiness["bot_joined"],
+                "caption_socket_connected": readiness["caption_socket_connected"],
+                "transcript_processor_initialized": readiness["transcript_processor_initialized"],
+                "first_caption_received": readiness["first_caption_received"],
+                "has_proven_transcript": readiness.get("has_proven_transcript", False),
+                "caption_count": readiness["caption_count"],
+                "unique_speakers": readiness["unique_speakers"],
+                "unique_speakers_detected": readiness["unique_speakers_detected"],
+                "first_caption_timestamp": readiness["first_caption_timestamp"],
             })
         except Exception as initial_err:
             logger.warning(f"[CopilotWS] Could not send initial state frame to dashboard: {initial_err}")

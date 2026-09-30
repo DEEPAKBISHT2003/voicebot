@@ -126,7 +126,7 @@ class NativeLogicalTurnAggregator:
         self,
         session_id: Optional[str] = None,
         candidate_speaker_name: Optional[str] = None,
-        inactivity_threshold_ms: float = 3000.0
+        inactivity_threshold_ms: float = 1800.0
     ):
         self.session_id = session_id
         self.candidate_speaker_name = candidate_speaker_name
@@ -142,6 +142,67 @@ class NativeLogicalTurnAggregator:
 
     def get_active_turn(self) -> Optional[LogicalTurn]:
         """Returns the current in-progress logical turn."""
+        return self.active_turn
+
+    def update_interim_text(
+        self,
+        sequence_id: int,
+        speaker_name: str,
+        text: str,
+        current_time: Optional[datetime] = None
+    ) -> Optional[LogicalTurn]:
+        """
+        Updates the active in-progress logical turn immediately from in-flight caption events
+        while the speaker is actively talking (INC-2026-0928-01 Progressive Transcript Streaming).
+        Does NOT finalize any turn and does NOT trigger evaluations.
+        Returns the active LogicalTurn for immediate progressive streaming to the UI.
+        """
+        clean_text = text.strip() if text else ""
+        if not clean_text:
+            return None
+
+        clean_speaker = speaker_name.strip() if speaker_name else "Unknown"
+        ref_dt = current_time or datetime.now(timezone.utc)
+
+        # Case 1: No active turn yet -> initialize active turn immediately
+        if self.active_turn is None:
+            is_cand = (self.candidate_speaker_name == clean_speaker) if self.candidate_speaker_name else None
+            seq_ids = [sequence_id] if sequence_id is not None else []
+            self.active_turn = LogicalTurn(
+                logical_turn_id=self._next_turn_id,
+                speaker_name=clean_speaker,
+                text=clean_text,
+                sequence_ids=seq_ids,
+                first_seen_at=ref_dt,
+                last_update_at=ref_dt,
+                finalized_at=ref_dt,
+                boundary_reason="pending",
+                is_candidate=is_cand,
+                raw_event_count=1,
+                last_received_at=ref_dt,
+                sequence_texts={sequence_id: clean_text} if sequence_id is not None else {}
+            )
+            return self.active_turn
+
+        # Case 2: Same speaker continuing to speak -> update active turn text progressively
+        if self.active_turn.speaker_name == clean_speaker:
+            if sequence_id is not None:
+                if sequence_id not in self.active_turn.sequence_ids:
+                    self.active_turn.sequence_ids.append(sequence_id)
+                self.active_turn.sequence_texts[sequence_id] = clean_text
+                self.active_turn.text = " ".join(
+                    self.active_turn.sequence_texts[sid]
+                    for sid in self.active_turn.sequence_ids
+                    if self.active_turn.sequence_texts.get(sid)
+                ).strip()
+            else:
+                self.active_turn.text = clean_text
+            self.active_turn.last_update_at = max(self.active_turn.last_update_at, ref_dt)
+            self.active_turn.last_received_at = ref_dt
+            self.active_turn.raw_event_count += 1
+            return self.active_turn
+
+        # Case 3: Different speaker detected
         return self.active_turn
 
     def process_finalized_sequence(
@@ -328,7 +389,7 @@ class NativeShadowTurnController:
         session_id: str,
         shadow_adapter: NativeShadowEvaluationAdapter,
         candidate_speaker_name: Optional[str] = None,
-        inactivity_threshold_ms: float = 3000.0
+        inactivity_threshold_ms: float = 1800.0
     ):
         self.session_id = session_id
         self.shadow_adapter = shadow_adapter
