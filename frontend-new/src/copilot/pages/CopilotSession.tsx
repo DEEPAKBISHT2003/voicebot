@@ -562,19 +562,17 @@ export const CopilotSession: React.FC = () => {
               )}
 
               {/* Dedicated SERVICE OFF / Disconnect Button */}
-              <button
-                onClick={handleServiceOff}
-                disabled={isServiceOff || isServiceOffLoading || isCompletedSession}
-                className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg shadow-sm transition-all border ${
-                  isServiceOff || isCompletedSession
-                    ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed opacity-90'
-                    : 'bg-red-600 hover:bg-red-700 text-white border-red-700 active:scale-95 disabled:opacity-50 cursor-pointer'
-                }`}
-                title={isServiceOff ? "Session is permanently Service Off" : isCompletedSession ? "Session is completed" : "Instruct Teams bot to leave and generate final interview results"}
-              >
-                <Power className="h-3.5 w-3.5" />
-                {isServiceOff ? 'Service Disconnected' : isServiceOffLoading ? 'Disconnecting...' : 'Disconnect'}
-              </button>
+              {((!isServiceOff && !isCompletedSession) || isServiceOffLoading) && (
+                <button
+                  onClick={handleServiceOff}
+                  disabled={isServiceOffLoading}
+                  className="flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg shadow-sm transition-all border bg-red-600 hover:bg-red-700 text-white border-red-700 active:scale-95 disabled:opacity-50 cursor-pointer"
+                  title="Instruct Teams bot to leave and generate final interview results"
+                >
+                  <Power className="h-3.5 w-3.5" />
+                  {isServiceOffLoading ? 'Disconnecting...' : 'Disconnect'}
+                </button>
+              )}
             </>
           )}
         </div>
