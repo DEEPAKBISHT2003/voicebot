@@ -3,7 +3,10 @@ FROM python:3.12-slim
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=/app
+    PYTHONPATH=/app \
+    JWT_SECRET_KEY=voicebot_super_secret_jwt_key_2026_change_in_production \
+    ADMIN_EMAIL=admin@voicebot.com \
+    ADMIN_PASSWORD=AdminPassword123!
 
 WORKDIR /app
 
