@@ -162,7 +162,7 @@ export const MeetingObserver: React.FC = () => {
               <Input
                 label="Interviewer Name (Optional)"
                 id="interviewer"
-                placeholder="e.g. Deepak Bisht, Mahima Soni"
+                placeholder="e.g. Jane Doe"
                 error={errors.interviewer?.message}
                 {...register('interviewer')}
               />

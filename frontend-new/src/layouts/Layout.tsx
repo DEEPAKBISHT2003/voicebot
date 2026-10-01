@@ -4,7 +4,7 @@ import {
   LayoutDashboard,
   PlusCircle,
   Video,
-  Sparkles,
+  // Sparkles,
   BarChart3,
   Users,
   LogOut,
@@ -38,9 +38,9 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   // Base navigation visible to all authenticated roles (USER & ADMIN)
   const baseNavigation = [
     { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-    { name: 'New Interview', href: '/interviews/new', icon: PlusCircle },
+    { name: 'New Interview (Beta)', href: '/interviews/new', icon: PlusCircle },
     { name: 'Meeting Observer', href: '/meeting-observer', icon: Video },
-    { name: 'New Copilot', href: '/copilots/new', icon: Sparkles },
+    // { name: 'New Copilot', href: '/copilots/new', icon: Sparkles },
   ];
 
   // Admin-only navigation items: Analytics (Usage & Costs) and User Control

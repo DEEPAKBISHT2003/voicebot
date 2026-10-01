@@ -9,7 +9,7 @@ import { InterviewsList } from './pages/InterviewsList';
 import { NewInterview } from './pages/NewInterview';
 import { MeetingObserver } from './pages/MeetingObserver';
 import { InterviewSession } from './pages/InterviewSession';
-import { NewCopilot } from './copilot/pages/NewCopilot';
+// import { NewCopilot } from './copilot/pages/NewCopilot';
 import { CopilotSession } from './copilot/pages/CopilotSession';
 import { UsageDashboard } from './pages/UsageDashboard';
 import { UserControlPlaceholder } from './pages/AdminPlaceholders';
@@ -45,7 +45,7 @@ function App() {
                       <Route path="/meeting-observer" element={<MeetingObserver />} />
                       <Route path="/meeting-observer/new" element={<MeetingObserver />} />
                       <Route path="/observer/new" element={<MeetingObserver />} />
-                      <Route path="/copilots/new" element={<NewCopilot />} />
+                      {/* <Route path="/copilots/new" element={<NewCopilot />} /> */}
                       <Route path="/copilots/:id" element={<CopilotSession />} />
 
                       {/* Admin-only Routes */}
