@@ -1,5 +1,5 @@
 import re
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Set
 from loguru import logger
 from services.copilot.src.core.config import Settings
 from services.copilot.src.services.role_identifier import ConversationalRoleIdentifier
@@ -43,6 +43,31 @@ class DeterministicRoleClassifier:
         r"\b(basically engineering which converts|where a bo[rt] joins the meeting)\b",
         r"\b(converts roded time|unstructured data|converts it into a consistent data)\b"
     ]
+
+    QUESTION_STARTERS: Tuple[str, ...] = (
+        "can you", "could you", "tell me", "what is", "how do", "how would", "why did",
+        "explain", "walk me through", "describe", "have you worked", "what are",
+        "which", "when did", "so tell", "let's talk", "do you have experience",
+        "introduce", "start by", "let us", "welcome", "please"
+    )
+
+    INTRO_PATTERNS: Tuple[str, ...] = (
+        "introduce yourself", "tell me about yourself", "tell us about yourself",
+        "walk me through your resume", "walk us through your resume", "walk me through your background",
+        "start with the interview"
+    )
+
+    PEER_DELEGATION_PATTERNS: Tuple[str, ...] = (
+        "take the next question", "take over", "your turn", "can you ask",
+        "can you continue", "can you take", "next question", "moving to you"
+    )
+
+    ANSWER_MARKERS: Tuple[str, ...] = (
+        "i worked on", "i built", "i designed", "my experience with", "in my previous",
+        "in my project", "we used", "i was responsible", "i implemented", "i created",
+        "the architecture i", "i used", "my role was", "i resolved", "i developed",
+        "what i did was", "in that company", "for example in my"
+    )
 
     def _analyze_behavioral_signals(
         self,
@@ -315,7 +340,8 @@ class DeterministicRoleClassifier:
                     transcript=transcript,
                     participants=sorted_participants,
                     candidate_name=candidate_name,
-                    cand_evaluations=cand_evaluations
+                    cand_evaluations=cand_evaluations,
+                    already_identified_candidate=matched_candidate_speaker
                 )
                 for p, addr_info in address_results.items():
                     if addr_info.get("confidence", 0.0) >= self.CONFIDENCE_THRESHOLD:
@@ -323,17 +349,6 @@ class DeterministicRoleClassifier:
                             speakers_result[p] = addr_info
                             if addr_info.get("role") == "candidate":
                                 matched_candidate_speaker = p
-
-            # If candidate was identified with high confidence, infer other participants as interviewers
-            if matched_candidate_speaker:
-                for other_p in sorted_participants:
-                    if other_p != matched_candidate_speaker:
-                        if speakers_result[other_p]["confidence"] < self.CONFIDENCE_THRESHOLD:
-                            speakers_result[other_p] = {
-                                "role": "interviewer",
-                                "confidence": 0.85,
-                                "reasoning": f"Inferred as interviewer in meeting with candidate '{matched_candidate_speaker}'"
-                            }
 
         # ---------------------------------------------------------------------
         # Priority 2: Teams participant name matching (explicit role keywords)
@@ -350,7 +365,7 @@ class DeterministicRoleClassifier:
                     "reasoning": reason_hint
                 }
 
-        # Check again for 2-participant inference after Priority 2
+        # Check for 2-participant inference after Priority 2 (e.g. 1 interviewer resolved -> infer candidate)
         resolved_roles = {p: info["role"] for p, info in speakers_result.items() if info["confidence"] >= self.CONFIDENCE_THRESHOLD}
         if len(sorted_participants) == 2 and len(resolved_roles) == 1:
             resolved_p, role_val = list(resolved_roles.items())[0]
@@ -399,18 +414,23 @@ class DeterministicRoleClassifier:
                     transcript=transcript,
                     participants=sorted_participants,
                     candidate_name=candidate_name or "",
-                    cand_evaluations=cand_evaluations
+                    cand_evaluations=cand_evaluations,
+                    already_identified_candidate=matched_candidate_speaker
                 )
                 for p, addr_info in address_results.items():
                     if addr_info.get("confidence", 0.0) >= self.CONFIDENCE_THRESHOLD:
                         if speakers_result[p]["confidence"] < addr_info["confidence"]:
                             speakers_result[p] = addr_info
+                            if addr_info.get("role") == "candidate":
+                                matched_candidate_speaker = p
 
             heuristic_results = self._analyze_linguistic_heuristics(transcript, sorted_participants)
             for p, h_info in heuristic_results.items():
                 if h_info.get("confidence", 0.0) >= self.CONFIDENCE_THRESHOLD:
                     if speakers_result[p]["confidence"] < h_info["confidence"]:
                         speakers_result[p] = h_info
+                        if h_info.get("role") == "candidate":
+                            matched_candidate_speaker = p
 
             # Behavioral signal evaluation fallback if still unresolved
             if any(info["confidence"] < self.CONFIDENCE_THRESHOLD for info in speakers_result.values()):
@@ -420,19 +440,22 @@ class DeterministicRoleClassifier:
                 ]
                 if len(cand_candidates) == 1:
                     cand_p = cand_candidates[0]
+                    matched_candidate_speaker = cand_p
                     if speakers_result[cand_p]["confidence"] < self.CONFIDENCE_THRESHOLD:
                         speakers_result[cand_p] = {
                             "role": "candidate",
                             "confidence": 0.88,
                             "reasoning": "Linguistic pattern: Candidate self-introduction and technical experience narrative"
                         }
-                    for p in sorted_participants:
-                        if p != cand_p and speakers_result[p]["confidence"] < self.CONFIDENCE_THRESHOLD:
-                            speakers_result[p] = {
-                                "role": "interviewer",
-                                "confidence": 0.85,
-                                "reasoning": f"Interviewer asking questions to '{cand_p}'"
-                            }
+
+        # Enforce single candidate invariant across deterministic passes before evaluating LLM fallback requirement
+        speakers_result = self._enforce_single_candidate_invariant(
+            speakers_result=speakers_result,
+            participants=sorted_participants,
+            candidate_name=candidate_name,
+            cand_evaluations=cand_evaluations,
+            behav=behav
+        )
 
         # ---------------------------------------------------------------------
         # Priority 5: LLM fallback only if confidence < 0.80
@@ -470,6 +493,18 @@ class DeterministicRoleClassifier:
                 f"[DeterministicRoleClassifier] All participants resolved deterministically with confidence >= "
                 f"{self.CONFIDENCE_THRESHOLD} (0 LLM calls): {speakers_result}"
             )
+
+        # ---------------------------------------------------------------------
+        # Final Pass: Enforce Strict Single-Candidate Invariant
+        # Exactly 1 candidate, and all other participants = interviewer.
+        # ---------------------------------------------------------------------
+        speakers_result = self._enforce_single_candidate_invariant(
+            speakers_result=speakers_result,
+            participants=sorted_participants,
+            candidate_name=candidate_name,
+            cand_evaluations=cand_evaluations,
+            behav=behav
+        )
 
         return {"speakers": speakers_result}
 
@@ -592,13 +627,21 @@ class DeterministicRoleClassifier:
         transcript: List[Dict[str, Any]],
         participants: List[str],
         candidate_name: str,
-        cand_evaluations: Dict[str, Tuple[bool, float, str]]
+        cand_evaluations: Dict[str, Tuple[bool, float, str]],
+        already_identified_candidate: Optional[str] = None
     ) -> Dict[str, Dict[str, Any]]:
         """
-        Detects conversational candidate addressing patterns.
-        When an interviewer addresses a participant (e.g., 'Deepak, can you introduce yourself?'),
-        the addressed person is identified/reinforced as the candidate, and the addressing
-        speaker is identified as the interviewer.
+        Detects conversational addressing patterns while enforcing single-candidate safety.
+
+        Rules:
+        1. If a candidate is already identified:
+           - Candidate addressing interviewer (e.g., 'Deepak, can you clarify?') keeps candidate as candidate and interviewer as interviewer.
+           - Interviewer 1 addressing Interviewer 2 (e.g., 'Rahul, can you take the next question?') does NOT assign candidate role to Interviewer 2.
+           - Interviewer addressing the identified candidate reinforces the candidate role.
+        2. If candidate is NOT yet identified:
+           - If candidate_name is known, only a participant consistent with candidate evidence can be assigned candidate.
+           - Addressing another participant (co-interviewer) assigns interviewer role, not candidate.
+           - Candidate asking clarification to interviewer identifies speaker as candidate and addressed person as interviewer.
         """
         results: Dict[str, Dict[str, Any]] = {}
         if not transcript or not participants:
@@ -620,10 +663,10 @@ class DeterministicRoleClassifier:
                 tokens.add(cand_first)
             participant_name_tokens[p] = tokens
 
-        question_starters = (
-            "can you", "could you", "tell me", "what is", "how do", "how would", "why did",
-            "explain", "walk me through", "describe", "have you worked", "what are",
-            "introduce", "start by", "let us", "welcome", "please"
+        # Check if candidate_name points to an existing distinct participant
+        has_known_cand_match = any(
+            cand_evaluations.get(p, (False, 0.0, ""))[1] >= 0.65 or (cand_first and cand_first in participant_name_tokens.get(p, set()))
+            for p in participants
         )
 
         for turn in transcript:
@@ -635,7 +678,7 @@ class DeterministicRoleClassifier:
             t_lower = text.lower()
             is_prompt_or_q = (
                 text.endswith("?")
-                or any(t_lower.startswith(qs) or f" {qs}" in t_lower for qs in question_starters)
+                or any(t_lower.startswith(qs) or f" {qs}" in t_lower for qs in self.QUESTION_STARTERS)
             )
 
             # Check if speaker is addressing another participant
@@ -644,9 +687,15 @@ class DeterministicRoleClassifier:
                     continue
 
                 target_tokens = participant_name_tokens.get(other_p, set())
-                is_cand_candidate = (
+                is_other_cand_candidate = (
                     (cand_first and cand_first in target_tokens)
                     or (other_p in cand_evaluations and cand_evaluations[other_p][1] >= 0.65)
+                )
+
+                speaker_tokens = participant_name_tokens.get(speaker, set())
+                is_speaker_cand_candidate = (
+                    (cand_first and cand_first in speaker_tokens)
+                    or (speaker in cand_evaluations and cand_evaluations[speaker][1] >= 0.65)
                 )
 
                 for name_tok in target_tokens:
@@ -656,12 +705,31 @@ class DeterministicRoleClassifier:
                     if not has_address and f"{name_tok}," in t_lower:
                         has_address = True
 
-                    if has_address:
-                        if is_cand_candidate or is_prompt_or_q:
-                            cand_conf = 0.95 if (other_p in cand_evaluations and cand_evaluations[other_p][1] >= 0.65) else 0.90
+                    if not has_address:
+                        continue
+
+                    # -------------------------------------------------------------
+                    # Scenario 1: Candidate is ALREADY confidently known
+                    # -------------------------------------------------------------
+                    if already_identified_candidate:
+                        if speaker == already_identified_candidate:
+                            # Candidate addressing interviewer for clarification
+                            results[speaker] = {
+                                "role": "candidate",
+                                "confidence": 0.95,
+                                "reasoning": f"Candidate '{speaker}' addressing interviewer '{other_p}' for clarification"
+                            }
+                            results[other_p] = {
+                                "role": "interviewer",
+                                "confidence": 0.90,
+                                "reasoning": f"Interviewer addressed by candidate '{speaker}' in turn: \"{text[:70]}\""
+                            }
+                            return results
+                        elif other_p == already_identified_candidate:
+                            # Interviewer addressing candidate
                             results[other_p] = {
                                 "role": "candidate",
-                                "confidence": cand_conf,
+                                "confidence": 0.95,
                                 "reasoning": f"Candidate addressed as '{name_tok}' by '{speaker}' in turn: \"{text[:70]}\""
                             }
                             results[speaker] = {
@@ -670,6 +738,109 @@ class DeterministicRoleClassifier:
                                 "reasoning": f"Interviewer addressed candidate '{other_p}' in turn: \"{text[:70]}\""
                             }
                             return results
+                        else:
+                            # Interviewer addressing another interviewer (e.g., 'Rahul, can you take the next question?')
+                            results[speaker] = {
+                                "role": "interviewer",
+                                "confidence": 0.85,
+                                "reasoning": f"Interviewer addressing co-interviewer '{other_p}'"
+                            }
+                            results[other_p] = {
+                                "role": "interviewer",
+                                "confidence": 0.85,
+                                "reasoning": f"Co-interviewer addressed by interviewer '{speaker}'"
+                            }
+                            continue
+
+                    # -------------------------------------------------------------
+                    # Scenario 2: Candidate NOT yet established
+                    # -------------------------------------------------------------
+                    if is_speaker_cand_candidate:
+                        # Speaker is the candidate asking interviewer clarification
+                        cand_conf = 0.95 if (speaker in cand_evaluations and cand_evaluations[speaker][1] >= 0.65) else 0.90
+                        results[speaker] = {
+                            "role": "candidate",
+                            "confidence": cand_conf,
+                            "reasoning": f"Candidate '{speaker}' addressing interviewer '{other_p}' for clarification"
+                        }
+                        results[other_p] = {
+                            "role": "interviewer",
+                            "confidence": 0.90,
+                            "reasoning": f"Interviewer addressed by candidate '{speaker}' in turn: \"{text[:70]}\""
+                        }
+                        return results
+
+                    if is_other_cand_candidate:
+                        # Speaker is interviewer addressing candidate
+                        cand_conf = 0.95 if (other_p in cand_evaluations and cand_evaluations[other_p][1] >= 0.65) else 0.90
+                        results[other_p] = {
+                            "role": "candidate",
+                            "confidence": cand_conf,
+                            "reasoning": f"Candidate addressed as '{name_tok}' by '{speaker}' in turn: \"{text[:70]}\""
+                        }
+                        results[speaker] = {
+                            "role": "interviewer",
+                            "confidence": 0.90,
+                            "reasoning": f"Interviewer addressed candidate '{other_p}' in turn: \"{text[:70]}\""
+                        }
+                        return results
+
+                    # If candidate name is known and matches someone else in participants, other_p is a co-interviewer
+                    if has_known_cand_match:
+                        results[speaker] = {
+                            "role": "interviewer",
+                            "confidence": 0.85,
+                            "reasoning": f"Interviewer addressing co-interviewer '{other_p}'"
+                        }
+                        results[other_p] = {
+                            "role": "interviewer",
+                            "confidence": 0.85,
+                            "reasoning": f"Co-interviewer addressed by interviewer '{speaker}'"
+                        }
+                        continue
+
+                    # If no candidate name is available, inspect addressing intent
+                    if any(ip in t_lower for ip in self.INTRO_PATTERNS):
+                        # Explicit interview opening / self-intro request to candidate
+                        results[other_p] = {
+                            "role": "candidate",
+                            "confidence": 0.95,
+                            "reasoning": f"Candidate addressed for intro by '{speaker}' in turn: \"{text[:70]}\""
+                        }
+                        results[speaker] = {
+                            "role": "interviewer",
+                            "confidence": 0.90,
+                            "reasoning": f"Interviewer addressed candidate '{other_p}' in turn: \"{text[:70]}\""
+                        }
+                        return results
+
+                    if any(pdp in t_lower for pdp in self.PEER_DELEGATION_PATTERNS):
+                        # Peer interviewer delegation
+                        results[speaker] = {
+                            "role": "interviewer",
+                            "confidence": 0.85,
+                            "reasoning": f"Interviewer delegating to co-interviewer '{other_p}'"
+                        }
+                        results[other_p] = {
+                            "role": "interviewer",
+                            "confidence": 0.85,
+                            "reasoning": f"Co-interviewer addressed by interviewer '{speaker}'"
+                        }
+                        continue
+
+                    if is_prompt_or_q:
+                        # Generic candidate prompt address in absence of candidate name
+                        results[other_p] = {
+                            "role": "candidate",
+                            "confidence": 0.90,
+                            "reasoning": f"Candidate addressed as '{name_tok}' by '{speaker}' in turn: \"{text[:70]}\""
+                        }
+                        results[speaker] = {
+                            "role": "interviewer",
+                            "confidence": 0.90,
+                            "reasoning": f"Interviewer addressed candidate '{other_p}' in turn: \"{text[:70]}\""
+                        }
+                        return results
 
         return results
 
@@ -680,25 +851,11 @@ class DeterministicRoleClassifier:
     ) -> Dict[str, Dict[str, Any]]:
         """
         Analyzes conversational turns to identify question-asking vs answer-providing patterns.
+        Supports 1-on-1 and multi-interviewer panel interviews.
         """
         results: Dict[str, Dict[str, Any]] = {}
         if not transcript or not participants:
             return results
-
-        # Interrogative starter patterns typical of interviewers
-        question_starters = (
-            "can you", "could you", "tell me", "what is", "how do", "how would", "why did",
-            "explain", "walk me through", "describe", "have you worked", "what are",
-            "which", "when did", "so tell", "let's talk", "do you have experience"
-        )
-
-        # First-person and technical narrative markers typical of candidates
-        answer_markers = (
-            "i worked on", "i built", "i designed", "my experience with", "in my previous",
-            "in my project", "we used", "i was responsible", "i implemented", "i created",
-            "the architecture i", "i used", "my role was", "i resolved", "i developed",
-            "what i did was", "in that company", "for example in my"
-        )
 
         stats: Dict[str, Dict[str, Any]] = {}
         for p in participants:
@@ -719,8 +876,8 @@ class DeterministicRoleClassifier:
                 word_count = len(text.split())
                 total_words += word_count
 
-                is_q = text.endswith("?") or any(t_lower.startswith(qs) for qs in question_starters)
-                is_ans = any(am in t_lower for am in answer_markers) or (word_count >= 20 and not text.endswith("?"))
+                is_q = text.endswith("?") or any(t_lower.startswith(qs) for qs in self.QUESTION_STARTERS)
+                is_ans = any(am in t_lower for am in self.ANSWER_MARKERS) or (word_count >= 20 and not text.endswith("?"))
 
                 if is_q:
                     q_turns += 1
@@ -737,8 +894,9 @@ class DeterministicRoleClassifier:
                 "ans_ratio": ans_turns / max(total_turns, 1)
             }
 
-        # Check for asymmetric dialogue between 2 active participants
         active_participants = [p for p in participants if p in stats and stats[p]["total_turns"] >= 2]
+
+        # 2-participant asymmetric dialogue
         if len(active_participants) == 2:
             p1, p2 = active_participants[0], active_participants[1]
             s1, s2 = stats[p1], stats[p2]
@@ -767,5 +925,98 @@ class DeterministicRoleClassifier:
                     "confidence": 0.85,
                     "reasoning": f"Linguistic pattern: explaining projects & experience ({s1['ans_turns']}/{s1['total_turns']} turns)"
                 }
+        # Multi-interviewer panel (>2 active participants)
+        elif len(active_participants) > 2:
+            candidate_candidates = [
+                p for p in active_participants
+                if stats[p]["ans_ratio"] >= 0.50 and stats[p]["ans_turns"] >= 2 and stats[p]["ans_turns"] > stats[p]["q_turns"]
+            ]
+            if len(candidate_candidates) == 1:
+                cand_p = candidate_candidates[0]
+                results[cand_p] = {
+                    "role": "candidate",
+                    "confidence": 0.85,
+                    "reasoning": f"Linguistic pattern: explaining projects & experience ({stats[cand_p]['ans_turns']}/{stats[cand_p]['total_turns']} turns)"
+                }
+                for p in active_participants:
+                    if p != cand_p:
+                        results[p] = {
+                            "role": "interviewer",
+                            "confidence": 0.85,
+                            "reasoning": f"Linguistic pattern: asking questions in panel ({stats[p]['q_turns']}/{stats[p]['total_turns']} turns)"
+                        }
 
         return results
+
+    def _enforce_single_candidate_invariant(
+        self,
+        speakers_result: Dict[str, Dict[str, Any]],
+        participants: List[str],
+        candidate_name: Optional[str] = None,
+        cand_evaluations: Optional[Dict[str, Tuple[bool, float, str]]] = None,
+        behav: Optional[Dict[str, Dict[str, Any]]] = None
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Enforces the strict product role invariant:
+        1. At most ONE participant can have role == 'candidate'.
+        2. Once a candidate is identified, all other participants
+           (except explicit system/bot/observers with role == 'unknown') MUST have role == 'interviewer'.
+        3. If multiple candidates exist, select the best candidate based on evidence priority
+           and demote all other candidates to 'interviewer'.
+        """
+        candidates = [
+            p for p in participants
+            if speakers_result.get(p, {}).get("role") == "candidate"
+        ]
+
+        if len(candidates) > 1:
+            def candidate_priority_key(p: str) -> Tuple[float, float, float, float]:
+                conf = speakers_result[p].get("confidence", 0.0)
+                name_conf = cand_evaluations.get(p, (False, 0.0, ""))[1] if cand_evaluations else 0.0
+                cand_score = behav[p]["cand_score"] if (behav and p in behav) else 0.0
+                self_intro = 1.0 if (behav and p in behav and behav[p].get("has_self_intro")) else 0.0
+                return (name_conf, self_intro, cand_score, conf)
+
+            best_candidate = max(candidates, key=candidate_priority_key)
+            logger.warning(
+                f"[SingleCandidateInvariant] Multiple candidates detected: {candidates}. "
+                f"Selecting best candidate '{best_candidate}' and demoting others to interviewer."
+            )
+
+            for p in candidates:
+                if p != best_candidate:
+                    speakers_result[p] = {
+                        "role": "interviewer",
+                        "confidence": max(speakers_result[p].get("confidence", 0.85), 0.85),
+                        "reasoning": f"Demoted to interviewer under single-candidate invariant (Primary candidate is '{best_candidate}')"
+                    }
+
+        # If exactly 1 candidate exists with high confidence, ensure all other human participants are interviewers
+        confident_candidates = [
+            p for p in participants
+            if speakers_result.get(p, {}).get("role") == "candidate"
+            and speakers_result.get(p, {}).get("confidence", 0.0) >= self.CONFIDENCE_THRESHOLD
+        ]
+
+        if len(confident_candidates) == 1:
+            cand_p = confident_candidates[0]
+            for p in participants:
+                if p == cand_p:
+                    continue
+                role_kw, conf_kw, reason_kw = self._match_participant_role_keywords(p)
+                if role_kw == "unknown" and conf_kw == 1.0:
+                    speakers_result[p] = {
+                        "role": "unknown",
+                        "confidence": 1.0,
+                        "reasoning": reason_kw
+                    }
+                    continue
+                curr = speakers_result.get(p, {})
+                if curr.get("role") != "interviewer" or curr.get("confidence", 0.0) < self.CONFIDENCE_THRESHOLD:
+                    speakers_result[p] = {
+                        "role": "interviewer",
+                        "confidence": max(curr.get("confidence", 0.85), 0.85),
+                        "reasoning": f"Inferred as interviewer in session with candidate '{cand_p}'"
+                    }
+
+        return speakers_result

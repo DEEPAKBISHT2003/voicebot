@@ -157,3 +157,4 @@ tests/unit/test_phase_a_usage_service.py
 tests/unit/test_phase_b_llm_instrumentation.py
 tests/unit/test_phase_c_duration_tracking.py
 tests/unit/test_phase_d_usage_dashboard.py
+tests/unit/test_multi_interviewer_role_support.py
