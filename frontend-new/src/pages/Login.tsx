@@ -15,7 +15,7 @@ export const Login: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const from = (location.state as any)?.from?.pathname || '/interviews/new';
+  const from = (location.state as any)?.from?.pathname || '/';
 
   useEffect(() => {
     // If already authenticated, redirect to target
