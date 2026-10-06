@@ -6,7 +6,7 @@ import { AdminRoute } from './components/AdminRoute';
 import { Layout } from './layouts/Layout';
 import { Login } from './pages/Login';
 import { InterviewsList } from './pages/InterviewsList';
-import { NewInterview } from './pages/NewInterview';
+// import { NewInterview } from './pages/NewInterview';
 import { MeetingObserver } from './pages/MeetingObserver';
 import { InterviewSession } from './pages/InterviewSession';
 // import { NewCopilot } from './copilot/pages/NewCopilot';
@@ -40,7 +40,7 @@ function App() {
                   <Layout>
                     <Routes>
                       <Route path="/" element={<InterviewsList />} />
-                      <Route path="/interviews/new" element={<NewInterview />} />
+                      {/* <Route path="/interviews/new" element={<NewInterview />} />s */}
                       <Route path="/interviews/:id" element={<InterviewSession />} />
                       <Route path="/meeting-observer" element={<MeetingObserver />} />
                       <Route path="/meeting-observer/new" element={<MeetingObserver />} />

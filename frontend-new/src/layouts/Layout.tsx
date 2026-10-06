@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard,
-  PlusCircle,
+  // PlusCircle,
   Video,
   // Sparkles,
   BarChart3,
@@ -38,7 +38,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   // Base navigation visible to all authenticated roles (USER & ADMIN)
   const baseNavigation = [
     { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-    { name: 'New Interview (Beta)', href: '/interviews/new', icon: PlusCircle },
+    // { name: 'New Interview (Beta)', href: '/interviews/new', icon: PlusCircle },
     { name: 'Meeting Observer', href: '/meeting-observer', icon: Video },
     // { name: 'New Copilot', href: '/copilots/new', icon: Sparkles },
   ];
