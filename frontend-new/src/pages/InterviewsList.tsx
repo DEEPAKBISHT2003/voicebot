@@ -402,6 +402,26 @@ export const InterviewsList: React.FC = () => {
     }
   };
 
+  const formatDateTimeParts = (isoString: string | null): { date: string; time: string } => {
+    if (!isoString) return { date: 'Date unknown', time: '' };
+    try {
+      const d = new Date(isoString);
+      return {
+        date: d.toLocaleDateString(undefined, {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+        }),
+        time: d.toLocaleTimeString(undefined, {
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+      };
+    } catch {
+      return { date: isoString, time: '' };
+    }
+  };
+
   // Filter records
   const filteredSessions = sessions.filter((session) => {
     const candidate = (session.candidate_name || extractCandidateName(session.resume)).toLowerCase();
@@ -482,65 +502,78 @@ export const InterviewsList: React.FC = () => {
           icon={<FolderOpen className="h-6 w-6" />}
         />
       ) : (
-        <div className="border border-border-gray rounded-lg overflow-x-auto bg-white">
+        <div className="border border-border-gray rounded-lg overflow-hidden bg-white">
           <table className="w-full text-left border-collapse table-fixed">
             <thead>
               <tr className="border-b border-border-gray bg-secondary text-xs font-semibold text-primary">
-                <th className="px-5 py-4 w-[18%] whitespace-nowrap">Candidate Name</th>
-                <th className="px-5 py-4 w-[12%] whitespace-nowrap">Session ID</th>
-                <th className="px-5 py-4 w-[17%] whitespace-nowrap">Interviewer</th>
-                <th className="px-5 py-4 w-[17%] whitespace-nowrap">Organizer</th>
-                <th className="px-5 py-4 w-[16%] whitespace-nowrap">Date & Time</th>
-                <th className="px-5 py-4 w-[10%] whitespace-nowrap">Status</th>
-                <th className="px-5 py-4 w-[10%] text-right whitespace-nowrap">Actions</th>
+                <th className="px-3 py-3 w-[16%] whitespace-nowrap">Candidate Name</th>
+                <th className="px-2 py-3 w-[9%] whitespace-nowrap">Session ID</th>
+                <th className="px-3 py-3 w-[14%] whitespace-nowrap">Interviewer</th>
+                <th className="px-3 py-3 w-[16%] whitespace-nowrap">Organizer</th>
+                <th className="px-3 py-3 w-[12%] whitespace-nowrap">Date & Time</th>
+                <th className="px-2.5 py-3 w-[12%] whitespace-nowrap">Status</th>
+                <th className="px-3 py-3 w-[21%] text-right whitespace-nowrap">Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-border-gray text-sm">
+            <tbody className="divide-y border-border-gray text-sm">
               {filteredSessions.map((session) => {
                 const interviewerInfo = getInterviewerDisplayName(session);
+                const { date, time } = formatDateTimeParts(session.timestamp);
                 return (
                   <tr key={session.session_id} className="hover:bg-secondary/40 transition-colors">
-                    <td className="px-5 py-4 font-medium text-primary truncate" title={session.candidate_name || extractCandidateName(session.resume)}>
+                    <td className="px-3 py-3 font-medium text-primary truncate" title={session.candidate_name || extractCandidateName(session.resume)}>
                       {session.candidate_name || extractCandidateName(session.resume)}
                     </td>
-                    <td className="px-5 py-4 font-mono text-xs text-muted-gray whitespace-nowrap">
+                    <td className="px-2 py-3 font-mono text-xs text-muted-gray whitespace-nowrap">
                       {session.session_id.substring(0, 8)}...
                     </td>
-                    <td className="px-5 py-4 text-xs text-primary whitespace-nowrap">
+                    <td className="px-3 py-3 text-xs text-primary truncate">
                       {interviewerInfo.isDetected ? (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-800 border border-slate-200">
-                          {interviewerInfo.name}
+                        <span
+                          className="inline-flex items-center max-w-full px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-800 border border-slate-200 truncate"
+                          title={interviewerInfo.name}
+                        >
+                          <span className="truncate">{interviewerInfo.name}</span>
                         </span>
                       ) : (
-                        <span className="text-muted-gray text-xs italic">
+                        <span
+                          className="text-muted-gray text-xs italic truncate block"
+                          title={session.transcript && session.transcript.length > 0 ? "—" : "Not detected yet"}
+                        >
                           {session.transcript && session.transcript.length > 0 ? "—" : "Not detected yet"}
                         </span>
                       )}
                     </td>
-                    <td className="px-5 py-4 text-xs text-muted-gray whitespace-nowrap truncate" title={session.organizer_email || session.organizer || 'Unknown'}>
-                      <div className="flex items-center gap-1.5">
+                    <td className="px-3 py-3 text-xs text-muted-gray truncate" title={session.organizer_email || session.organizer || 'Unknown'}>
+                      <div className="flex items-center gap-1.5 min-w-0">
                         <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />
                         <span className="truncate">{session.organizer_email || session.organizer || 'Unknown'}</span>
                       </div>
                     </td>
-                    <td className="px-5 py-4 text-muted-gray text-xs whitespace-nowrap">
-                      <div className="inline-flex items-center gap-1.5">
-                        <Calendar className="h-3.5 w-3.5" />
-                        <span>{formatDate(session.timestamp)}</span>
+                    <td className="px-3 py-3 text-xs whitespace-nowrap">
+                      <div className="flex flex-col">
+                        <span className="font-medium text-primary leading-tight">{date}</span>
+                        {time && (
+                          <span className="text-muted-gray text-[11px] leading-tight flex items-center gap-1">
+                            <Calendar className="h-3 w-3 shrink-0" />
+                            {time}
+                          </span>
+                        )}
                       </div>
                     </td>
-                    <td className="px-5 py-4 whitespace-nowrap">
+                    <td className="px-2.5 py-3 whitespace-nowrap">
                       {session.transcript.length > 0 ? (
                         <Badge variant="success">Completed</Badge>
                       ) : (
                         <Badge variant="warning">No Transcript</Badge>
                       )}
                     </td>
-                    <td className="px-5 py-4 text-right whitespace-nowrap">
-                      <div className="flex items-center justify-end gap-2">
+                    <td className="px-3 py-3 text-right whitespace-nowrap">
+                      <div className="flex items-center justify-end gap-1.5">
                         <Button
                           variant="outline"
                           size="sm"
+                          className="px-2.5 py-1 text-xs shrink-0"
                           onClick={() => setSelectedSession(session)}
                         >
                           <Eye className="h-3.5 w-3.5 mr-1" />
@@ -549,6 +582,7 @@ export const InterviewsList: React.FC = () => {
                         <Button
                           variant="primary"
                           size="sm"
+                          className="px-2.5 py-1 text-xs shrink-0"
                           onClick={() => navigate(`/copilots/${session.session_id}`)}
                         >
                           <FileText className="h-3.5 w-3.5 mr-1" />
