@@ -21,6 +21,8 @@ from services.copilot.src.api.simulation import router as simulation_router
 from services.copilot.src.api.reports import router as reports_router
 from services.auth.src.api.auth import router as auth_router
 from services.auth.src.api.users import router as users_router
+from services.auth.src.api.admin_activity import router as admin_activity_router
+from services.auth.src.middleware import ActivityTrackingMiddleware
 from services.auth.src.seed import seed_admin_user
 from services.auth.src.security import validate_jwt_secret_configured
 
@@ -52,6 +54,7 @@ app = FastAPI(
 )
 
 app.add_middleware(AllowAllWebSocketOriginsMiddleware)
+app.add_middleware(ActivityTrackingMiddleware)
 
 # Setup CORS middleware
 app.add_middleware(
@@ -94,9 +97,10 @@ app.include_router(simulation_router, prefix="/api", tags=["Simulation"])
 # 5. Reports Router (/api/reports/{session_id}/pdf)
 app.include_router(reports_router, prefix="/api", tags=["Reports"])
 
-# 6. Authentication & User Management Routers (/api/auth/login, /api/auth/me, /api/users)
+# 6. Authentication & User Management Routers (/api/auth/login, /api/auth/me, /api/users, /api/admin/users)
 app.include_router(auth_router)
 app.include_router(users_router)
+app.include_router(admin_activity_router)
 
 # Register Tortoise-ORM with Interview, Copilot, and Auth model definitions
 db_url = CopilotSettings.DATABASE_URL or InterviewSettings.DATABASE_URL
@@ -169,6 +173,19 @@ async def startup_auth_and_schema():
                 if "candidate_name" not in int_cols:
                     await conn.execute_query("ALTER TABLE interview_sessions ADD COLUMN candidate_name VARCHAR(255);")
                     logger.info("[DB] Added candidate_name column to interview_sessions (SQLite)")
+
+            _, user_rows = await conn.execute_query("PRAGMA table_info(users);")
+            if user_rows:
+                user_cols = [r["name"] for r in user_rows]
+                if "name" not in user_cols:
+                    await conn.execute_query("ALTER TABLE users ADD COLUMN name VARCHAR(255);")
+                    logger.info("[DB] Added name column to users (SQLite)")
+                if "last_login_at" not in user_cols:
+                    await conn.execute_query("ALTER TABLE users ADD COLUMN last_login_at TIMESTAMP;")
+                    logger.info("[DB] Added last_login_at column to users (SQLite)")
+                if "last_activity_at" not in user_cols:
+                    await conn.execute_query("ALTER TABLE users ADD COLUMN last_activity_at TIMESTAMP;")
+                    logger.info("[DB] Added last_activity_at column to users (SQLite)")
         else:
             await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS final_report JSONB;")
             await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS meeting_started_at TIMESTAMPTZ;")
@@ -183,7 +200,11 @@ async def startup_auth_and_schema():
             await conn.execute_query("ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS organizer_email VARCHAR(255);")
             await conn.execute_query("ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS interviewer VARCHAR(255);")
             await conn.execute_query("ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS candidate_name VARCHAR(255);")
-            logger.info("[DB] Verified copilot_sessions and interview_sessions schema (auth and interviewer columns present)")
+
+            await conn.execute_query("ALTER TABLE users ADD COLUMN IF NOT EXISTS name VARCHAR(255);")
+            await conn.execute_query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;")
+            await conn.execute_query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMPTZ;")
+            logger.info("[DB] Verified schema (copilot_sessions, interview_sessions, users, user_sessions present)")
     except Exception as e:
         logger.warning(f"[DB] Schema migration check notice: {e}")
 

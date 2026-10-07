@@ -37,6 +37,7 @@ async def create_user(
     password_hash = hash_password(req.password)
     new_user = await UserModel.create(
         email=normalized_email,
+        name=req.name,
         password_hash=password_hash,
         role=req.role,
         is_active=True,
@@ -46,8 +47,11 @@ async def create_user(
     return {
         "id": str(new_user.id),
         "email": new_user.email,
+        "name": new_user.name,
         "role": new_user.role,
         "is_active": new_user.is_active,
+        "last_login_at": new_user.last_login_at.isoformat() if new_user.last_login_at else None,
+        "last_activity_at": new_user.last_activity_at.isoformat() if new_user.last_activity_at else None,
         "created_at": new_user.created_at.isoformat() if new_user.created_at else None,
         "updated_at": new_user.updated_at.isoformat() if new_user.updated_at else None,
     }
@@ -66,8 +70,11 @@ async def list_users(
         {
             "id": str(u.id),
             "email": u.email,
+            "name": u.name,
             "role": u.role,
             "is_active": u.is_active,
+            "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
+            "last_activity_at": u.last_activity_at.isoformat() if u.last_activity_at else None,
             "created_at": u.created_at.isoformat() if u.created_at else None,
             "updated_at": u.updated_at.isoformat() if u.updated_at else None,
         }
@@ -82,7 +89,7 @@ async def update_user(
     current_admin: UserModel = Depends(require_admin),
 ):
     """
-    Admin-only: Update user role or active status.
+    Admin-only: Update user role, active status, or name.
     Guards:
       - Prevents disabling the last active ADMIN.
       - Prevents changing role of the last active ADMIN to USER.
@@ -114,6 +121,9 @@ async def update_user(
                 detail="Cannot change role of the last active administrator.",
             )
 
+    if req.name is not None:
+        target_user.name = req.name
+
     if req.role is not None:
         target_user.role = req.role
 
@@ -126,8 +136,11 @@ async def update_user(
     return {
         "id": str(target_user.id),
         "email": target_user.email,
+        "name": target_user.name,
         "role": target_user.role,
         "is_active": target_user.is_active,
+        "last_login_at": target_user.last_login_at.isoformat() if target_user.last_login_at else None,
+        "last_activity_at": target_user.last_activity_at.isoformat() if target_user.last_activity_at else None,
         "created_at": target_user.created_at.isoformat() if target_user.created_at else None,
         "updated_at": target_user.updated_at.isoformat() if target_user.updated_at else None,
     }

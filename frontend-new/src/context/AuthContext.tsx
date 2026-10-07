@@ -1,9 +1,10 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import api from '../api/axios';
 
 export interface User {
   id: string;
   email: string;
+  name?: string;
   role: 'ADMIN' | 'USER';
 }
 
@@ -12,8 +13,8 @@ interface AuthContextType {
   token: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (token: string, role: 'ADMIN' | 'USER', email: string, id: string) => void;
-  logout: (notice?: string) => void;
+  login: (token: string, role: 'ADMIN' | 'USER', email: string, id: string, name?: string) => void;
+  logout: (notice?: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -22,21 +23,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(null);
   const [token, setToken] = useState<string | null>(() => localStorage.getItem('voicebot_token'));
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const lastHeartbeatRef = useRef<number>(0);
 
-  const logout = (notice?: string) => {
+  const logout = useCallback(async (notice?: string) => {
+    const currentToken = localStorage.getItem('voicebot_token');
+    if (currentToken) {
+      try {
+        await api.post('/auth/logout');
+      } catch (err) {
+        // Ignore logout errors if token already invalidated or network down
+      }
+    }
     localStorage.removeItem('voicebot_token');
     setToken(null);
     setUser(null);
     if (notice) {
       sessionStorage.setItem('auth_expired_notice', notice);
     }
-  };
+  }, []);
 
-  const login = (newToken: string, role: 'ADMIN' | 'USER', email: string, id: string) => {
+  const login = (newToken: string, role: 'ADMIN' | 'USER', email: string, id: string, name?: string) => {
     localStorage.setItem('voicebot_token', newToken);
     setToken(newToken);
-    setUser({ id, email, role });
+    setUser({ id, email, role, name });
     sessionStorage.removeItem('auth_expired_notice');
+    lastHeartbeatRef.current = Date.now();
   };
 
   useEffect(() => {
@@ -55,21 +66,62 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setUser({
             id: response.data.id,
             email: response.data.email,
+            name: response.data.name,
             role: response.data.role,
           });
+          lastHeartbeatRef.current = Date.now();
         } else {
-          logout('Session expired. Please sign in again.');
+          await logout('Session expired. Please sign in again.');
         }
       } catch (err: any) {
         // If 401 or invalid, clear token and state
-        logout('Session expired. Please sign in again.');
+        await logout('Session expired. Please sign in again.');
       } finally {
         setIsLoading(false);
       }
     };
 
     restoreAuth();
-  }, []);
+  }, [logout]);
+
+  // Heartbeat tracking: send POST /api/auth/heartbeat every 60s only while tab is visible
+  useEffect(() => {
+    if (!token || !user) return;
+
+    const sendHeartbeatIfVisible = async () => {
+      if (document.visibilityState !== 'visible') {
+        return;
+      }
+      try {
+        await api.post('/auth/heartbeat');
+        lastHeartbeatRef.current = Date.now();
+      } catch (err) {
+        // Handled by 401 interceptor if expired
+      }
+    };
+
+    // Periodic heartbeat every 60s
+    const intervalId = setInterval(() => {
+      sendHeartbeatIfVisible();
+    }, 60000);
+
+    // Visibility change handler: trigger heartbeat immediately when becoming visible if >60s since last heartbeat
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        const timeSinceLast = Date.now() - lastHeartbeatRef.current;
+        if (timeSinceLast >= 60000) {
+          sendHeartbeatIfVisible();
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [token, user]);
 
   return (
     <AuthContext.Provider

@@ -12,7 +12,7 @@ import { InterviewSession } from './pages/InterviewSession';
 // import { NewCopilot } from './copilot/pages/NewCopilot';
 import { CopilotSession } from './copilot/pages/CopilotSession';
 import { UsageDashboard } from './pages/UsageDashboard';
-import { UserControlPlaceholder } from './pages/AdminPlaceholders';
+import { UserActivityDashboard } from './pages/UserActivityDashboard';
 
 // Instantiate Query Client for server state caching
 const queryClient = new QueryClient({
@@ -52,7 +52,7 @@ function App() {
                       <Route element={<AdminRoute />}>
                         <Route path="/analytics" element={<UsageDashboard />} />
                         <Route path="/usage" element={<UsageDashboard />} />
-                        <Route path="/user-control" element={<UserControlPlaceholder />} />
+                        <Route path="/user-control" element={<UserActivityDashboard />} />
                       </Route>
 
                       <Route path="*" element={<Navigate to="/" replace />} />
