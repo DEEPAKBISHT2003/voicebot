@@ -263,12 +263,18 @@ class CopilotSessionEngine:
     def _are_roles_resolved(self) -> bool:
         """
         Checks if detected human speakers have resolved roles ('candidate' or 'interviewer').
-        Returns True if every detected human speaker has a confident role assigned.
+        Returns True if every detected human speaker has a confident role assigned,
+        with exactly 1 candidate and at least 1 interviewer when 2 or more human speakers are present.
         """
         human_speakers = [s for s in self.detected_speakers if s and s != "System"]
         if not human_speakers:
             return False
-        return all(self.session_speaker_roles.get(s) in ("candidate", "interviewer") for s in human_speakers)
+        if not all(self.session_speaker_roles.get(s) in ("candidate", "interviewer") for s in human_speakers):
+            return False
+        roles = [self.session_speaker_roles.get(s) for s in human_speakers]
+        if len(human_speakers) >= 2:
+            return roles.count("candidate") == 1 and roles.count("interviewer") >= 1
+        return True
 
     async def _resolve_initial_roles(self) -> bool:
         """
