@@ -7,6 +7,10 @@ from openai import AsyncOpenAI
 from loguru import logger
 from services.copilot.src.core.config import Settings
 from services.copilot.src.services.usage_service import usage_service
+from services.copilot.src.services.unified_qa_worker import (
+    calculate_deterministic_accuracy_score,
+    is_resume_match_applicable
+)
 
 def clean_json_loads(text: str) -> dict:
     """Safely parse JSON responses that may be wrapped in markdown codeblocks."""
@@ -160,18 +164,25 @@ Evaluate these four dimensions:
 
 1. Question Relevance — 0 to 100
    How directly does the candidate answer the interviewer's question?
+   Do not penalize concise answers or alternative valid framing that addresses the prompt.
 
 2. Technical/Factual Correctness — 0 to 100
    Are the technical concepts, facts, reasoning, terminology, and principles correct?
+   - Proportional credit: Award credit in proportion to correctness; core concepts with minor omissions deserve proportional credit (75-90), not a failing score.
+   - Technical equivalence: Accept valid alternative designs, equivalent terminology, and sound trade-offs.
+   - Rigor: Materially incorrect, unsafe, or false technical claims must continue to be penalized (0-40). Plausible-sounding errors must not receive credit.
 
-3. Resume/Experience Match — 0 to 100
+3. Resume/Experience Match — 0 to 100 or null
    Is the candidate's claimed experience consistent with the candidate's resume?
-   The answer does not need to literally appear in the resume.
-   Evaluate whether the claimed experience is consistent with the documented background.
+   - If the question or candidate's answer references personal experience, past projects, or claims from their resume, evaluate consistency with documented background (0-100). Penalize ONLY if claimed experience contradicts or materially exaggerates documented background.
+   - For purely conceptual, technical, or algorithmic questions where no personal experience claims are made, output null (not applicable). Do NOT output 100 for neutrality, as Python deterministically excludes inapplicable dimensions and renormalizes remaining weights.
 
 4. Completeness — 0 to 100
    Does the candidate sufficiently address the important aspects of the question?
-   Do not judge completeness simply by answer length.
+   Do not judge completeness simply by answer length; concise answers that address the core question are complete.
+   If transcript appears cut off or incomplete due to caption loss, evaluate fairly on available evidence without assuming incompetence. If completely unanswered, score 0.
+
+Communication style: Do not penalize conversational fillers ("uh", "basically"), natural pauses, or accent.
 
 Interviewer Question:
 {question.strip()}
@@ -187,7 +198,7 @@ Return ONLY valid JSON:
 {{
     "question_relevance": 0,
     "technical_correctness": 0,
-    "resume_match": 0,
+    "resume_match": null,
     "completeness": 0
 }}
 
@@ -225,8 +236,8 @@ No additional fields.
             response_text = chat_completion.choices[0].message.content
             parsed = clean_json_loads(response_text)
 
-            # Verify all 4 required sub-score fields exist
-            required_keys = ["question_relevance", "technical_correctness", "resume_match", "completeness"]
+            # Verify required sub-score fields exist
+            required_keys = ["question_relevance", "technical_correctness", "completeness"]
             if not all(k in parsed for k in required_keys):
                 logger.error(f"[Phase2V] Missing required sub-scores in LLM response: {parsed}")
                 return None
@@ -234,24 +245,32 @@ No additional fields.
             try:
                 relevance = max(0, min(100, int(parsed["question_relevance"])))
                 technical = max(0, min(100, int(parsed["technical_correctness"])))
-                resume_match = max(0, min(100, int(parsed["resume_match"])))
                 completeness = max(0, min(100, int(parsed["completeness"])))
+                raw_res = parsed.get("resume_match")
+                if raw_res is not None and str(raw_res).strip().lower() not in ("null", "none", "n/a"):
+                    resume_match = max(0, min(100, int(raw_res)))
+                else:
+                    resume_match = None
             except (ValueError, TypeError) as parse_err:
                 logger.error(f"[Phase2V] Invalid non-integer sub-scores in LLM response: {parse_err}")
                 return None
 
-            # Deterministic weighted scoring
-            accuracy_score = round(
-                relevance * 0.30
-                + technical * 0.30
-                + resume_match * 0.25
-                + completeness * 0.15
+            is_applicable = is_resume_match_applicable(question=question, answer=answer)
+            if resume_match is None:
+                is_applicable = False
+
+            # Deterministic weighted scoring via centralized calibrated engine
+            accuracy_score = calculate_deterministic_accuracy_score(
+                relevance=relevance,
+                technical=technical,
+                resume_match=resume_match,
+                completeness=completeness,
+                is_resume_applicable=is_applicable
             )
-            accuracy_score = max(0, min(100, int(accuracy_score)))
 
             logger.info(
                 f"[Phase2V] Evaluated Q+A accuracy: {accuracy_score}% "
-                f"(relevance={relevance}, technical={technical}, resume_match={resume_match}, completeness={completeness})"
+                f"(relevance={relevance}, technical={technical}, resume_match={resume_match}, completeness={completeness}, applicable={is_applicable})"
             )
             return {"accuracy_score": accuracy_score}
 

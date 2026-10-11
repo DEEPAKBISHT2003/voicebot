@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import time
 import asyncio
@@ -77,23 +78,130 @@ def reset_unified_qa_production_metrics() -> None:
     unified_qa_production_metrics["unified_qa_tokens_used_estimated"] = 0
 
 
+# Patterns used for identifying questions or answers with personal experiential claims
+EXPERIENTIAL_QUESTION_PATTERNS = [
+    re.compile(r"\b(?:tell me about|describe|walk me through|give (?:me )?an example of)\b.*\b(?:project|time|experience|situation|role|challenge)\b", re.I),
+    re.compile(r"\b(?:in|from|at)\s+(?:your|the)\s+(?:past|previous|last|current|prior)?\s*(?:job|company|role|team|project|work|experience|organization)\b", re.I),
+    re.compile(r"\bhave you (?:ever |personally )?(?:built|worked with|used|managed|led|scaled|deployed|architected|maintained|debugged)\b", re.I),
+    re.compile(r"\bwhat (?:is|was) your (?:role|experience|responsibility|contribution)\b", re.I),
+    re.compile(r"\bon your resume\b", re.I),
+    re.compile(r"\bin your experience\b", re.I),
+    re.compile(r"\byour background\b", re.I),
+]
+
+EXPERIENTIAL_ANSWER_PATTERNS = [
+    re.compile(r"\b(?:at|in|with)\s+(?:my|our)\s+(?:last|previous|current|past|prior)?\s*(?:job|company|role|team|project|workplace|startup|firm)\b", re.I),
+    re.compile(r"\bwhen i (?:was at|worked at|joined|led|managed|built)\b", re.I),
+    re.compile(r"\bin (?:my|our) (?:last|previous|current|past|production)\s+(?:project|system|codebase|environment|infrastructure|cluster)\b", re.I),
+    re.compile(r"\b(?:we|i) (?:built|deployed|migrated|scaled|implemented|designed|shipped|managed|refactored)\b", re.I),
+    re.compile(r"\bon my resume\b", re.I),
+]
+
+
+def is_resume_match_applicable(
+    question: str,
+    answer: str = "",
+    metadata: Optional[Dict[str, Any]] = None
+) -> bool:
+    """
+    Determines deterministically whether resume match is applicable to a Q&A pair.
+    
+    Applicability Rules:
+    1. Explicit Metadata/Rubric:
+       - If metadata contains 'resume_match_applicable' or 'is_resume_applicable', honors explicit bool.
+       - If metadata contains rubric with 'resume_match_applicable', honors explicit bool.
+       - If metadata defines 'question_type' or 'category':
+         * Experiential/behavioral/resume/project -> True
+         * Conceptual/algorithmic/theoretical -> False (unless answer claims personal experience)
+    2. Question Intent:
+       - If the question asks about the candidate's personal experience, past projects,
+         roles, or resume claims -> True
+    3. Answer Claims:
+       - If the candidate makes explicit claims about past employment, specific projects,
+         or production deployments from their career -> True
+    4. Default:
+       - Purely conceptual, theoretical, or algorithmic questions where no personal experience
+         claims are made -> False (inapplicable).
+    """
+    # 1. Explicit metadata / rubric check
+    if metadata and isinstance(metadata, dict):
+        if "resume_match_applicable" in metadata:
+            return bool(metadata["resume_match_applicable"])
+        if "is_resume_applicable" in metadata:
+            return bool(metadata["is_resume_applicable"])
+        rubric = metadata.get("rubric")
+        if isinstance(rubric, dict) and "resume_match_applicable" in rubric:
+            return bool(rubric["resume_match_applicable"])
+        
+        q_type = str(metadata.get("question_type") or metadata.get("category") or "").strip().lower()
+        if q_type in ("behavioral", "experience", "resume", "project", "work_history", "career", "experiential"):
+            return True
+        if q_type in ("conceptual", "algorithmic", "coding", "technical_theory", "knowledge", "architecture_concept", "theoretical"):
+            if answer and any(p.search(answer) for p in EXPERIENTIAL_ANSWER_PATTERNS):
+                return True
+            return False
+
+    q_text = str(question or "").strip()
+    a_text = str(answer or "").strip()
+    if not q_text:
+        return False
+
+    # 2. Question text intent
+    if any(p.search(q_text) for p in EXPERIENTIAL_QUESTION_PATTERNS):
+        return True
+
+    # 3. Answer text experiential claims
+    if a_text and any(p.search(a_text) for p in EXPERIENTIAL_ANSWER_PATTERNS):
+        return True
+
+    return False
+
+
 def calculate_deterministic_accuracy_score(
     relevance: int,
     technical: int,
-    resume_match: int,
-    completeness: int
+    resume_match: Optional[int] = None,
+    completeness: int = 0,
+    is_resume_applicable: Optional[bool] = None
 ) -> int:
     """
-    Computes the deterministic weighted accuracy score using the production formula:
-    accuracy_score = round(0.30 * relevance + 0.30 * technical + 0.25 * resume_match + 0.15 * completeness)
-    Clamped strictly to [0, 100].
+    Computes the deterministic weighted accuracy score using the calibrated formula:
+    
+    When resume match is applicable:
+      accuracy_score = round(0.30 * relevance + 0.30 * technical + 0.25 * resume_match + 0.15 * completeness)
+      
+    When resume match is inapplicable:
+      Renormalized weights excluding resume_match (0.30/0.75=0.40, 0.30/0.75=0.40, 0.15/0.75=0.20):
+      accuracy_score = round(0.40 * relevance + 0.40 * technical + 0.20 * completeness)
+      
+    Invariants:
+      - If question is completely unanswered (relevance=0, technical=0, completeness=0), score is strictly 0.
+      - Clamped strictly to [0, 100].
+      - Applicable weights sum strictly to 1.00.
     """
     rel = max(0, min(100, int(relevance)))
     tech = max(0, min(100, int(technical)))
-    res = max(0, min(100, int(resume_match)))
     comp = max(0, min(100, int(completeness)))
 
-    score = round(0.30 * rel + 0.30 * tech + 0.25 * res + 0.15 * comp)
+    # Invariant: Unanswered questions receive 0 points (no free resume bonus)
+    if rel == 0 and tech == 0 and comp == 0:
+        return 0
+
+    # Determine applicability:
+    # If explicitly passed, honor it.
+    # Otherwise, if resume_match is None -> inapplicable.
+    # If resume_match is provided and is_resume_applicable is None -> applicable (for backward compatibility).
+    applicable = is_resume_applicable
+    if applicable is None:
+        applicable = (resume_match is not None)
+
+    if applicable:
+        res = max(0, min(100, int(resume_match if resume_match is not None else 0)))
+        score = round(0.30 * rel + 0.30 * tech + 0.25 * res + 0.15 * comp)
+    else:
+        # Renormalized: 0.30/0.75 = 0.40, 0.30/0.75 = 0.40, 0.15/0.75 = 0.20
+        score = round(0.40 * rel + 0.40 * tech + 0.20 * comp)
+
     return max(0, min(100, score))
 
 
@@ -275,10 +383,18 @@ CRITICAL INSTRUCTION:
 - You must evaluate the candidate's answer against the [INTERVIEWER QUESTION] and [CANDIDATE RESUME] ONLY.
 - Do NOT use or assume any [TARGET JOB DESCRIPTION] for this section!
 - Rate the following 4 dimensions from 0 to 100:
-  1. "relevance": How directly did the candidate answer the question asked? (0-100)
-  2. "technical": Are the technical facts, architecture, logic, and terminology accurate? (0-100)
-  3. "resume_match": Is the claimed experience consistent with their resume background? (0-100)
-  4. "completeness": Did they address the core depth of the question without excessive evasion? (0-100)
+  1. "relevance": How directly did the candidate answer the question asked? (0-100). Do not penalize concise delivery or valid alternative framing.
+  2. "technical": Are the technical facts, architecture, logic, and terminology accurate? (0-100).
+     * Proportional credit: Award credit proportional to correctness. Core concepts correct with a minor secondary omission deserve proportional credit (75-90), not a failing score.
+     * Technical equivalence: Accept valid alternative designs, equivalent terminology, and sound trade-offs.
+     * Rigor: Materially incorrect, unsafe, or false technical claims must continue to be penalized (0-40). Plausible-sounding errors must not receive credit.
+  3. "resume_match": Consistency with candidate's resume background (0-100 or null).
+     * Applicability: If the question or candidate's answer references personal experience, past projects, or claims from their resume, evaluate consistency with documented background (0-100). Penalize ONLY if the candidate makes specific experiential claims that directly contradict or materially exaggerate documented background.
+     * Conceptual Neutrality: For conceptual, technical, or algorithmic questions where no personal experience claims are made, output null (not applicable). Do NOT output 100 to represent neutrality, as Python deterministically excludes inapplicable dimensions and renormalizes remaining weights.
+  4. "completeness": Did they address the core depth of the question without excessive evasion? (0-100).
+     * Do NOT judge completeness simply by answer length; concise answers that address the core question are complete.
+     * If transcript text is ambiguous or cut off due to caption/ASR loss, evaluate fairly on available evidence without assuming candidate incompetence. If completely unanswered, score 0.
+- Communication style rule: Do NOT penalize conversational filler ("basically", "uh"), pauses, accent, or speech-to-text artifacts.
 - Do NOT calculate an aggregate accuracy score here. Python will compute the weighted score.
 
 ────────────────────────────────────────────────────────────────
@@ -309,7 +425,7 @@ Return ONLY valid JSON matching this exact structure:
   "accuracy_evaluation": {{
     "relevance": 0,
     "technical": 0,
-    "resume_match": 0,
+    "resume_match": null,
     "completeness": 0
   }},
   "intelligence": {{
@@ -403,14 +519,30 @@ Return ONLY valid JSON matching this exact structure:
             acc_eval = parsed.get("accuracy_evaluation", {})
             relevance = acc_eval.get("relevance", 0)
             technical = acc_eval.get("technical", 0)
-            resume_match = acc_eval.get("resume_match", 0)
+            raw_resume = acc_eval.get("resume_match")
             completeness = acc_eval.get("completeness", 0)
+
+            resume_match: Optional[int] = None
+            if raw_resume is not None and str(raw_resume).strip().lower() not in ("null", "none", "n/a"):
+                try:
+                    resume_match = max(0, min(100, int(raw_resume)))
+                except (ValueError, TypeError):
+                    resume_match = None
+
+            is_applicable = is_resume_match_applicable(
+                question=question,
+                answer=answer,
+                metadata=current_interview_state
+            )
+            if resume_match is None:
+                is_applicable = False
 
             accuracy_score = calculate_deterministic_accuracy_score(
                 relevance=relevance,
                 technical=technical,
                 resume_match=resume_match,
-                completeness=completeness
+                completeness=completeness,
+                is_resume_applicable=is_applicable
             )
             parsed["accuracy_score"] = accuracy_score
 

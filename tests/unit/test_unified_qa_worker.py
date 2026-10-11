@@ -124,8 +124,8 @@ async def test_unified_qa_worker_successful_processing(mock_unified_llm_payload)
     assert "assistance" in result
     assert "suggestions" in result
 
-    # Computed accuracy score
-    assert result["accuracy_score"] == 83
+    # Computed accuracy score (renormalized 0.40/0.40/0.20 for conceptual question: round(0.40*90 + 0.40*85 + 0.20*70) = 84)
+    assert result["accuracy_score"] == 84
     assert len(result["suggestions"]) == 2
     assert result["intelligence"]["current_topic"] == "Database Indexing"
 
@@ -229,7 +229,7 @@ async def test_session_engine_shadow_execution_parallel(tmp_path, mock_unified_l
         assert len(session.shadow_qa_comparisons) >= 1
         comp = session.shadow_qa_comparisons[0]
         assert comp["pair_id"] == "Q1_A2"
-        assert comp["unified_accuracy_score"] == 83
+        assert comp["unified_accuracy_score"] == 84
 
         # 3. Production state confirmed_qa_pairs does not expose shadow outputs
         assert len(session.confirmed_qa_pairs) == 1
@@ -366,7 +366,7 @@ async def test_phase4b_production_flow_success(tmp_path, mock_unified_llm_payloa
         # 1. QA pair evaluated with deterministic accuracy score
         assert len(session.confirmed_qa_pairs) == 1
         qa_pair = session.confirmed_qa_pairs[0]
-        assert qa_pair["accuracy_score"] == 83
+        assert qa_pair["accuracy_score"] == 84
         assert "Q1_A2" in session.evaluated_qa_ids
 
         # 2. Dynamic suggestions updated
