@@ -30,7 +30,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (currentToken) {
       try {
         await api.post('/auth/logout');
-      } catch (err) {
+      } catch {
         // Ignore logout errors if token already invalidated or network down
       }
     }
@@ -73,7 +73,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         } else {
           await logout('Session expired. Please sign in again.');
         }
-      } catch (err: any) {
+      } catch {
         // If 401 or invalid, clear token and state
         await logout('Session expired. Please sign in again.');
       } finally {
@@ -95,7 +95,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try {
         await api.post('/auth/heartbeat');
         lastHeartbeatRef.current = Date.now();
-      } catch (err) {
+      } catch {
         // Handled by 401 interceptor if expired
       }
     };

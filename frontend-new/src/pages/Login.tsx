@@ -1,8 +1,16 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api from '../api/axios';
 import { Lock, Mail, AlertCircle, Loader2 } from 'lucide-react';
+import { useMsal, MsalContext } from '@azure/msal-react';
+import { InteractionStatus } from '@azure/msal-browser';
+import {
+  isMicrosoftSsoConfigured,
+  ensureMsalInitialized,
+  getLoginRequest,
+  getMicrosoftConfig,
+} from '../config/msal';
 
 export const Login: React.FC = () => {
   const [email, setEmail] = useState('');
@@ -10,11 +18,17 @@ export const Login: React.FC = () => {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [sessionNotice, setSessionNotice] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isMicrosoftSubmitting, setIsMicrosoftSubmitting] = useState(false);
+
+  const { instance: msalInstance, inProgress } = useMsal();
+  const inFlightRef = useRef(false);
 
   const { login, isAuthenticated } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
+  const isMsConfigured = isMicrosoftSsoConfigured();
+  const isMsalBusy = inProgress !== InteractionStatus.None;
   const from = (location.state as any)?.from?.pathname || '/';
 
   useEffect(() => {
@@ -30,6 +44,196 @@ export const Login: React.FC = () => {
       sessionStorage.removeItem('auth_expired_notice');
     }
   }, [isAuthenticated, navigate, from]);
+
+  useEffect(() => {
+    return () => {
+      inFlightRef.current = false;
+    };
+  }, []);
+
+  const handleMicrosoftLogin = async () => {
+    setErrorMessage(null);
+    setSessionNotice(null);
+
+    if (!isMsConfigured) {
+      setErrorMessage(
+        'Microsoft SSO is currently not configured on this environment. Please sign in using your email and password.'
+      );
+      return;
+    }
+
+    // Synchronous in-flight guard to prevent duplicate clicks immediately
+    if (inFlightRef.current) {
+      return;
+    }
+
+    // Check if MSAL reports an interaction in progress
+    if (inProgress !== InteractionStatus.None) {
+      setErrorMessage(
+        'A Microsoft sign-in operation is currently in progress. Please complete or close the existing window and try again.'
+      );
+      return;
+    }
+
+    inFlightRef.current = true;
+    setIsMicrosoftSubmitting(true);
+
+    try {
+      // Resolve active PCA directly to preserve synchronous user gesture activation
+      const isStubbedPca =
+        !msalInstance || msalInstance === (MsalContext as any)?._currentValue?.instance;
+      const activePca = !isStubbedPca ? msalInstance : await ensureMsalInitialized();
+
+      const loginRequest = getLoginRequest();
+
+      // Launch MSAL popup flow
+      const response = await activePca.loginPopup(loginRequest);
+
+      let accessToken = response.accessToken;
+      const { apiScope } = getMicrosoftConfig();
+
+      // If accessToken is missing and an API scope is configured, acquire token silently or via popup
+      if (!accessToken && apiScope) {
+        try {
+          const silentRes = await activePca.acquireTokenSilent({
+            scopes: [apiScope],
+            account: response.account,
+          });
+          accessToken = silentRes?.accessToken;
+        } catch (silentErr) {
+          console.warn('[MSAL] Silent token acquisition failed, attempting interactive popup:', silentErr);
+          try {
+            const popupRes = await activePca.acquireTokenPopup({
+              scopes: [apiScope],
+              account: response.account,
+            });
+            accessToken = popupRes?.accessToken;
+          } catch (popupErr) {
+            console.warn('[MSAL] Interactive token acquisition failed:', popupErr);
+          }
+        }
+      }
+
+      // Enforce valid access token; do not fall back to unprivileged ID tokens
+      const token = (accessToken || '').trim();
+      if (!token) {
+        throw new Error(
+          'Unable to acquire Microsoft API access token. Please verify that application permissions are consented in Microsoft Entra ID.'
+        );
+      }
+
+      // Exchange Microsoft token for platform JWT
+      const backendRes = await api.post('/auth/microsoft', {
+        access_token: token,
+      });
+
+      const { access_token, role } = backendRes.data;
+
+      // Store platform JWT
+      localStorage.setItem('voicebot_token', access_token);
+
+      // Retrieve authenticated user profile
+      const meResponse = await api.get('/auth/me', {
+        headers: {
+          Authorization: `Bearer ${access_token}`,
+        },
+      });
+
+      login(
+        access_token,
+        role,
+        meResponse.data.email,
+        meResponse.data.id,
+        meResponse.data.name
+      );
+      navigate(from, { replace: true });
+    } catch (err: any) {
+      // Check for user cancellation in MSAL popup
+      const errorCode = err?.errorCode || err?.name || '';
+      const isCancelled =
+        errorCode === 'user_cancelled' ||
+        errorCode.toLowerCase().includes('user_cancelled') ||
+        err?.message?.includes('user_cancelled') ||
+        err?.message?.includes('User cancelled');
+
+      if (isCancelled) {
+        return; // Silently reset loading state
+      }
+
+      // Handle interaction in progress specifically
+      if (
+        errorCode === 'interaction_in_progress' ||
+        err?.message?.includes('interaction_in_progress')
+      ) {
+        setErrorMessage(
+          'A Microsoft sign-in operation is currently in progress. Please complete or close the sign-in window and try again.'
+        );
+        return;
+      }
+
+      const correlationId = err?.correlationId || '';
+      console.warn(
+        `[Auth-Microsoft] Sign-in failed (code: ${errorCode || 'unknown'}, correlationId: ${correlationId || 'none'})`
+      );
+
+      // Handle popup window blocked or closed by user / timeout
+      if (
+        errorCode === 'popup_window_error' ||
+        errorCode === 'empty_window_error' ||
+        errorCode === 'monitor_window_timeout' ||
+        errorCode === 'timed_out' ||
+        err?.message?.includes('timed_out') ||
+        err?.message?.includes('monitor_window_timeout')
+      ) {
+        setErrorMessage(
+          'Microsoft sign-in window was closed or timed out. Please try signing in again.'
+        );
+        return;
+      }
+
+      if (err.response?.status === 401) {
+        setErrorMessage(
+          err.response?.data?.detail || 'Invalid or expired Microsoft authentication credentials.'
+        );
+      } else if (err.response?.status === 403) {
+        setErrorMessage(
+          err.response?.data?.detail || 'Access denied: account is disabled or unauthorized.'
+        );
+      } else if (err.response?.status === 409) {
+        setErrorMessage(
+          err.response?.data?.detail ||
+            'An account with this email already exists. Please sign in with email and password.'
+        );
+      } else if (err.response?.status === 503) {
+        setErrorMessage(
+          'Microsoft SSO is currently unavailable or not configured on the backend.'
+        );
+      } else if (err.response?.status === 422) {
+        const detail = err.response?.data?.detail;
+        const msg = Array.isArray(detail)
+          ? detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ')
+          : typeof detail === 'string'
+          ? detail
+          : 'Invalid authentication request payload.';
+        setErrorMessage(`Authentication error: ${msg}`);
+      } else if (err.response?.data?.detail) {
+        setErrorMessage(
+          typeof err.response.data.detail === 'string'
+            ? err.response.data.detail
+            : Array.isArray(err.response.data.detail)
+            ? err.response.data.detail.map((d: any) => d.msg || JSON.stringify(d)).join('; ')
+            : 'Authentication failed. Please try again.'
+        );
+      } else {
+        setErrorMessage(
+          err.message || 'Failed to authenticate with Microsoft. Please try again.'
+        );
+      }
+    } finally {
+      inFlightRef.current = false;
+      setIsMicrosoftSubmitting(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -110,6 +314,60 @@ export const Login: React.FC = () => {
               <p className="text-sm text-red-800">{errorMessage}</p>
             </div>
           )}
+
+          {/* Microsoft SSO Action */}
+          <div>
+            <button
+              type="button"
+              onClick={handleMicrosoftLogin}
+              disabled={isMicrosoftSubmitting || isSubmitting || isMsalBusy}
+              className={`w-full flex justify-center items-center py-2.5 px-4 border rounded-lg shadow-xs text-sm font-semibold transition-colors ${
+                isMsConfigured && !isMsalBusy
+                  ? 'bg-white hover:bg-slate-50 text-slate-700 hover:text-slate-900 border-slate-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500'
+                  : 'bg-slate-50 text-slate-400 cursor-not-allowed border-slate-200'
+              }`}
+              title={
+                !isMsConfigured
+                  ? 'Microsoft SSO is currently not configured on this environment'
+                  : isMsalBusy
+                  ? 'Sign-in operation is in progress. Please wait...'
+                  : 'Sign in with your Appzlogic Microsoft Entra account'
+              }
+            >
+              {isMicrosoftSubmitting || isMsalBusy ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin mr-2 text-slate-500" />
+                  Connecting to Microsoft...
+                </>
+              ) : (
+                <>
+                  <svg className="h-4 w-4 mr-2.5 shrink-0" viewBox="0 0 21 21">
+                    <rect x="1" y="1" width="9" height="9" fill="#f25022" />
+                    <rect x="11" y="1" width="9" height="9" fill="#7fba00" />
+                    <rect x="1" y="11" width="9" height="9" fill="#00a4ef" />
+                    <rect x="11" y="11" width="9" height="9" fill="#ffb900" />
+                  </svg>
+                  <span>Sign in with Microsoft</span>
+                  {!isMsConfigured && (
+                    <span className="ml-2 text-xs font-normal text-slate-400">
+                      (Unavailable)
+                    </span>
+                  )}
+                </>
+              )}
+            </button>
+          </div>
+
+          <div className="relative my-6">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-slate-200" />
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-white px-3 text-slate-500 font-medium tracking-wide">
+                Or sign in with email
+              </span>
+            </div>
+          </div>
 
           <form className="space-y-5" onSubmit={handleSubmit}>
             <div>

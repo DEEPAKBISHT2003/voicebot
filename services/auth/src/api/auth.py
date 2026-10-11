@@ -1,20 +1,55 @@
+import os
 import uuid
 import datetime
-from fastapi import APIRouter, HTTPException, Depends, status
+import time
+from collections import defaultdict
+from fastapi import APIRouter, HTTPException, Depends, Request, status
 from fastapi.security import HTTPAuthorizationCredentials
 from loguru import logger
 
 from services.auth.src.models.user import UserModel, UserSessionModel
-from services.auth.src.schemas import LoginRequest, TokenResponse, UserResponse
+from services.auth.src.schemas import LoginRequest, MicrosoftAuthRequest, TokenResponse, UserResponse
 from services.auth.src.security import verify_password, create_access_token, decode_access_token
 from services.auth.src.deps import get_current_user, http_bearer
 from services.auth.src.middleware import record_user_activity, _activity_throttle_cache
+from services.auth.src.microsoft import process_microsoft_login, is_microsoft_sso_configured
+from services.auth.src.rate_limiter import (
+    check_login_rate_limit,
+    check_microsoft_rate_limit,
+    reset_rate_limits as reset_auth_rate_limits,
+    extract_client_ip,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication"])
 
 
+@router.get("/microsoft/status")
+async def microsoft_status():
+    """Public status endpoint to check if Microsoft SSO is configured."""
+    return {"configured": is_microsoft_sso_configured()}
+
+
+@router.post("/microsoft", response_model=TokenResponse)
+async def microsoft_login(
+    req: MicrosoftAuthRequest,
+    _rate: None = Depends(check_microsoft_rate_limit),
+):
+    """
+    Microsoft SSO Authentication Endpoint.
+    1. Validates Microsoft Entra ID access token server-side.
+    2. Enforces single-tenant restriction for Appzlogic.
+    3. Resolves existing identity or provisions new standard user with role USER.
+    4. Records UserSession and updates activity timestamps.
+    5. Issues platform JWT access token matching the standard session contract.
+    """
+    return await process_microsoft_login(req.access_token)
+
+
 @router.post("/login", response_model=TokenResponse)
-async def login(req: LoginRequest):
+async def login(
+    req: LoginRequest,
+    _rate: None = Depends(check_login_rate_limit),
+):
     """
     Public Login Endpoint.
     1. Normalize email to lowercase.

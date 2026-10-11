@@ -1,11 +1,43 @@
-import uuid
-from typing import Optional, Literal, List
-from pydantic import BaseModel, EmailStr, Field
+from typing import Optional, Literal, List, Any
+from pydantic import BaseModel, EmailStr, Field, model_validator
 
 
 class LoginRequest(BaseModel):
     email: str
     password: str
+
+
+class MicrosoftAuthRequest(BaseModel):
+    access_token: str = Field(..., min_length=10, description="Microsoft Entra ID access token for the platform API")
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_token(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            cleaned = data.strip().strip('"').strip("'")
+            return {"access_token": cleaned}
+
+        if isinstance(data, dict):
+            # Accept standard access token fields (access_token, accessToken, token, or nested token)
+            token_candidates = [
+                data.get("access_token"),
+                data.get("accessToken"),
+                data.get("token"),
+            ]
+            for candidate in token_candidates:
+                if isinstance(candidate, str) and len(candidate.strip()) >= 10:
+                    data["access_token"] = candidate.strip()
+                    return data
+                elif isinstance(candidate, dict):
+                    inner_token = (
+                        candidate.get("token")
+                        or candidate.get("secret")
+                        or candidate.get("value")
+                    )
+                    if isinstance(inner_token, str) and len(inner_token.strip()) >= 10:
+                        data["access_token"] = inner_token.strip()
+                        return data
+        return data
 
 
 class TokenResponse(BaseModel):

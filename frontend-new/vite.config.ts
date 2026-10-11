@@ -4,8 +4,10 @@ import tailwindcss from '@tailwindcss/vite'
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
-  // Load environment variables from parent directory (root workspace folder)
-  const env = loadEnv(mode, '../', '')
+  // Load environment variables from parent directory (root workspace folder) and local frontend directory
+  const rootEnv = loadEnv(mode, '../', '')
+  const localEnv = loadEnv(mode, process.cwd(), '')
+  const env = { ...localEnv, ...rootEnv }
   const backendUrl = env.BACKEND_URL || 'http://localhost:8000'
   const copilotUrl = env.COPILOT_URL || 'http://localhost:8000'
   const frontendUrl = env.FRONTEND_URL || 'http://localhost:3000'
@@ -30,6 +32,18 @@ export default defineConfig(({ mode }) => {
       'process.env.BACKEND_URL': JSON.stringify(backendUrl),
       'process.env.COPILOT_URL': JSON.stringify(copilotUrl),
       'process.env.FRONTEND_URL': JSON.stringify(frontendUrl),
+      'import.meta.env.VITE_MICROSOFT_CLIENT_ID': JSON.stringify(
+        env.VITE_MICROSOFT_CLIENT_ID || env.MICROSOFT_CLIENT_ID || ''
+      ),
+      'import.meta.env.VITE_MICROSOFT_TENANT_ID': JSON.stringify(
+        env.VITE_MICROSOFT_TENANT_ID || env.MICROSOFT_TENANT_ID || ''
+      ),
+      'import.meta.env.VITE_MICROSOFT_REDIRECT_URL': JSON.stringify(
+        env.VITE_MICROSOFT_REDIRECT_URL || ''
+      ),
+      'import.meta.env.VITE_MICROSOFT_API_SCOPE': JSON.stringify(
+        env.VITE_MICROSOFT_API_SCOPE || ''
+      ),
     },
     server: {
       host: '0.0.0.0',
@@ -57,6 +71,12 @@ export default defineConfig(({ mode }) => {
           ws: true,
         },
       },
+    },
+    test: {
+      environment: 'jsdom',
+      globals: true,
+      pool: 'forks',
+      setupFiles: ['./src/test/setup.ts'],
     },
   }
 })

@@ -47,7 +47,9 @@ api.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401) {
       // Do not redirect if already on login page or attempting login
-      const isLoginRequest = error.config?.url?.includes('/auth/login');
+      const isLoginRequest =
+        error.config?.url?.includes('/auth/login') ||
+        error.config?.url?.includes('/auth/microsoft');
       if (!isLoginRequest && !window.location.pathname.startsWith('/login')) {
         localStorage.removeItem('voicebot_token');
         sessionStorage.setItem('auth_expired_notice', 'Session expired. Please sign in again.');

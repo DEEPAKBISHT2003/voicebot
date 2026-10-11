@@ -1,4 +1,7 @@
-from fastapi import FastAPI
+import os
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from tortoise.contrib.fastapi import register_tortoise
@@ -25,6 +28,8 @@ from services.auth.src.api.admin_activity import router as admin_activity_router
 from services.auth.src.middleware import ActivityTrackingMiddleware
 from services.auth.src.seed import seed_admin_user
 from services.auth.src.security import validate_jwt_secret_configured
+from services.auth.src.microsoft import validate_microsoft_sso_config
+from services.auth.src.rate_limiter import validate_trusted_proxies_config
 
 from services.interview.src.repositories.postgres_repository import PostgresInterviewRepository
 from services.copilot.src.services.repository import CopilotRepository
@@ -53,15 +58,96 @@ app = FastAPI(
     version="1.0.0"
 )
 
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    try:
+        body = await request.body()
+        body_str = body.decode("utf-8", errors="replace")
+    except Exception:
+        body_str = "<could not read body>"
+
+    # Prevent logging or returning sensitive authentication payloads (passwords, SSO tokens)
+    is_auth_route = request.url.path.startswith("/api/auth")
+    logged_body = "<redacted auth credentials>" if is_auth_route else body_str[:500]
+    response_body = "<redacted>" if is_auth_route else body_str[:500]
+
+    logger.error(f"[Validation-Error-422] Path: {request.url.path} | Method: {request.method} | Errors: {exc.errors()} | Body: {logged_body}")
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "body_received": response_body},
+    )
+
 app.add_middleware(AllowAllWebSocketOriginsMiddleware)
 app.add_middleware(ActivityTrackingMiddleware)
 
-# Setup CORS middleware
+from urllib.parse import urlparse
+
+def get_cors_origins() -> list[str]:
+    is_prod = os.getenv("ENVIRONMENT", "").lower() == "production"
+    raw_cors = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+    frontend_url = os.getenv("FRONTEND_URL", "").strip().rstrip("/")
+
+    origins: list[str] = []
+
+    if is_prod:
+        # In production, require explicit configured origins; reject wildcards, paths, and localhost
+        candidate_origins = []
+        if frontend_url:
+            candidate_origins.append(frontend_url)
+        if raw_cors:
+            for item in raw_cors.split(","):
+                cand = item.strip().rstrip("/")
+                if cand:
+                    candidate_origins.append(cand)
+
+        for origin in candidate_origins:
+            if origin == "*":
+                raise ValueError("Wildcard '*' CORS origin is strictly forbidden in production with credentials.")
+            parsed = urlparse(origin)
+            if parsed.scheme not in ("http", "https"):
+                raise ValueError(f"Invalid CORS origin scheme in production: {origin}")
+            if not parsed.netloc or "*" in parsed.netloc:
+                raise ValueError(f"Invalid CORS origin hostname (wildcards prohibited): {origin}")
+            if parsed.hostname in ("localhost", "127.0.0.1", "0.0.0.0"):
+                raise ValueError(f"Localhost/loopback CORS origin is forbidden in production: {origin}")
+            if parsed.path and parsed.path != "/":
+                raise ValueError(f"Invalid CORS origin: paths are not allowed in origin specifications ({origin})")
+            if parsed.query or parsed.fragment:
+                raise ValueError(f"Invalid CORS origin: queries/fragments not allowed ({origin})")
+
+            normalized = f"{parsed.scheme}://{parsed.netloc}"
+            if normalized not in origins:
+                origins.append(normalized)
+
+        if not origins:
+            logger.warning("[CORS] No production CORS origins specified in FRONTEND_URL or CORS_ALLOWED_ORIGINS.")
+    else:
+        # Development / local defaults
+        origins = [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+        ]
+        if frontend_url and frontend_url not in origins:
+            origins.append(frontend_url)
+        if raw_cors and raw_cors != "*":
+            for origin in raw_cors.split(","):
+                clean = origin.strip().rstrip("/")
+                if clean and clean not in origins:
+                    origins.append(clean)
+
+    return origins
+
+cors_origins = get_cors_origins()
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r".*",
+    allow_origins=cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -120,9 +206,19 @@ register_tortoise(
 
 @app.on_event("startup")
 async def startup_auth_and_schema():
-    # 1. Validate JWT_SECRET_KEY is configured (Fails startup if missing)
+    # 1. Validate JWT_SECRET_KEY is configured (Fails startup if missing or weak in production)
     validate_jwt_secret_configured()
     logger.info("[Auth] JWT security configuration validated.")
+
+    # 1b. Validate TRUSTED_PROXIES IP/CIDR syntax
+    validate_trusted_proxies_config()
+    logger.info("[Auth] Trusted proxies configuration validated.")
+
+    # 1c. Validate Microsoft SSO configuration
+    is_prod = os.getenv("ENVIRONMENT", "").lower() == "production"
+    require_sso = os.getenv("REQUIRE_MICROSOFT_SSO", "false").lower() == "true"
+    validate_microsoft_sso_config(fail_on_missing=(is_prod and require_sso))
+    logger.info("[Auth] Microsoft SSO configuration validated.")
 
     # 2. Ensure Copilot schema compatibility
     try:
@@ -186,6 +282,52 @@ async def startup_auth_and_schema():
                 if "last_activity_at" not in user_cols:
                     await conn.execute_query("ALTER TABLE users ADD COLUMN last_activity_at TIMESTAMP;")
                     logger.info("[DB] Added last_activity_at column to users (SQLite)")
+
+                # Ensure password_hash is nullable in SQLite
+                pwd_row = next((r for r in user_rows if r["name"] == "password_hash"), None)
+                pwd_dict = dict(pwd_row) if pwd_row is not None else {}
+                if pwd_dict.get("notnull") == 1:
+                    await conn.execute_query("PRAGMA foreign_keys=off;")
+                    await conn.execute_query("""
+                        CREATE TABLE IF NOT EXISTS users_migration_temp (
+                            id CHAR(36) NOT NULL PRIMARY KEY,
+                            email VARCHAR(255) NOT NULL UNIQUE,
+                            password_hash TEXT,
+                            role VARCHAR(20) NOT NULL,
+                            is_active INT NOT NULL,
+                            created_at TIMESTAMP NOT NULL,
+                            updated_at TIMESTAMP NOT NULL,
+                            name VARCHAR(255),
+                            employee_id BIGINT,
+                            last_login_at TIMESTAMP,
+                            last_activity_at TIMESTAMP
+                        );
+                    """)
+                    await conn.execute_query("""
+                        INSERT INTO users_migration_temp (id, email, password_hash, role, is_active, created_at, updated_at, name, employee_id, last_login_at, last_activity_at)
+                        SELECT id, email, password_hash, role, is_active, created_at, updated_at, name, employee_id, last_login_at, last_activity_at FROM users;
+                    """)
+                    await conn.execute_query("DROP TABLE users;")
+                    await conn.execute_query("ALTER TABLE users_migration_temp RENAME TO users;")
+                    await conn.execute_query("CREATE INDEX IF NOT EXISTS idx_users_email_133a6f ON users (email);")
+                    await conn.execute_query("CREATE INDEX IF NOT EXISTS idx_users_employe_b299e5 ON users (employee_id);")
+                    await conn.execute_query("PRAGMA foreign_keys=on;")
+                    logger.info("[DB] Migrated users table to allow NULL password_hash (SQLite)")
+
+            # Ensure user_external_identities table exists in SQLite
+            await conn.execute_query("""
+                CREATE TABLE IF NOT EXISTS user_external_identities (
+                    id CHAR(36) PRIMARY KEY,
+                    user_id CHAR(36) NOT NULL,
+                    provider VARCHAR(50) NOT NULL DEFAULT 'microsoft',
+                    tenant_id VARCHAR(100) NOT NULL,
+                    provider_user_id VARCHAR(100) NOT NULL,
+                    email VARCHAR(255),
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (provider, tenant_id, provider_user_id)
+                );
+            """)
         else:
             await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS final_report JSONB;")
             await conn.execute_query("ALTER TABLE copilot_sessions ADD COLUMN IF NOT EXISTS meeting_started_at TIMESTAMPTZ;")
@@ -204,7 +346,21 @@ async def startup_auth_and_schema():
             await conn.execute_query("ALTER TABLE users ADD COLUMN IF NOT EXISTS name VARCHAR(255);")
             await conn.execute_query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;")
             await conn.execute_query("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMPTZ;")
-            logger.info("[DB] Verified schema (copilot_sessions, interview_sessions, users, user_sessions present)")
+            await conn.execute_query("ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;")
+            await conn.execute_query("""
+                CREATE TABLE IF NOT EXISTS user_external_identities (
+                    id UUID PRIMARY KEY,
+                    user_id UUID NOT NULL,
+                    provider VARCHAR(50) NOT NULL DEFAULT 'microsoft',
+                    tenant_id VARCHAR(100) NOT NULL,
+                    provider_user_id VARCHAR(100) NOT NULL,
+                    email VARCHAR(255),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT uq_user_external_identities UNIQUE (provider, tenant_id, provider_user_id)
+                );
+            """)
+            logger.info("[DB] Verified schema (copilot_sessions, interview_sessions, users, user_sessions, user_external_identities present)")
     except Exception as e:
         logger.warning(f"[DB] Schema migration check notice: {e}")
 

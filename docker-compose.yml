@@ -22,10 +22,11 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: voicebot-backend-services
-    restart: always
-    ports:
-      - "${INTERVIEW_PORT:-8000}:8000"
-      - "${BROWSER_PORT:-8002}:8002"
+    # Internal service networking: expose ports only to internal Docker bridge network (Nginx).
+    # Prevents direct public access from bypassing Nginx gateway rate limiting and security headers.
+    expose:
+      - "8000"
+      - "8002"
     environment:
       - INTERVIEW_PORT=${INTERVIEW_PORT:-8000}
       - COPILOT_PORT=${COPILOT_PORT:-8000}

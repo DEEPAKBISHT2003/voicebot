@@ -13,6 +13,8 @@ import { InterviewSession } from './pages/InterviewSession';
 import { CopilotSession } from './copilot/pages/CopilotSession';
 import { UsageDashboard } from './pages/UsageDashboard';
 import { UserActivityDashboard } from './pages/UserActivityDashboard';
+import { MsalProvider } from '@azure/msal-react';
+import { msalInstance } from './config/msal';
 
 // Instantiate Query Client for server state caching
 const queryClient = new QueryClient({
@@ -26,12 +28,13 @@ const queryClient = new QueryClient({
 
 function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <AuthProvider>
-        <BrowserRouter>
-          <Routes>
-            {/* Public Login Route */}
-            <Route path="/login" element={<Login />} />
+    <MsalProvider instance={msalInstance}>
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          <BrowserRouter>
+            <Routes>
+              {/* Public Login Route */}
+              <Route path="/login" element={<Login />} />
 
             {/* Protected Routes (USER and ADMIN) */}
             <Route element={<ProtectedRoute />}>
@@ -69,6 +72,7 @@ function App() {
         </BrowserRouter>
       </AuthProvider>
     </QueryClientProvider>
+    </MsalProvider>
   );
 }
 

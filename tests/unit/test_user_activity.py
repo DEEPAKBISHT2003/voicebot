@@ -186,11 +186,12 @@ async def test_stale_session_and_online_status_calculation(regular_user, admin_u
     now = datetime.datetime.now(datetime.timezone.utc)
 
     # 1. Admin is online (activity 30 seconds ago) with 1 active fresh session
+    admin_session_id = "admin-session-1"
     admin_user.last_activity_at = now - datetime.timedelta(seconds=30)
     await admin_user.save()
     await UserSessionModel.create(
         user_id=admin_user.id,
-        session_id=str(uuid.uuid4()),
+        session_id=admin_session_id,
         login_at=now - datetime.timedelta(minutes=10),
         last_seen_at=now - datetime.timedelta(seconds=30),
         is_active=True,
@@ -211,7 +212,7 @@ async def test_stale_session_and_online_status_calculation(regular_user, admin_u
         "sub": str(admin_user.id),
         "email": admin_user.email,
         "role": admin_user.role,
-        "session_id": "admin-session-1",
+        "session_id": admin_session_id,
     })
 
     transport = ASGITransport(app=app)
@@ -393,3 +394,46 @@ async def test_rbac_non_admin_forbidden(regular_user):
         )
         assert res2.status_code == 403
         assert "Administrative privileges required" in res2.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_logged_out_session_token_is_rejected_on_subsequent_requests(regular_user):
+    """
+    Security Regression Test (FINDING-01):
+    Verifies that after calling /api/auth/logout, the JWT token for that session
+    is immediately rejected with 401 Unauthorized on subsequent authenticated endpoints,
+    even though the JWT signature has not expired.
+    """
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # 1. Login session
+        login_res = await client.post(
+            "/api/auth/login",
+            json={"email": "john@appzlogic.com", "password": "UserPass123"},
+        )
+        assert login_res.status_code == 200
+        token = login_res.json()["access_token"]
+        session_id = login_res.json()["session_id"]
+
+        # 2. Verify token is initially valid on an authenticated endpoint
+        heartbeat_res = await client.post(
+            "/api/auth/heartbeat",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert heartbeat_res.status_code == 200
+
+        # 3. Perform logout
+        logout_res = await client.post(
+            "/api/auth/logout",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert logout_res.status_code == 200
+
+        # 4. Attempt to use the same token after logout -> MUST return 401 Unauthorized
+        post_logout_res = await client.post(
+            "/api/auth/heartbeat",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert post_logout_res.status_code == 401
+        assert "Session has been terminated or revoked" in post_logout_res.json()["detail"]
+

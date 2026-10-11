@@ -3,7 +3,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from loguru import logger
 
-from services.auth.src.models.user import UserModel
+from services.auth.src.models.user import UserModel, UserSessionModel
 from services.auth.src.security import decode_access_token
 
 # HTTPBearer extracts token from `Authorization: Bearer <token>`
@@ -19,6 +19,7 @@ async def get_current_user(
       - Missing token -> 401 Unauthorized
       - Invalid/expired token -> 401 Unauthorized
       - Inactive user -> 403 Forbidden
+      - Revoked/inactive session -> 401 Unauthorized
     """
     if not credentials or not credentials.credentials:
         raise HTTPException(
@@ -64,6 +65,19 @@ async def get_current_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account is inactive or disabled. Access denied.",
         )
+
+    # Server-side session verification:
+    # If the token contains a session_id, verify that the session exists and is still active.
+    # Revoked sessions (e.g. from logout or admin revocation) are immediately rejected.
+    session_id = payload.get("session_id")
+    if session_id:
+        session = await UserSessionModel.get_or_none(session_id=session_id, user_id=user.id)
+        if not session or not session.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Session has been terminated or revoked. Please sign in again.",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
     return user
 
