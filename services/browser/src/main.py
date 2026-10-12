@@ -89,6 +89,29 @@ async def join_meeting(req: JoinMeetingRequest):
         logger.error(f"[BrowserService] Failed to spawn bot process: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to spawn bot: {str(e)}")
 
+def _terminate_process_tree(proc: subprocess.Popen) -> None:
+    """Safely and forcefully terminates a process and all its child processes (e.g. Playwright Chromium)."""
+    if proc is None or proc.poll() is not None:
+        return
+    pid = proc.pid
+    logger.info(f"[BrowserService] Terminating process tree for PID {pid}...")
+    if sys.platform == "win32":
+        try:
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, check=False)
+            logger.info(f"[BrowserService] taskkill /PID {pid} /T /F executed.")
+        except Exception as te:
+            logger.warning(f"[BrowserService] taskkill error for PID {pid}: {te}")
+    else:
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2.0)
+            except Exception:
+                proc.kill()
+        except Exception as pe:
+            logger.warning(f"[BrowserService] Process termination error for PID {pid}: {pe}")
+
+
 @app.post("/stop-meeting")
 async def stop_meeting(req: StopMeetingRequest):
     session_id = req.session_id
@@ -97,14 +120,7 @@ async def stop_meeting(req: StopMeetingRequest):
         proc = bot_info.get("process")
         if proc and proc.poll() is None:
             logger.info(f"[BrowserService] Terminating bot process PID {proc.pid} for session {session_id}")
-            try:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=3.0)
-                except Exception:
-                    proc.kill()
-            except Exception as pe:
-                logger.warning(f"[BrowserService] Error terminating bot process: {pe}")
+            _terminate_process_tree(proc)
         return {"status": "stopped", "session_id": session_id}
     return {"status": "not_found", "session_id": session_id}
 
@@ -141,14 +157,7 @@ async def service_off_meeting(req: ServiceOffRequest):
             # Bounded fallback: if still running after timeout, fallback terminate for this session only
             if proc.poll() is None:
                 logger.warning(f"[BrowserService] Bot process PID {proc.pid} did not exit within {max_wait_sec}s; applying fallback termination...")
-                try:
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=2.0)
-                    except Exception:
-                        proc.kill()
-                except Exception as te:
-                    logger.error(f"[BrowserService] Error during fallback termination for PID {proc.pid}: {te}")
+                _terminate_process_tree(proc)
         active_bots.pop(session_id, None)
         return {"status": "service_off_completed", "session_id": session_id}
 

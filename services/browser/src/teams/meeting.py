@@ -2,9 +2,163 @@ import asyncio
 import os
 import time
 import urllib.parse
-from typing import Tuple, Dict, Any, Optional
+from typing import Tuple, Dict, Any, Optional, List
 from playwright.async_api import Page
 from loguru import logger
+
+try:
+    import config
+    from config import (
+        ENABLE_AUTO_DISCONNECT_ALONE,
+        AUTO_DISCONNECT_ALONE_GRACE_SECONDS,
+        AUTO_DISCONNECT_CONSECUTIVE_EMPTY_OBSERVATIONS,
+        AUTO_DISCONNECT_RECENT_SPEECH_WINDOW_SECONDS,
+    )
+except ImportError:
+    try:
+        from services.browser.src import config
+        from services.browser.src.config import (
+            ENABLE_AUTO_DISCONNECT_ALONE,
+            AUTO_DISCONNECT_ALONE_GRACE_SECONDS,
+            AUTO_DISCONNECT_CONSECUTIVE_EMPTY_OBSERVATIONS,
+            AUTO_DISCONNECT_RECENT_SPEECH_WINDOW_SECONDS,
+        )
+    except ImportError:
+        config = None
+        ENABLE_AUTO_DISCONNECT_ALONE = True
+        AUTO_DISCONNECT_ALONE_GRACE_SECONDS = 30.0
+        AUTO_DISCONNECT_CONSECUTIVE_EMPTY_OBSERVATIONS = 3
+        AUTO_DISCONNECT_RECENT_SPEECH_WINDOW_SECONDS = 15.0
+
+
+def is_bot_participant(name: str, bot_display_name: str) -> bool:
+    """
+    Determines whether a participant display name corresponds to the Appz Meeting Observer bot.
+    Case-insensitive, normalizes whitespace, and matches known bot identifier tokens.
+    """
+    n = (name or "").strip().lower()
+    b = (bot_display_name or "").strip().lower()
+    if not n:
+        return False
+    if n == b or b in n or n in b:
+        return True
+    bot_tokens = [
+        "meeting observer",
+        "appz observer",
+        "appzlogic observer",
+        "appz interviewer",
+        "appzlogic interviewer",
+        "mia - appz",
+        "mia - interviewer",
+        "appz meeting",
+        "observer",
+        "mia",
+    ]
+    return any(token in n for token in bot_tokens)
+
+
+def classify_participant_state(
+    dom_data: Dict[str, Any],
+    bot_display_name: str,
+    last_speech_seconds_ago: float,
+    recent_speech_window: float = 15.0,
+) -> Tuple[str, int, Dict[str, Any]]:
+    """
+    Deterministically evaluates meeting participant presence from extracted DOM telemetry and speech safeguards.
+    Returns:
+        Tuple of (status, human_count, details)
+        status values:
+            - 'MEETING_ENDED': Teams confirmed meeting ended / call ended screen
+            - 'HUMAN_PRESENT': >= 1 human participant reliably detected or recent speech detected
+            - 'CONFIRMED_EMPTY': Bot is confirmed alone (0 humans)
+            - 'UNCERTAIN': Stale, unavailable, or contradictory data (timer must reset/suspend)
+    """
+    # 1. Explicit meeting-ended screen detection
+    if dom_data.get("isEnded"):
+        return "MEETING_ENDED", 0, {"reason": "teams_ended_screen"}
+
+    # 2. Recent speech safeguard: if speech/captions arrived recently, human is definitively present
+    if last_speech_seconds_ago < recent_speech_window:
+        return "HUMAN_PRESENT", 1, {
+            "reason": "recent_speech_safeguard",
+            "last_speech_seconds_ago": round(last_speech_seconds_ago, 2),
+            "seconds_ago": round(last_speech_seconds_ago, 2),
+        }
+
+    # 3. If in-meeting indicators (hangup button, canvas) are missing, check if roster was found
+    is_in_meeting = dom_data.get("isInMeeting", True)  # default True when inspecting participant DOM
+    if not is_in_meeting:
+        return "UNCERTAIN", -1, {"reason": "in_meeting_elements_missing"}
+
+    # 4. Filter participant names from canvas/tiles against bot identity
+    raw_names = dom_data.get("participantNames") or dom_data.get("rawNames", [])
+    human_names = [n for n in raw_names if not is_bot_participant(n, bot_display_name)]
+    bot_names = [n for n in raw_names if is_bot_participant(n, bot_display_name)]
+
+    roster_badge_count = dom_data.get("rosterBadgeCount")
+    roster_button_found = dom_data.get("rosterButtonFound", False)
+    tile_count = dom_data.get("tileCount", 0)
+
+    # 5. Check for human presence
+    if len(human_names) > 0:
+        return "HUMAN_PRESENT", len(human_names), {
+            "humans": human_names,
+            "source": "participant_tiles",
+        }
+
+    if roster_badge_count is not None and roster_badge_count > 1:
+        return "HUMAN_PRESENT", roster_badge_count - 1, {
+            "total_count": roster_badge_count,
+            "humans_estimated": roster_badge_count - 1,
+            "source": "roster_badge",
+        }
+
+    # 6. Check for confirmed empty (bot alone in meeting)
+    # Case 0: Explicit Teams alone banner / notification detected ("You're the only one here", etc.)
+    if dom_data.get("aloneBanner"):
+        return "CONFIRMED_EMPTY", 0, {
+            "reason": "teams_alone_banner_detected",
+            "banner": dom_data.get("aloneBannerText", ""),
+        }
+
+    # Case A: Roster badge explicitly indicates exactly 1 participant (which is the bot itself)
+    if roster_badge_count == 1:
+        return "CONFIRMED_EMPTY", 0, {
+            "reason": "roster_badge_equals_1",
+            "bot_only": True,
+            "bot_detected": bot_names,
+        }
+
+    # Case B: Participant tiles were successfully read and contain ONLY the bot (zero humans)
+    if len(raw_names) > 0 and len(human_names) == 0 and len(bot_names) > 0:
+        return "CONFIRMED_EMPTY", 0, {
+            "reason": "tiles_contain_only_bot",
+            "bot": bot_names,
+        }
+
+    # Case C: Roster button found with 0 badge and 0 tiles
+    if roster_button_found and tile_count == 0 and roster_badge_count == 0:
+        return "CONFIRMED_EMPTY", 0, {
+            "reason": "roster_count_zero",
+        }
+
+    # Case D: Roster button found, zero tiles, no human participants, and no count > 1
+    # (Teams Web displays no numeric badge when only 1 participant is present in the meeting)
+    if roster_button_found and tile_count == 0 and len(human_names) == 0 and (roster_badge_count is None or roster_badge_count <= 1):
+        return "CONFIRMED_EMPTY", 0, {
+            "reason": "roster_found_zero_tiles_no_humans",
+            "roster_badge_count": roster_badge_count,
+        }
+
+    # 7. Unreadable, incomplete, or ambiguous roster state: treat as UNCERTAIN
+    # An unreadable roster must never be treated as proof that the meeting is empty.
+    return "UNCERTAIN", -1, {
+        "reason": "unreadable_or_missing_roster_data",
+        "rosterButtonFound": roster_button_found,
+        "rosterBadgeCount": roster_badge_count,
+        "tileCount": tile_count,
+    }
+
 
 
 async def is_really_in_meeting(page: Page) -> Tuple[bool, str, Dict[str, bool]]:
@@ -224,6 +378,38 @@ class TeamsMeeting:
         os.makedirs(self.debug_dir, exist_ok=True)
         self.service_off_flag_path = os.path.join(self.debug_dir, "service_off.flag")
         self.captions_enabled = False
+
+        # Auto-disconnect after alone configuration
+        self.enable_auto_disconnect_alone = getattr(config, "ENABLE_AUTO_DISCONNECT_ALONE", ENABLE_AUTO_DISCONNECT_ALONE) if config else ENABLE_AUTO_DISCONNECT_ALONE
+        self.alone_grace_period_seconds = float(getattr(config, "AUTO_DISCONNECT_ALONE_GRACE_SECONDS", AUTO_DISCONNECT_ALONE_GRACE_SECONDS) if config else AUTO_DISCONNECT_ALONE_GRACE_SECONDS)
+        self.consecutive_empty_required = int(getattr(config, "AUTO_DISCONNECT_CONSECUTIVE_EMPTY_OBSERVATIONS", AUTO_DISCONNECT_CONSECUTIVE_EMPTY_OBSERVATIONS) if config else AUTO_DISCONNECT_CONSECUTIVE_EMPTY_OBSERVATIONS)
+        self.recent_speech_window_seconds = float(getattr(config, "AUTO_DISCONNECT_RECENT_SPEECH_WINDOW_SECONDS", AUTO_DISCONNECT_RECENT_SPEECH_WINDOW_SECONDS) if config else AUTO_DISCONNECT_RECENT_SPEECH_WINDOW_SECONDS)
+
+        # State tracking for alone detection
+        self.alone_timer_start: Optional[float] = None
+        self.consecutive_empty_count: int = 0
+        self.last_speech_time: float = 0.0
+        self.is_disconnecting: bool = False
+
+        # Attach console listener to catch live caption / speech activity
+        try:
+            self.page.on("console", self._handle_browser_console_event)
+        except Exception:
+            pass
+
+    def _handle_browser_console_event(self, msg: Any) -> None:
+        """Tracks speech/caption activity from browser console messages."""
+        try:
+            txt = str(msg.text if hasattr(msg, "text") else msg)
+            if "[MIA CAPTIONS] Captured" in txt or "caption_sequence" in txt:
+                self.last_speech_time = time.monotonic()
+        except Exception:
+            pass
+
+    def record_speech_activity(self) -> None:
+        """Updates the last speech detection timestamp to prevent premature disconnect."""
+        self.last_speech_time = time.monotonic()
+
 
     async def dismiss_media_prompt_if_present(self) -> bool:
         """Detects and dismisses the 'Continue without audio or video' confirmation modal if shown by Teams."""
@@ -830,6 +1016,243 @@ class TeamsMeeting:
         except Exception as e:
             logger.warning(f"[TeamsCaptions] Error in start_native_captions_task: {e}")
 
+    async def detect_participants(self) -> Tuple[str, int, Dict[str, Any]]:
+        """
+        Inspects the DOM for participant indicators and correlates with speech activity across all frames.
+        Returns: (state, count, details)
+        where state is one of "CONFIRMED_EMPTY", "HUMAN_PRESENT", "UNCERTAIN".
+        """
+        try:
+            # 1. Extract DOM participant indicators using JavaScript evaluation across all frames
+            js_script = """
+            (() => {
+                let isEnded = false;
+                let aloneBanner = false;
+                let aloneBannerText = "";
+                let rosterButtonFound = false;
+                let rosterBadgeCount = -1;
+                let rawNames = [];
+                let tileCount = 0;
+
+                // 0. Check for explicit call ended screen
+                const endedEl = document.querySelector("[data-tid='call-ended'], button[data-tid='rejoin-button'], div[data-tid='calling-ended-screen']");
+                if (endedEl) {
+                    isEnded = true;
+                }
+
+                // 1. Check for alone in call banner / notification
+                const aloneSelectors = [
+                    "[data-tid='calling-empty-meeting-notification']",
+                    "[data-tid='alone-in-call-message']",
+                    "[data-tid='empty-meeting-notification']"
+                ];
+                for (const sel of aloneSelectors) {
+                    const el = document.querySelector(sel);
+                    if (el && (el.offsetWidth > 0 || el.offsetHeight > 0)) {
+                        aloneBanner = true;
+                        aloneBannerText = (el.innerText || sel).trim();
+                        break;
+                    }
+                }
+                if (!aloneBanner) {
+                    const allDivs = document.querySelectorAll("div, p, span, h2, h3");
+                    for (const el of allDivs) {
+                        const txt = (el.textContent || "").trim();
+                        if (
+                            txt === "You're the only one here" ||
+                            txt.includes("You're the only one here") ||
+                            txt.includes("Looks like everyone else left") ||
+                            txt === "You are the only person in this meeting" ||
+                            txt.includes("Waiting for others to join")
+                        ) {
+                            if (el.offsetWidth > 0 || el.offsetHeight > 0) {
+                                aloneBanner = true;
+                                aloneBannerText = txt;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // 2. Look for roster/people button and its badge/label count
+                const rosterBtn = document.querySelector("button[data-tid='roster-button'], button#roster-button, button[aria-label*='people' i], button[aria-label*='show participants' i], button[aria-label*='participants' i]");
+                if (rosterBtn) {
+                    rosterButtonFound = true;
+                    // Check text content or badge element
+                    const badge = rosterBtn.querySelector(".badge, [data-tid='roster-badge'], span");
+                    const txt = (badge ? badge.textContent : rosterBtn.textContent) || "";
+                    const m = txt.match(/\\d+/);
+                    if (m) {
+                        rosterBadgeCount = parseInt(m[0], 10);
+                    } else {
+                        const aria = rosterBtn.getAttribute("aria-label") || "";
+                        const m2 = aria.match(/\\d+/);
+                        if (m2) {
+                            rosterBadgeCount = parseInt(m2[0], 10);
+                        }
+                    }
+                }
+
+                // 3. Look for participant video/avatar tiles
+                const tiles = document.querySelectorAll("[data-tid='video-tile'], [data-tid='participant-tile'], .participant-tile, [data-cid='roster-participant'], [data-tid='calling-participant-stream'], [data-tid='stream-tile'], [data-tid='avatar-tile']");
+                tileCount = tiles.length;
+                tiles.forEach(t => {
+                    const aria = t.getAttribute("aria-label") || "";
+                    const nameEl = t.querySelector("[data-tid='participant-name'], .participant-name, span");
+                    const name = (nameEl ? nameEl.textContent : "") || aria;
+                    if (name.trim()) {
+                        rawNames.push(name.trim());
+                    }
+                });
+
+                // Also check if native captions recorded recent speech timestamp in window
+                const lastCaptionTime = window.__miaLastCaptionTime || 0;
+
+                return {
+                    isEnded,
+                    aloneBanner,
+                    aloneBannerText,
+                    rosterButtonFound,
+                    rosterBadgeCount,
+                    rawNames,
+                    tileCount,
+                    lastCaptionTime
+                };
+            })()
+            """
+
+            dom_data = {
+                "isEnded": False,
+                "aloneBanner": False,
+                "aloneBannerText": "",
+                "rosterButtonFound": False,
+                "rosterBadgeCount": -1,
+                "rawNames": [],
+                "tileCount": 0,
+                "lastCaptionTime": 0,
+                "isInMeeting": True,
+            }
+
+            main_f = self.page.main_frame
+            ordered_frames = [main_f] + [f for f in self.page.frames if f != main_f]
+
+            for frame in ordered_frames:
+                try:
+                    f_res = await frame.evaluate(js_script)
+                    if not f_res or not isinstance(f_res, dict):
+                        continue
+
+                    if f_res.get("isEnded"):
+                        dom_data["isEnded"] = True
+
+                    if f_res.get("aloneBanner"):
+                        dom_data["aloneBanner"] = True
+                        dom_data["aloneBannerText"] = f_res.get("aloneBannerText", "")
+
+                    if f_res.get("rosterButtonFound"):
+                        dom_data["rosterButtonFound"] = True
+
+                    bc = f_res.get("rosterBadgeCount", -1)
+                    if bc >= 0:
+                        dom_data["rosterBadgeCount"] = max(dom_data["rosterBadgeCount"], bc)
+
+                    dom_data["tileCount"] += f_res.get("tileCount", 0)
+
+                    names = f_res.get("rawNames", [])
+                    if names:
+                        dom_data["rawNames"].extend(names)
+
+                    lct = f_res.get("lastCaptionTime", 0)
+                    if lct and lct > dom_data["lastCaptionTime"]:
+                        dom_data["lastCaptionTime"] = lct
+                except Exception as frame_eval_err:
+                    logger.debug(f"[AutoDisconnect] Frame evaluation skipped: {frame_eval_err}")
+
+            # Deduplicate collected participant names
+            if dom_data["rawNames"]:
+                dom_data["rawNames"] = list(dict.fromkeys(dom_data["rawNames"]))
+
+            # Check window lastCaptionTime if present to sync self.last_speech_time
+            last_cap_time = dom_data.get("lastCaptionTime", 0)
+            if last_cap_time and last_cap_time > 0:
+                # Convert JS Date.now() ms to monotonic or compare elapsed
+                cap_seconds_ago = (time.time() - (last_cap_time / 1000.0))
+                if 0 <= cap_seconds_ago < self.recent_speech_window_seconds:
+                    self.last_speech_time = time.monotonic() - cap_seconds_ago
+
+            # Calculate seconds since last observed speech activity
+            last_speech_seconds_ago = (time.monotonic() - self.last_speech_time) if self.last_speech_time > 0 else 999999.0
+
+            return classify_participant_state(
+                dom_data=dom_data,
+                bot_display_name=self.bot_display_name,
+                last_speech_seconds_ago=last_speech_seconds_ago,
+                recent_speech_window=self.recent_speech_window_seconds
+            )
+        except Exception as e:
+            logger.warning(f"[AutoDisconnect] Error during detect_participants: {e}")
+            return "UNCERTAIN", -1, {"error": str(e)}
+
+    async def trigger_auto_disconnect(self, reason: str = "bot_alone_30s") -> None:
+        """
+        Executes unified service-off teardown when the bot is confirmed alone.
+        Guaranteed to follow the exact same teardown mechanism as manual Disconnect:
+        1. Leaves Teams meeting immediately via leave_meeting (clicks Leave/hangup).
+        2. Writes service_off.flag to session directory.
+        3. Informs backend via /service-off-internal endpoint to trigger background report finalization.
+        4. Closes meeting page to sever WebRTC and media session.
+        """
+        if self.is_disconnecting:
+            logger.info(f"[AutoDisconnect] Already disconnecting for session {self.session_id}; skipping duplicate trigger.")
+            return
+
+        self.is_disconnecting = True
+        logger.warning(f"[AutoDisconnect] TRIGGERED: {reason} for session {self.session_id}. Initiating unified teardown...")
+
+        # 1. Gracefully click Teams Leave button FIRST (must not wait on backend or block)
+        try:
+            logger.info("[AutoDisconnect] Step 1: Leaving Teams meeting via Leave button...")
+            left = await self.leave_meeting()
+            logger.info(f"[AutoDisconnect] leave_meeting result: {left}")
+        except Exception as le:
+            logger.warning(f"[AutoDisconnect] Error during leave_meeting: {le}")
+
+        # 2. Write the isolated service_off.flag to session directory
+        try:
+            flag_path = self.service_off_flag_path
+            with open(flag_path, "w", encoding="utf-8") as f:
+                f.write("service_off")
+            logger.info(f"[AutoDisconnect] Successfully created service_off flag at: {flag_path}")
+        except Exception as fe:
+            logger.warning(f"[AutoDisconnect] Error writing service_off flag: {fe}")
+
+        # 3. Inform backend via /service-off-internal endpoint to trigger background report finalization
+        backend_base = os.getenv("BACKEND_HTTP_URL", os.getenv("BACKEND_URL", "http://localhost:8000"))
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=4.0) as client:
+                resp = await client.post(
+                    f"{backend_base}/api/copilot/{self.session_id}/service-off-internal",
+                    json={"session_id": self.session_id, "reason": reason}
+                )
+                logger.info(f"[AutoDisconnect] Backend service-off-internal response: {resp.status_code}")
+        except Exception as be:
+            logger.warning(f"[AutoDisconnect] Could not reach backend /service-off-internal ({be}); flag file will handle finalization fallback.")
+
+        # 4. Explicitly close meeting page to terminate WebSockets and WebRTC connections
+        try:
+            if self.page:
+                is_closed_val = False
+                if callable(getattr(self.page, "is_closed", None)):
+                    is_closed_val = bool(self.page.is_closed())
+                if not is_closed_val and hasattr(self.page, "close"):
+                    close_res = self.page.close()
+                    if asyncio.iscoroutine(close_res):
+                        await close_res
+                    logger.info("[AutoDisconnect] Closed meeting page successfully.")
+        except Exception as pe:
+            logger.debug(f"[AutoDisconnect] Page close notice: {pe}")
+
     async def leave_meeting(self) -> bool:
         """
         Attempts to gracefully leave the Teams meeting by locating and clicking the Leave / Hang up button.
@@ -864,13 +1287,21 @@ class TeamsMeeting:
                 "button[title*='Leave' i], "
                 "button[data-tid='hangup-button'], "
                 "button[data-tid='leave-call-button'], "
+                "button[data-tid*='hangup' i], "
+                "button[data-tid*='leave' i], "
                 "button[aria-label*='Leave' i], "
-                "button[aria-label*='Hang up' i]"
+                "button[aria-label*='Hang up' i], "
+                "button:has-text('Leave'), "
+                "button:has-text('Hang up'), "
+                "div[role='button']:has-text('Leave'), "
+                "[role='button'][aria-label*='Leave' i], "
+                "[role='button'][aria-label*='Hang up' i]"
             )
 
             main_f = self.page.main_frame
             ordered_frames = [main_f] + [f for f in self.page.frames if f != main_f]
 
+            button_clicked = False
             for frame in ordered_frames:
                 try:
                     hangup_el = frame.locator(hangup_selector).first
@@ -880,9 +1311,30 @@ class TeamsMeeting:
                         except Exception:
                             await hangup_el.evaluate("el => el.click()")
                         logger.info("[TeamsBot] Clicked Teams Leave button successfully.")
-                        return True
+                        button_clicked = True
+                        break
                 except Exception as frame_err:
                     logger.debug(f"[TeamsBot] Frame leave attempt skipped: {frame_err}")
+
+            if button_clicked:
+                # Check for possible confirmation popup/dialog
+                confirm_leave_selector = (
+                    "button[data-tid='confirm-leave-button'], "
+                    "button[data-tid*='leave-confirm' i], "
+                    "button:has-text('Leave meeting'), "
+                    "button:has-text('Leave call'), "
+                    "button:has-text('Confirm')"
+                )
+                for frame in ordered_frames:
+                    try:
+                        confirm_el = frame.locator(confirm_leave_selector).first
+                        if await confirm_el.is_visible(timeout=500):
+                            await confirm_el.click(timeout=1000, force=True)
+                            logger.info("[TeamsBot] Clicked confirmation Leave button.")
+                            break
+                    except Exception:
+                        pass
+                return True
 
             logger.warning("[TeamsBot] Could not find visible Leave button in any frame.")
             return False
@@ -910,6 +1362,17 @@ class TeamsMeeting:
                     await self.leave_meeting()
                 except Exception as lme:
                     logger.warning(f"[TeamsBot] Error during leave_meeting on Service Off: {lme}")
+                try:
+                    if self.page:
+                        is_closed_val = False
+                        if callable(getattr(self.page, "is_closed", None)):
+                            is_closed_val = bool(self.page.is_closed())
+                        if not is_closed_val and hasattr(self.page, "close"):
+                            close_res = self.page.close()
+                            if asyncio.iscoroutine(close_res):
+                                await close_res
+                except Exception:
+                    pass
                 await asyncio.sleep(1.0)
                 break
 
@@ -1027,3 +1490,63 @@ class TeamsMeeting:
                 except Exception:
                     pass
                 break
+
+            # -------------------------------------------------------------
+            # Auto-Disconnect When Alone Monitoring (Configurable Grace Period)
+            # -------------------------------------------------------------
+            if self.enable_auto_disconnect_alone and has_been_admitted and current_state == "IN_MEETING":
+                p_state, p_count, p_details = await self.detect_participants()
+
+                if p_state == "HUMAN_PRESENT":
+                    if self.alone_timer_start is not None:
+                        logger.info(f"[AutoDisconnect] Human participant detected ({p_details.get('humans') or 'activity'}); resetting alone timer.")
+                    self.alone_timer_start = None
+                    self.consecutive_empty_count = 0
+
+                elif p_state == "UNCERTAIN":
+                    # An unreadable or ambiguous roster must NOT be treated as empty.
+                    # Suspend / reset grace timer until certainty is re-established.
+                    if self.alone_timer_start is not None:
+                        logger.info(f"[AutoDisconnect] Roster state became UNCERTAIN ({p_details}); resetting alone grace timer.")
+                    self.alone_timer_start = None
+                    self.consecutive_empty_count = 0
+
+                elif p_state == "CONFIRMED_EMPTY":
+                    self.consecutive_empty_count += 1
+                    if self.consecutive_empty_count == 1:
+                        logger.info(
+                            f"[AutoDisconnect] Empty meeting observed (reason={p_details.get('reason')}). "
+                            f"Debouncing check {self.consecutive_empty_count}/{self.consecutive_empty_required}..."
+                        )
+                    else:
+                        logger.debug(
+                            f"[AutoDisconnect] Empty observation count: {self.consecutive_empty_count}/{self.consecutive_empty_required} "
+                            f"(details={p_details})"
+                        )
+
+                    # Only start the countdown after required consecutive empty observations (debounced)
+                    if self.consecutive_empty_count >= self.consecutive_empty_required:
+                        now_m = time.monotonic()
+                        if self.alone_timer_start is None:
+                            self.alone_timer_start = now_m
+                            logger.warning(
+                                f"[AutoDisconnect] [Alone Timer Started] Bot is confirmed alone in meeting. "
+                                f"Initiating {self.alone_grace_period_seconds}s countdown before auto-disconnect."
+                            )
+                        else:
+                            elapsed = now_m - self.alone_timer_start
+                            remaining = max(0.0, self.alone_grace_period_seconds - elapsed)
+                            logger.info(
+                                f"[AutoDisconnect] Bot alone for {elapsed:.1f}s / {self.alone_grace_period_seconds}s "
+                                f"({remaining:.1f}s remaining until auto-disconnect)."
+                            )
+
+                            if elapsed >= self.alone_grace_period_seconds:
+                                logger.warning(
+                                    f"[AutoDisconnect] Bot alone grace period of {self.alone_grace_period_seconds}s elapsed. "
+                                    f"Triggering automatic disconnect..."
+                                )
+                                await self.trigger_auto_disconnect(reason=f"bot_alone_{int(self.alone_grace_period_seconds)}s")
+                                await asyncio.sleep(1.0)
+                                break
+

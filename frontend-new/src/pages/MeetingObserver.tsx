@@ -33,9 +33,9 @@ export const DEFAULT_COPILOT_PROMPT = `You are an expert technical assistant.
 
 Real-Time Guidance Rules:
 1. Evaluate candidate technical accuracy, confidence, and practical depth.
-2. Recommend 2 follow-up questions tailored to missing concepts or partial answers.
-3. Provide 2 scenario-based architecture and coding questions for deep technical verification.
-4. Generate 2 verification questions to verify candidate resume claims.
+2. Suggest focused, natural follow-up questions when the candidate's answer is partial, ambiguous, or missing critical details. Ask one question at a time in spoken interviewer style.
+3. Provide scenario-based architecture and coding questions for deep technical verification.
+4. Generate targeted questions to verify candidate resume claims.
 5. Suggest the recommended next topic for the interviewer.`;
 
 export const MeetingObserver: React.FC = () => {

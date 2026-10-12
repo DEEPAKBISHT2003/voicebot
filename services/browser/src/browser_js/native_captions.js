@@ -231,6 +231,7 @@
             };
 
             console.log(`[MIA CAPTIONS] Captured (seq=${seqId}, action=${domAction}) [${rawSpeaker}]: "${rawText.substring(0, 40)}..."`);
+            window.__miaLastCaptionTime = Date.now();
             sendCaptionEvent(eventPayload);
         }
 

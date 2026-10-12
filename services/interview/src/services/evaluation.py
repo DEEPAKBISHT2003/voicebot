@@ -55,8 +55,8 @@ Evaluate the candidate's response and output a structured JSON object with the f
 1. "question_asker": "string (name of the role that asked the question, default is 'Interviewer')"
 2. "answerer": "string (name of the role that answered, default is 'Candidate')"
 3. "is_complete": boolean (true if the candidate's response fully answers the question, false otherwise)
-4. "follow_up_required": boolean (true if the candidate missed crucial parts, exhibited gaps, or gave an incomplete answer requiring follow-up)
-5. "follow_up_reason": "string (explanation of why follow-up is required and what to ask next, or empty if not required)"
+4. "follow_up_required": boolean (true only if the candidate left a critical technical aspect unanswered, ambiguous, or materially incomplete; false if the response is technically sound or complete)
+5. "follow_up_reason": "string (concise note grounded in candidate's actual answer explaining what specific technical detail is missing, or empty if not required)"
 6. "technical_accuracy": {{ "rating": integer 1-100, "comment": "string explanation" }}
 7. "confidence": {{ "rating": integer 1-100, "comment": "string explanation" }}
 8. "completeness": {{ "rating": integer 1-100, "comment": "string explanation" }}

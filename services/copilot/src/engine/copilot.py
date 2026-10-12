@@ -77,18 +77,21 @@ class AICopilotEngine:
         if decision == "STRONG":
             decision_prompt = f"""
 CRITICAL DECISION RULE (Strong Answer detected, rating: {rating}%):
-The candidate provided a Strong Answer. Do NOT generate any follow-up questions in "suggested_follow_up_questions".
-Instead, you must set "suggested_follow_up_questions" to exactly: ["Move to the next topic."].
+The candidate provided a Strong Answer. Do NOT generate multiple follow-up questions in "suggested_follow_up_questions".
+Usually set "suggested_follow_up_questions" to exactly: ["Move to the next topic."].
+Only suggest a follow-up if there is a meaningful opportunity to explore a significant technical trade-off or design decision they explicitly mentioned. Do not manufacture weaknesses.
 """
         elif decision == "PARTIAL":
             decision_prompt = f"""
 CRITICAL DECISION RULE (Partial Answer detected, rating: {rating}%):
-The candidate provided a Partial Answer. You must generate exactly 2-3 follow-up questions in "suggested_follow_up_questions" that drill down on their claims or missing aspects.
+The candidate provided a Partial Answer. Generate ONE focused, natural follow-up question in "suggested_follow_up_questions" targeting the single most important missing or unclear aspect.
+Avoid restating the original question in different words.
 """
         elif decision == "WEAK":
             decision_prompt = f"""
 CRITICAL DECISION RULE (Weak Answer detected, rating: {rating}%):
-The candidate provided a Weak Answer. You must generate probing questions in "suggested_follow_up_questions" to verify their basic understanding or uncover critical gaps.
+The candidate provided a Weak Answer. Generate ONE diagnostic follow-up question in "suggested_follow_up_questions" to check whether they understand the underlying core concept or a simpler concrete scenario.
+Do NOT give away the complete answer in the question.
 """
 
         custom_instructions = ""
@@ -118,9 +121,24 @@ Input:
 
 {decision_prompt}
 
+Follow-Up Question Style Guidelines:
+- Sound like a real interviewer: Use natural, direct spoken English appropriate for a live technical interview.
+- Ask ONE question at a time: Each question must contain one primary question and clear conversational intent. Never stack multiple questions into one suggestion using "and", "also", or sequences of question marks.
+- Concise and grounded: Focus specifically on what the candidate just said, demonstrated, omitted, or left unclear. Never invent claims or technologies they didn't mention.
+- Avoid academic filler, interrogation tone, or repetitive formal clichés like "Could you elaborate further on your approach?".
+- Style Examples:
+  * Instead of: "Can you explain how you implemented caching, what eviction strategy you selected, and how you handled cache invalidation?"
+    Use: "You mentioned Redis caching. How did you handle cache invalidation?"
+  * Instead of: "Could you elaborate further on the architectural considerations and trade-offs that informed your decision to employ asynchronous processing?"
+    Use: "What made you choose async processing for this part?"
+  * Instead of: "What are the advantages and disadvantages of microservices?"
+    Use: "You mentioned splitting the service into microservices. What problem were you trying to solve with that?"
+  * Instead of: "Why didn't you use a better architecture, and how would you justify this design?"
+    Use: "What other approaches did you consider before settling on this design?"
+
 Provide suggestions and structured guidance for the interviewer. Output a structured JSON object with EXACTLY the following fields:
 
-1. "suggested_follow_up_questions": array of strings - follow-up questions matching the critical decision rule.
+1. "suggested_follow_up_questions": array of strings - 1 focused follow-up question matching the critical decision rule (or ["Move to the next topic."] if strong).
 
 2. "suggested_practical_questions": array of strings - Scenario-based, coding, or architecture design questions related to the current discussion.
 
@@ -149,13 +167,14 @@ You must output ONLY valid JSON matching this schema. Do not output markdown cod
             
             # Python post-processing enforcement of decision engine rules
             if decision == "STRONG":
-                result["suggested_follow_up_questions"] = ["Move to the next topic."]
-            elif decision == "PARTIAL":
+                if not result.get("suggested_follow_up_questions"):
+                    result["suggested_follow_up_questions"] = ["Move to the next topic."]
+            elif decision in ("PARTIAL", "WEAK"):
                 questions = result.get("suggested_follow_up_questions", [])
                 if not isinstance(questions, list):
                     questions = []
-                if len(questions) > 3:
-                    result["suggested_follow_up_questions"] = questions[:3]
+                if len(questions) > 2:
+                    result["suggested_follow_up_questions"] = questions[:2]
             
             logger.info("Copilot assistant recommendations generated successfully.")
             return result
@@ -250,14 +269,14 @@ Rules:
         candidate_answer: str = ""
     ) -> List[str]:
         """
-        Phase 2T: Generates exactly 2 dynamic interview question suggestions following
+        Phase 2T: Generates dynamic interview question suggestions following
         a valid interviewer-question + candidate-answer pair:
         - Suggestion 1: Based on JD + Resume (What else should we explore from candidate's background that is relevant to the JD?).
-        - Suggestion 2: Based on actual interviewer question + candidate answer (What is a useful follow-up drilling down into what the candidate just said?).
+        - Suggestion 2: Targeted follow-up question drilling down into what the candidate just said.
         """
         prompt = f"""You are an expert technical co-pilot assisting an interviewer in real-time.
 An interviewer just asked a question, and the candidate gave an answer.
-Generate EXACTLY 2 interview question suggestions for the interviewer's next step.
+Generate interview question suggestions for the interviewer's next step.
 
 Input:
 - Job Description:
@@ -272,13 +291,30 @@ Input:
 - Candidate Answer:
 {candidate_answer.strip() if candidate_answer else "N/A"}
 
-Rules:
-1. You must generate EXACTLY 2 questions in the "suggestions" array:
-   - Suggestion 1 (JD + Resume based): A question exploring an important skill, project, or topic from the candidate's resume that is relevant to the Job Description, ensuring comprehensive coverage of the candidate's background.
-   - Suggestion 2 (Conversation follow-up based): A targeted, deep follow-up question drilling down into the specific answer the candidate just gave, probing technical accuracy, implementation trade-offs, or potential gaps.
-2. The questions must be tailored to the interviewer to ask. Do NOT answer the questions.
-3. Do NOT suggest generic questions like "Tell me more" or "What else did you do?".
-4. Return ONLY valid JSON matching this schema:
+Rules for Suggestions:
+1. Generate up to 2 high-value questions in the "suggestions" array:
+   - Suggestion 1 (JD + Resume based): A forward-looking technical question exploring an important skill or project from the candidate's resume that is relevant to the Job Description, ensuring comprehensive coverage of the candidate's background.
+   - Suggestion 2 (Conversation follow-up based): A targeted, natural follow-up question drilling down into the specific answer the candidate just gave.
+
+2. Follow-Up Conversational Style Rules:
+   - Sound like a real interviewer: Use natural, direct, spoken English appropriate for a live technical interview.
+   - Ask ONE question at a time: Each suggestion must contain one primary question and clear conversational intent. Never combine multiple independent questions into one suggestion using "and", "also", or sequences of question marks.
+   - Grounded in the candidate's actual answer: Focus specifically on what the candidate just said, demonstrated, omitted, or left unclear. Never invent claims or technologies they didn't mention.
+   - Avoid generic filler or repetitive formal clichés like "Could you elaborate further on your approach?".
+   - Do NOT turn every answer into an interrogation or challenge the candidate without a clear reason.
+
+3. Conversational Style Contrast Examples:
+   - ARTIFICIAL / STACKED: "Can you explain how you implemented caching, what eviction strategy you selected, and how you handled cache invalidation?"
+     -> NATURAL & FOCUSED: "You mentioned Redis caching. How did you handle cache invalidation?"
+   - ARTIFICIAL / OVERLY FORMAL: "Could you elaborate further on the architectural considerations and trade-offs that informed your decision to employ asynchronous processing?"
+     -> NATURAL & FOCUSED: "What made you choose async processing for this part?"
+   - GENERIC & DISCONNECTED: "What are the advantages and disadvantages of microservices?"
+     -> CONTEXT-AWARE: "You mentioned splitting the service into microservices. What problem were you trying to solve with that?"
+   - UNNECESSARILY CONFRONTATIONAL: "Why didn't you use a better architecture, and how would you justify this design?"
+     -> NATURAL & DIAGNOSTIC: "What other approaches did you consider before settling on this design?"
+
+4. Output Schema:
+Return ONLY valid JSON matching this schema:
 {{
   "suggestions": [
     "<Suggestion 1: JD + Resume based question>",
@@ -313,22 +349,18 @@ Rules:
                 if q and isinstance(q, str) and str(q).strip()
             ]
 
-            # Enforce EXACTLY 2 suggestions
+            # Enforce at most 2 suggestions without artificial padding
             if len(valid_questions) > 2:
                 valid_questions = valid_questions[:2]
             elif len(valid_questions) < 1:
-                valid_questions.append("Can you elaborate on your experience from your resume relevant to this position?")
-                valid_questions.append("Could you dive deeper into the technical implementation and trade-offs of what you just described?")
-            elif len(valid_questions) == 1:
-                valid_questions.append("Could you dive deeper into the technical implementation and trade-offs of what you just described?")
+                valid_questions.append("How did you handle that in your implementation?")
 
             logger.info(f"[Phase2T] Generated {len(valid_questions)} dynamic suggestions: {valid_questions}")
             return valid_questions
         except Exception as e:
             logger.error(f"[Phase2T] Error generating dynamic suggestions: {e}")
             return [
-                "Can you elaborate on your experience from your resume relevant to this position?",
-                "Could you dive deeper into the technical implementation and trade-offs of what you just described?"
+                "How did you handle that in your implementation?"
             ]
 
     async def generate_static_scenario_verification_questions(

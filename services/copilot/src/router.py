@@ -310,26 +310,36 @@ async def _execute_service_off_finalization(session_id: str, sess: dict, repo: C
         sess.get("dashboard_websockets", set()).clear()
 
 
-@router.post("/{session_id}/service-off")
-async def service_off_copilot(
+async def execute_service_off_teardown(
     session_id: str,
-    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
-    repo: CopilotRepository = Depends(get_copilot_repo),
-    current_user=Depends(get_current_user),
-):
+    active_sessions: Dict[str, Any],
+    repo: CopilotRepository,
+    reason: str = "manual_disconnect"
+) -> Dict[str, Any]:
     """
-    Dedicated SERVICE OFF endpoint:
-    - Sets session_state to DISCONNECT_REQUESTED and initiates background finalization
-    - Requests the browser service to make the Teams bot leave and cleanly shut down
-    - Transitions session through FINALIZING -> GENERATING_REPORT -> SERVICE_DISCONNECTED -> REPORT_READY
-    - Sets report_ready=True ONLY once report is finalized and persisted
-    - Strictly idempotent
+    Unified teardown implementation for both manual user disconnect and automatic disconnect:
+    1. Idempotently marks session as service_off and DISCONNECT_REQUESTED.
+    2. Writes service_off.flag to session storage directory.
+    3. Notifies browser service to leave meeting gracefully.
+    4. Waits/terminates local bot process if spawned locally.
+    5. Closes audio buffer/WebSocket/workers.
+    6. Broadcasts DISCONNECT_REQUESTED to dashboards.
+    7. Finalizes duration and initiates background finalization (_execute_service_off_finalization).
     """
-    logger.info(f"[CopilotServiceOff] Received SERVICE OFF request for session: {session_id}")
+    logger.info(f"[CopilotServiceOff] Executing teardown for session {session_id} (reason='{reason}')")
 
     # 1. Update in-memory session state
     if session_id in active_sessions:
         sess = active_sessions[session_id]
+        if sess.get("service_off") and sess.get("session_state") in ("DISCONNECT_REQUESTED", "FINALIZING", "GENERATING_REPORT", "REPORT_READY"):
+            logger.info(f"[CopilotServiceOff] Teardown already in progress or completed for {session_id}; returning current state.")
+            return {
+                "status": "Service Disconnected",
+                "session_id": session_id,
+                "session_state": sess.get("session_state"),
+                "report_ready": sess.get("report_ready", False),
+                "report_status": sess.get("report_status", "generating")
+            }
         sess["service_off"] = True
         sess["is_active"] = False
         sess["session_state"] = "DISCONNECT_REQUESTED"
@@ -362,14 +372,19 @@ async def service_off_copilot(
         logger.warning(f"[CopilotServiceOff] Error creating local flag: {fe}")
 
     # 3. Request Browser Service to execute Service Off (gracefully clicking Leave)
-    browser_url = os.getenv("BROWSER_SERVICE_URL", os.getenv("BROWSER_URL", "http://browser-service:8002"))
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.post(f"{browser_url}/service-off", json={"session_id": session_id})
-            logger.info(f"[CopilotServiceOff] Browser service response: {resp.status_code}")
-    except Exception as be:
-        logger.warning(f"[CopilotServiceOff] Notification to browser-service failed or skipped ({be}); checking local bot process...")
+    # Skip if teardown was initiated directly by the browser bot itself (eliminates circular deadlock)
+    is_bot_initiated = bool(reason and (reason.startswith("bot_alone") or reason.startswith("auto_disconnect")))
+    if not is_bot_initiated:
+        browser_url = os.getenv("BROWSER_SERVICE_URL", os.getenv("BROWSER_URL", "http://browser-service:8002"))
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.post(f"{browser_url}/service-off", json={"session_id": session_id})
+                logger.info(f"[CopilotServiceOff] Browser service response: {resp.status_code}")
+        except Exception as be:
+            logger.warning(f"[CopilotServiceOff] Notification to browser-service failed or skipped ({be}); checking local bot process...")
+    else:
+        logger.info(f"[CopilotServiceOff] Teardown was initiated by bot itself ({reason}); skipping redundant browser service-off call.")
 
     # 4. If bot process was spawned locally, wait bounded time or terminate
     bot_process = sess.get("bot_process")
@@ -382,13 +397,16 @@ async def service_off_copilot(
             await asyncio.sleep(0.5)
 
         if bot_process.poll() is None:
-            logger.warning(f"[CopilotServiceOff] Local bot PID {bot_process.pid} did not exit within timeout, terminating...")
+            logger.warning(f"[CopilotServiceOff] Local bot PID {bot_process.pid} did not exit within timeout, terminating process tree...")
             try:
-                bot_process.terminate()
-                try:
-                    bot_process.wait(timeout=2.0)
-                except Exception:
-                    bot_process.kill()
+                if sys.platform == "win32":
+                    subprocess.run(["taskkill", "/PID", str(bot_process.pid), "/T", "/F"], capture_output=True, check=False)
+                else:
+                    bot_process.terminate()
+                    try:
+                        bot_process.wait(timeout=2.0)
+                    except Exception:
+                        bot_process.kill()
             except Exception as pe:
                 logger.warning(f"[CopilotServiceOff] Error terminating local bot: {pe}")
         sess["bot_process"] = None
@@ -477,7 +495,7 @@ async def service_off_copilot(
     # 7. Spawn background finalization task to transition FINALIZING -> GENERATING_REPORT -> REPORT_READY
     asyncio.create_task(_execute_service_off_finalization(session_id, sess, repo))
 
-    logger.info(f"[CopilotServiceOff] Service Off initiated for {session_id}; finalization dispatched in background")
+    logger.info(f"[CopilotServiceOff] Teardown initiated for {session_id}; finalization dispatched in background")
     return {
         "status": "Service Disconnected",
         "session_id": session_id,
@@ -485,6 +503,52 @@ async def service_off_copilot(
         "report_ready": False,
         "report_status": "generating"
     }
+
+
+class ServiceOffInternalRequest(BaseModel):
+    session_id: str
+    reason: Optional[str] = "bot_alone_60s"
+
+
+@router.post("/{session_id}/service-off-internal")
+async def service_off_internal(
+    session_id: str,
+    req: Optional[ServiceOffInternalRequest] = None,
+    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
+    repo: CopilotRepository = Depends(get_copilot_repo),
+):
+    """
+    Internal service-off endpoint called by the Browser Microservice / TeamsBot
+    when auto-disconnect triggers (e.g. 60 seconds alone).
+    Invokes the EXACT same teardown path as manual Disconnect.
+    """
+    reason = req.reason if req and req.reason else "bot_alone_60s"
+    return await execute_service_off_teardown(
+        session_id=session_id,
+        active_sessions=active_sessions,
+        repo=repo,
+        reason=reason
+    )
+
+
+@router.post("/{session_id}/service-off")
+async def service_off_copilot(
+    session_id: str,
+    active_sessions: Dict[str, Any] = Depends(get_copilot_sessions),
+    repo: CopilotRepository = Depends(get_copilot_repo),
+    current_user=Depends(get_current_user),
+):
+    """
+    Dedicated SERVICE OFF endpoint (User / Frontend initiated):
+    Invokes the EXACT same teardown path as automatic disconnect.
+    """
+    logger.info(f"[CopilotServiceOff] Received SERVICE OFF request for session: {session_id}")
+    return await execute_service_off_teardown(
+        session_id=session_id,
+        active_sessions=active_sessions,
+        repo=repo,
+        reason="user_service_off"
+    )
 
 # ==============================================================================
 # PHASE D: USAGE & CREDIT DASHBOARD ENDPOINTS

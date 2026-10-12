@@ -788,9 +788,18 @@ async def websocket_endpoint(
                         sess["transcript"] = eng.get_transcript()
                         sess["has_proven_transcript"] = True
                         await broadcast_update(last_msg, is_final=True)
+
+                # Ensure final report generation is scheduled if session ended via service_off flag
+                if (is_off or sess.get("is_active") is False) and not is_finalizing:
+                    try:
+                        from services.copilot.src.router import _execute_service_off_finalization
+                        logger.info(f"[CopilotWS] Dispatching background finalization on session termination for {session_id}")
+                        asyncio.create_task(_execute_service_off_finalization(session_id, sess, repo))
+                    except Exception as fin_err:
+                        logger.warning(f"[CopilotWS] Could not dispatch background finalization: {fin_err}")
+
             if session_id in active_sessions:
                 active_sessions[session_id].get("native_caption_websockets", set()).discard(websocket)    
-            
 
             await _safe_finalize_duration(repo, session_id)
 

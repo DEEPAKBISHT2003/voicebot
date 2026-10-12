@@ -414,9 +414,23 @@ SECTION 3: REAL-TIME ASSISTANCE
 
 ────────────────────────────────────────────────────────────────
 SECTION 4: DYNAMIC QUESTION SUGGESTIONS
-- Provide EXACTLY 2 next question suggestions for the interviewer:
-  - Suggestion 1 (JD + Resume based): Explores an important requirement from JD or project from Resume.
+- Provide up to 2 next question suggestions for the interviewer:
+  - Suggestion 1 (JD + Resume based): Explores an important requirement from JD or project from Resume not yet covered.
   - Suggestion 2 (Conversation follow-up based): Probes deeper into what the candidate just claimed in their answer.
+- Follow-Up Conversational Style Rules:
+  * Sound like a real interviewer: Use natural, direct, spoken English appropriate for a live technical interview.
+  * Ask ONE question at a time: Never combine multiple independent questions into one suggestion using "and", "also", or sequences of question marks. Each suggestion must have one primary question and clear conversational intent.
+  * Specific and grounded: Probe what the candidate just claimed, trade-offs, or unclear details; never invent claims they didn't make.
+  * Avoid academic filler, formal clichés, or interrogation tone (e.g. avoid "Could you elaborate further on your approach?").
+  * Examples:
+    - Instead of: "Can you explain how you implemented caching, what eviction strategy you selected, and how you handled cache invalidation?"
+      Use: "You mentioned Redis caching. How did you handle cache invalidation?"
+    - Instead of: "Could you elaborate further on the architectural considerations and trade-offs that informed your decision to employ asynchronous processing?"
+      Use: "What made you choose async processing for this part?"
+    - Instead of: "What are the advantages and disadvantages of microservices?"
+      Use: "You mentioned splitting the service into microservices. What problem were you trying to solve with that?"
+    - Instead of: "Why didn't you use a better architecture, and how would you justify this design?"
+      Use: "What other approaches did you consider before settling on this design?"
 
 ────────────────────────────────────────────────────────────────
 REQUIRED JSON OUTPUT SCHEMA:
@@ -553,9 +567,10 @@ Return ONLY valid JSON matching this exact structure:
             valid_suggs = [str(s).strip() for s in suggs if str(s).strip()]
             if len(valid_suggs) > 2:
                 valid_suggs = valid_suggs[:2]
-            elif len(valid_suggs) < 2:
-                while len(valid_suggs) < 2:
-                    valid_suggs.append("Can you elaborate on your technical implementation trade-offs?")
+            elif len(valid_suggs) < 1:
+                valid_suggs = ["How did you handle that in your implementation?"]
+            elif len(valid_suggs) == 1:
+                valid_suggs.append("What other approaches did you consider before settling on this design?")
             parsed["suggestions"] = valid_suggs
 
             # Attach performance telemetry
