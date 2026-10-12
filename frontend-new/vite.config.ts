@@ -33,16 +33,16 @@ export default defineConfig(({ mode }) => {
       'process.env.COPILOT_URL': JSON.stringify(copilotUrl),
       'process.env.FRONTEND_URL': JSON.stringify(frontendUrl),
       'import.meta.env.VITE_MICROSOFT_CLIENT_ID': JSON.stringify(
-        env.VITE_MICROSOFT_CLIENT_ID || env.MICROSOFT_CLIENT_ID || ''
+        env.VITE_MICROSOFT_CLIENT_ID || env.MICROSOFT_CLIENT_ID || process.env.VITE_MICROSOFT_CLIENT_ID || process.env.MICROSOFT_CLIENT_ID || ''
       ),
       'import.meta.env.VITE_MICROSOFT_TENANT_ID': JSON.stringify(
-        env.VITE_MICROSOFT_TENANT_ID || env.MICROSOFT_TENANT_ID || ''
+        env.VITE_MICROSOFT_TENANT_ID || env.MICROSOFT_TENANT_ID || process.env.VITE_MICROSOFT_TENANT_ID || process.env.MICROSOFT_TENANT_ID || ''
       ),
       'import.meta.env.VITE_MICROSOFT_REDIRECT_URL': JSON.stringify(
-        env.VITE_MICROSOFT_REDIRECT_URL || ''
+        env.VITE_MICROSOFT_REDIRECT_URL || process.env.VITE_MICROSOFT_REDIRECT_URL || ''
       ),
       'import.meta.env.VITE_MICROSOFT_API_SCOPE': JSON.stringify(
-        env.VITE_MICROSOFT_API_SCOPE || ''
+        env.VITE_MICROSOFT_API_SCOPE || process.env.VITE_MICROSOFT_API_SCOPE || ''
       ),
     },
     server: {

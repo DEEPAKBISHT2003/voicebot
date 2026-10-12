@@ -10,6 +10,7 @@ import {
   ensureMsalInitialized,
   getLoginRequest,
   getMicrosoftConfig,
+  setRuntimeMicrosoftConfig,
 } from '../config/msal';
 
 export const Login: React.FC = () => {
@@ -19,6 +20,7 @@ export const Login: React.FC = () => {
   const [sessionNotice, setSessionNotice] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isMicrosoftSubmitting, setIsMicrosoftSubmitting] = useState(false);
+  const [isMsConfigured, setIsMsConfigured] = useState(() => isMicrosoftSsoConfigured());
 
   const { instance: msalInstance, inProgress } = useMsal();
   const inFlightRef = useRef(false);
@@ -27,9 +29,35 @@ export const Login: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const isMsConfigured = isMicrosoftSsoConfigured();
   const isMsalBusy = inProgress !== InteractionStatus.None;
   const from = (location.state as any)?.from?.pathname || '/';
+
+  useEffect(() => {
+    // If not configured via build-time env vars, attempt to fetch runtime config from backend
+    if (!isMsConfigured) {
+      try {
+        const req = api.get?.('/auth/microsoft/config');
+        if (req && typeof req.then === 'function') {
+          req
+            .then((res: any) => {
+              if (res?.data?.configured && res.data.client_id && res.data.tenant_id) {
+                setRuntimeMicrosoftConfig({
+                  clientId: res.data.client_id,
+                  tenantId: res.data.tenant_id,
+                  apiScope: res.data.api_scope,
+                });
+                setIsMsConfigured(true);
+              }
+            })
+            .catch(() => {
+              // Graceful fallback
+            });
+        }
+      } catch {
+        // Graceful fallback
+      }
+    }
+  }, [isMsConfigured]);
 
   useEffect(() => {
     // If already authenticated, redirect to target
@@ -55,7 +83,28 @@ export const Login: React.FC = () => {
     setErrorMessage(null);
     setSessionNotice(null);
 
-    if (!isMsConfigured) {
+    let configuredNow = isMsConfigured || isMicrosoftSsoConfigured();
+    if (!configuredNow) {
+      try {
+        const req = api.get?.('/auth/microsoft/config');
+        if (req && typeof req.then === 'function') {
+          const res = await req;
+          if (res?.data?.configured && res.data.client_id && res.data.tenant_id) {
+            setRuntimeMicrosoftConfig({
+              clientId: res.data.client_id,
+              tenantId: res.data.tenant_id,
+              apiScope: res.data.api_scope,
+            });
+            setIsMsConfigured(true);
+            configuredNow = true;
+          }
+        }
+      } catch {
+        // Fall through
+      }
+    }
+
+    if (!configuredNow) {
       setErrorMessage(
         'Microsoft SSO is currently not configured on this environment. Please sign in using your email and password.'
       );

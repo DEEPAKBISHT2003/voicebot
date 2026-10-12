@@ -29,6 +29,25 @@ async def microsoft_status():
     return {"configured": is_microsoft_sso_configured()}
 
 
+@router.get("/microsoft/config")
+async def microsoft_config():
+    """
+    Public configuration endpoint providing MSAL client config for SPAs.
+    Exposes only public client identifiers (client_id, tenant_id, api_scope, authority)
+    necessary for MSAL.js browser authentication.
+    """
+    from services.auth.src.microsoft import get_microsoft_config
+    cfg = get_microsoft_config()
+    configured = is_microsoft_sso_configured()
+    return {
+        "configured": configured,
+        "client_id": cfg["client_id"] if configured else "",
+        "tenant_id": cfg["tenant_id"] if configured else "",
+        "api_scope": f"api://{cfg['client_id']}/access_as_user" if configured and cfg["client_id"] else "",
+        "authority": cfg["authority"] if configured else "",
+    }
+
+
 @router.post("/microsoft", response_model=TokenResponse)
 async def microsoft_login(
     req: MicrosoftAuthRequest,

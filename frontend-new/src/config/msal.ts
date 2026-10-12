@@ -8,14 +8,31 @@ export interface MicrosoftConfig {
   apiScope: string;
 }
 
+let runtimeConfig: Partial<MicrosoftConfig> | null = null;
+let activeMsalInstance: PublicClientApplication | null = null;
+
+export const setRuntimeMicrosoftConfig = (config: Partial<MicrosoftConfig>) => {
+  runtimeConfig = { ...runtimeConfig, ...config };
+  if (runtimeConfig.clientId && runtimeConfig.tenantId) {
+    try {
+      activeMsalInstance = new PublicClientApplication(createMsalConfiguration());
+      msalInitPromise = null;
+    } catch (e) {
+      console.warn('[MSAL] Failed to re-instantiate PublicClientApplication with runtime config:', e);
+    }
+  }
+};
+
 export const getMicrosoftConfig = (): MicrosoftConfig => {
-  const clientId = (import.meta.env.VITE_MICROSOFT_CLIENT_ID || '').trim();
-  const tenantId = (import.meta.env.VITE_MICROSOFT_TENANT_ID || '').trim();
+  const clientId = (runtimeConfig?.clientId || import.meta.env.VITE_MICROSOFT_CLIENT_ID || '').trim();
+  const tenantId = (runtimeConfig?.tenantId || import.meta.env.VITE_MICROSOFT_TENANT_ID || '').trim();
   const redirectUri = (
+    runtimeConfig?.redirectUri ||
     import.meta.env.VITE_MICROSOFT_REDIRECT_URL ||
     (typeof window !== 'undefined' ? window.location.origin : '')
   ).trim();
   const apiScope = (
+    runtimeConfig?.apiScope ||
     import.meta.env.VITE_MICROSOFT_API_SCOPE ||
     (clientId ? `api://${clientId}/access_as_user` : '')
   ).trim();
@@ -72,22 +89,23 @@ let msalInitPromise: Promise<PublicClientApplication> | null = null;
  * Awaiting handleRedirectPromise() is critical to clearing any pending redirect interaction in sessionStorage.
  */
 export const ensureMsalInitialized = async (): Promise<PublicClientApplication> => {
+  const instance = activeMsalInstance || msalInstance;
   if (!msalInitPromise) {
     msalInitPromise = (async () => {
       try {
-        await msalInstance.initialize();
+        await instance.initialize();
       } catch (err) {
         console.error('[MSAL] Failed to initialize PublicClientApplication:', err);
       }
 
       try {
         // Crucial: handleRedirectPromise must be awaited to resolve any in-flight redirect interaction
-        await msalInstance.handleRedirectPromise();
+        await instance.handleRedirectPromise();
       } catch (err) {
         console.warn('[MSAL] handleRedirectPromise warning/error:', err);
       }
 
-      return msalInstance;
+      return instance;
     })();
   }
   return msalInitPromise;

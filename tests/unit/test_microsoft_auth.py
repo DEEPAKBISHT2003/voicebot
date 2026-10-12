@@ -942,4 +942,26 @@ async def test_domain_restriction_wildcard_bypass(monkeypatch):
         assert "access_token" in res.json()
 
 
+@pytest.mark.asyncio
+async def test_get_microsoft_config(monkeypatch):
+    """
+    Verify public GET /api/auth/microsoft/config returns public client IDs
+    and authority for SPA initialization.
+    """
+    monkeypatch.setenv("MICROSOFT_TENANT_ID", TEST_TENANT_ID)
+    monkeypatch.setenv("MICROSOFT_CLIENT_ID", TEST_CLIENT_ID)
+    monkeypatch.delenv("MICROSOFT_AUTHORITY", raising=False)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.get("/api/auth/microsoft/config")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["configured"] is True
+        assert data["client_id"] == TEST_CLIENT_ID
+        assert data["tenant_id"] == TEST_TENANT_ID
+        assert data["api_scope"] == f"api://{TEST_CLIENT_ID}/access_as_user"
+        assert TEST_TENANT_ID in data["authority"]
+
+
+
 
