@@ -85,6 +85,8 @@ from urllib.parse import urlparse
 def get_cors_origins() -> list[str]:
     is_prod = os.getenv("ENVIRONMENT", "").lower() == "production"
     raw_cors = os.getenv("CORS_ALLOWED_ORIGINS", "").strip()
+    if raw_cors.startswith("="):
+        raw_cors = raw_cors.lstrip("=").strip()
     frontend_url = os.getenv("FRONTEND_URL", "").strip().rstrip("/")
 
     origins: list[str] = []
@@ -142,10 +144,14 @@ def get_cors_origins() -> list[str]:
     return origins
 
 cors_origins = get_cors_origins()
+raw_cors_env = os.getenv("CORS_ALLOWED_ORIGINS", "").strip().lstrip("=").strip()
+is_production = os.getenv("ENVIRONMENT", "").lower() == "production"
+cors_regex = r".*" if (not is_production and raw_cors_env == "*") else None
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
+    allow_origin_regex=cors_regex,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
