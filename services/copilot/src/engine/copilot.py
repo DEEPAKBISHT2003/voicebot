@@ -299,15 +299,21 @@ Rules for Suggestions:
 2. Follow-Up Conversational Style Rules:
    - Sound like a real interviewer: Use natural, direct, spoken English appropriate for a live technical interview.
    - Ask ONE question at a time: Each suggestion must contain one primary question and clear conversational intent. Never combine multiple independent questions into one suggestion using "and", "also", or sequences of question marks.
+   - Keep it short and direct: Aim for approximately 8 to 20 words. Cut unnecessary lead-in phrases, preamble, and verbose explanations.
    - Grounded in the candidate's actual answer: Focus specifically on what the candidate just said, demonstrated, omitted, or left unclear. Never invent claims or technologies they didn't mention.
    - Avoid generic filler or repetitive formal clichés like "Could you elaborate further on your approach?".
    - Do NOT turn every answer into an interrogation or challenge the candidate without a clear reason.
+   - Avoid unnecessary probing when the candidate's answer was already clear and addressed the point.
 
 3. Conversational Style Contrast Examples:
    - ARTIFICIAL / STACKED: "Can you explain how you implemented caching, what eviction strategy you selected, and how you handled cache invalidation?"
      -> NATURAL & FOCUSED: "You mentioned Redis caching. How did you handle cache invalidation?"
    - ARTIFICIAL / OVERLY FORMAL: "Could you elaborate further on the architectural considerations and trade-offs that informed your decision to employ asynchronous processing?"
      -> NATURAL & FOCUSED: "What made you choose async processing for this part?"
+   - ARTIFICIAL / WORDY: "Could you elaborate further on the architectural considerations and trade-offs that informed your decision to employ asynchronous processing?"
+     -> SHORT & DIRECT: "Why did you choose async processing here?"
+   - ARTIFICIAL / VAGUE: "Could you provide further details regarding the challenges encountered during the implementation of your solution?"
+     -> NATURAL & DIRECT: "What was the main challenge during implementation?"
    - GENERIC & DISCONNECTED: "What are the advantages and disadvantages of microservices?"
      -> CONTEXT-AWARE: "You mentioned splitting the service into microservices. What problem were you trying to solve with that?"
    - UNNECESSARILY CONFRONTATIONAL: "Why didn't you use a better architecture, and how would you justify this design?"
@@ -391,9 +397,13 @@ Input:
 
 Rules:
 1. Generate EXACTLY 5 Scenario questions:
-   - Practical problem-solving, real-world troubleshooting, system architecture, or hands-on implementation challenges directly relevant to the JD and candidate's claimed skills.
+   - Practical, concise problems (approx 8-20 words) on real-world troubleshooting, system architecture, or hands-on implementation challenges directly relevant to the JD and candidate's claimed skills.
+   - Give only the context needed to understand the problem; focus on ONE clear technical challenge.
+   - Example: Instead of "How would you approach identifying and resolving performance bottlenecks in a distributed system?", use "Your API suddenly becomes slow under heavy traffic. How would you investigate?"
 2. Generate EXACTLY 5 Verification questions:
-   - Targeted technical questions that verify the authenticity, depth, tools, and project experiences claimed on the candidate's resume against the requirements of the JD.
+   - Targeted, direct questions (approx 8-20 words) that verify the authenticity, technical ownership, and project experiences claimed on the candidate's resume against the requirements of the JD.
+   - Ask about one concrete contribution, trade-off, or debugging incident.
+   - Example: Instead of "Can you elaborate on your specific personal contributions to the architecture?", use "Which part of that architecture did you build yourself?"
 3. Every question must be a non-empty, actionable question for the interviewer to ask.
 4. Do NOT answer the questions.
 5. Do NOT include generic filler.

@@ -173,9 +173,30 @@ Requirements:
 2. "target_role": The target job title/role extracted from the Job Description.
 3. "core_skills": List of 8 to 15 key technical competencies, tools, frameworks, and domain skills required by the JD and mentioned in the resume.
 4. "project_claims": List of 3 to 6 major projects, systems, or achievements claimed in the candidate's resume.
-5. "initial_questions": EXACTLY 2 insightful kick-off questions for the interviewer to begin the conversation, referencing the candidate's background and the role requirements.
-6. "scenario_questions": EXACTLY 5 practical, scenario-based architecture, coding, or system design questions directly relevant to the JD and candidate resume.
-7. "verification_questions": EXACTLY 5 probing, specific questions designed to verify the authenticity and depth of project experiences listed on the candidate's resume.
+5. "initial_questions": EXACTLY 2 short, welcoming kick-off questions (approx 8-18 words) for the interviewer to start the conversation, grounded in the candidate's background and target role.
+6. "scenario_questions": EXACTLY 5 practical scenario-based questions directly relevant to the role and candidate's claimed skills:
+   - Present ONE central technical challenge (troubleshooting, scaling, architecture, failure recovery, or design trade-off) in concise, spoken English (approx 8-20 words).
+   - Give only the context needed to understand the problem. Never combine troubleshooting, architecture, performance, and security into one oversized question.
+   - Vary sentence structures naturally. Do NOT start every question with "Suppose" or "Imagine".
+   - Examples:
+     * Instead of: "How would you approach identifying, diagnosing, and resolving performance bottlenecks in a distributed application while ensuring scalability, reliability, and minimal service disruption?"
+       Use: "Your API suddenly becomes slow under heavy traffic. How would you investigate?"
+     * Instead of: "Describe your approach to designing and implementing a comprehensive authentication and authorization mechanism that incorporates appropriate security controls for external API consumers."
+       Use: "How would you secure an API used by external clients?"
+     * Instead of: "How would you structure zero-downtime database schema migrations for a large-scale application?"
+       Use: "How do you migrate a live database table without downtime?"
+7. "verification_questions": EXACTLY 5 concise questions designed to verify the authenticity, technical ownership, and implementation depth of projects on the candidate's resume:
+   - Ask about one concrete contribution, implementation decision, debugging experience, or measured outcome (approx 8-20 words).
+   - Ground each question in actual resume claims and JD requirements; do not invent responsibilities or technologies.
+   - Avoid broad requests for entire project summaries. Speak like a senior engineer asking a peer, not a textbook.
+   - Avoid formal clichés ("Can you elaborate on your specific personal contributions...", "Could you explain in greater detail...").
+   - Examples:
+     * Instead of: "Can you elaborate on your specific personal contributions to the core architecture in your latest project?"
+       Use: "Which part of that architecture did you build yourself?"
+     * Instead of: "How did you validate and test the reliability claims mentioned in your resume?"
+       Use: "How did you test and measure the performance improvements you listed?"
+     * Instead of: "What were the most challenging technical trade-offs you encountered, and why did you choose that solution?"
+       Use: "What was the hardest technical trade-off you had to make on that project?"
 
 Output MUST be a single valid JSON object matching this schema:
 {{
@@ -318,22 +339,22 @@ Respond ONLY with valid JSON. Do not include markdown fences or extraneous comme
 
         fallbacks = {
             "initial": [
-                "Could you introduce yourself and walk us through your most significant engineering achievement?",
-                "What aspects of this role and technology stack are you most excited to discuss today?"
+                "To start, what is an engineering project you are most proud of?",
+                "Which part of our tech stack are you most excited to work with?"
             ],
             "scenario": [
-                "How would you design a highly available, fault-tolerant system to handle high concurrency?",
-                "Can you walk through your approach to identifying and resolving production database performance bottlenecks?",
-                "How do you approach automated testing and continuous integration across distributed microservices?",
-                "Describe how you would design a secure authentication and authorization mechanism for external APIs.",
-                "How would you structure zero-downtime database schema migrations for a large-scale application?"
+                "Your API suddenly becomes slow under heavy traffic. How would you investigate?",
+                "How would you design a service to handle a sudden 10x traffic spike?",
+                "A database query suddenly starts timing out in production. How do you find the cause?",
+                "How do you test changes locally before deploying across microservices?",
+                "How would you secure an API used by external clients?"
             ],
             "verification": [
-                "Can you elaborate on your specific personal contributions to the core architecture in your latest project?",
-                "What were the most challenging technical trade-offs you encountered, and why did you choose that solution?",
-                "How did you validate and test the reliability claims mentioned in your resume?",
-                "Can you describe an unforeseen production failure you faced and the exact steps you took to debug it?",
-                "What technical decisions in your past projects would you approach differently if designing them today?"
+                "Which part of that architecture did you build yourself?",
+                "What was the hardest technical trade-off you had to make on that project?",
+                "How did you test and measure the performance improvements listed on your resume?",
+                "What was a major production outage you dealt with, and how did you debug it?",
+                "Looking back, what would you design differently on that project?"
             ]
         }
         res = list(items)

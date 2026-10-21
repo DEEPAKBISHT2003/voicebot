@@ -189,7 +189,7 @@ export const UsageDashboard: React.FC = () => {
       </div>
 
       {/* Top KPI Metrics Cards (6-card Grid) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-2 gap-4">
         {/* 1. DeepSeek Balance */}
         <Card className="flex flex-col justify-between p-4 bg-white border border-border-gray shadow-xs">
           <div className="flex items-center justify-between text-muted-gray mb-2">
@@ -219,7 +219,7 @@ export const UsageDashboard: React.FC = () => {
         </Card>
 
         {/* 2. Total API Spend */}
-        <Card className="flex flex-col justify-between p-4 bg-white border border-border-gray shadow-xs">
+        {/* <Card className="flex flex-col justify-between p-4 bg-white border border-border-gray shadow-xs">
           <div className="flex items-center justify-between text-muted-gray mb-2">
             <span className="text-xs font-semibold uppercase tracking-wider">Total API Spend</span>
             <DollarSign className="h-4 w-4 text-emerald-600" />
@@ -236,10 +236,10 @@ export const UsageDashboard: React.FC = () => {
               <span className="text-[11px] text-muted-gray">Exact Decimal rollup</span>
             </div>
           )}
-        </Card>
+        </Card> */}
 
         {/* 3. Total Tokens */}
-        <Card className="flex flex-col justify-between p-4 bg-white border border-border-gray shadow-xs">
+        {/* <Card className="flex flex-col justify-between p-4 bg-white border border-border-gray shadow-xs">
           <div className="flex items-center justify-between text-muted-gray mb-2">
             <span className="text-xs font-semibold uppercase tracking-wider">Total Tokens</span>
             <Layers className="h-4 w-4 text-blue-600" />
@@ -258,12 +258,12 @@ export const UsageDashboard: React.FC = () => {
               </span>
             </div>
           )}
-        </Card>
+        </Card> */}
 
         {/* 4. Total Meeting Time */}
         <Card className="flex flex-col justify-between p-4 bg-white border border-border-gray shadow-xs">
           <div className="flex items-center justify-between text-muted-gray mb-2">
-            <span className="text-xs font-semibold uppercase tracking-wider">Meeting Time</span>
+            <span className="text-xs font-semibold uppercase tracking-wider">Total Meeting Time</span>
             <Clock className="h-4 w-4 text-amber-600" />
           </div>
           {isLoadingSummary ? (
@@ -283,7 +283,7 @@ export const UsageDashboard: React.FC = () => {
         </Card>
 
         {/* 5. Total LLM Calls */}
-        <Card className="flex flex-col justify-between p-4 bg-white border border-border-gray shadow-xs">
+        {/* <Card className="flex flex-col justify-between p-4 bg-white border border-border-gray shadow-xs">
           <div className="flex items-center justify-between text-muted-gray mb-2">
             <span className="text-xs font-semibold uppercase tracking-wider">LLM Invocations</span>
             <Cpu className="h-4 w-4 text-purple-600" />
@@ -300,10 +300,10 @@ export const UsageDashboard: React.FC = () => {
               <span className="text-[11px] text-muted-gray">Immutable call logs</span>
             </div>
           )}
-        </Card>
+        </Card> */}
 
         {/* 6. Total Sessions */}
-        <Card className="flex flex-col justify-between p-4 bg-white border border-border-gray shadow-xs">
+        {/* <Card className="flex flex-col justify-between p-4 bg-white border border-border-gray shadow-xs">
           <div className="flex items-center justify-between text-muted-gray mb-2">
             <span className="text-xs font-semibold uppercase tracking-wider">Sessions</span>
             <Users className="h-4 w-4 text-indigo-600" />
@@ -322,11 +322,11 @@ export const UsageDashboard: React.FC = () => {
               </span>
             </div>
           )}
-        </Card>
+        </Card> */}
       </div>
 
       {/* Stage-by-Stage Cost Breakdown Section */}
-      <Card className="space-y-4">
+      {/* <Card className="space-y-4">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-base font-semibold text-primary">Pipeline Stage Spend Breakdown</h2>
@@ -367,10 +367,10 @@ export const UsageDashboard: React.FC = () => {
                         {percentage}%
                       </Badge>
                     </div>
-                  </div>
+                  </div> */}
 
                   {/* Progress bar */}
-                  <div className="h-1.5 w-full bg-border-gray rounded-full overflow-hidden">
+                  {/* <div className="h-1.5 w-full bg-border-gray rounded-full overflow-hidden">
                     <div
                       className="h-full bg-primary rounded-full transition-all duration-300"
                       style={{ width: `${Math.min(100, Math.max(0, Number(percentage)))}%` }}
@@ -381,7 +381,7 @@ export const UsageDashboard: React.FC = () => {
             })}
           </div>
         )}
-      </Card>
+      </Card> */}
 
       {/* Session Usage Table Section */}
       <Card className="space-y-4">
