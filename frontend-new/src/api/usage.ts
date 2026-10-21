@@ -10,6 +10,13 @@ import type {
   UsageSessionDetail,
 } from '../types/usage';
 
+export interface DateFilterParams {
+  preset?: string;
+  start_date?: string;
+  end_date?: string;
+  timezone?: string;
+}
+
 /**
  * Retrieve current DeepSeek balance (with 60-second in-memory cache).
  */
@@ -21,22 +28,26 @@ export const getUsageBalance = async (forceRefresh: boolean = false): Promise<Ba
 };
 
 /**
- * Retrieve global dashboard usage totals across all sessions and stages.
+ * Retrieve global dashboard usage totals across all sessions and stages,
+ * optionally filtered by date range or preset.
  */
-export const getUsageSummary = async (): Promise<UsageSummary> => {
-  const res = await copilotApi.get<UsageSummary>('/copilot/usage/summary');
+export const getUsageSummary = async (filter?: DateFilterParams): Promise<UsageSummary> => {
+  const res = await copilotApi.get<UsageSummary>('/copilot/usage/summary', {
+    params: filter,
+  });
   return res.data;
 };
 
 /**
- * Retrieve paginated session-level usage rollups.
+ * Retrieve paginated session-level usage rollups, optionally filtered by date range.
  */
 export const getUsageSessions = async (
   page: number = 1,
-  limit: number = 20
+  limit: number = 20,
+  filter?: DateFilterParams
 ): Promise<UsageSessionListResponse> => {
   const res = await copilotApi.get<UsageSessionListResponse>('/copilot/usage/sessions', {
-    params: { page, limit },
+    params: { page, limit, ...filter },
   });
   return res.data;
 };

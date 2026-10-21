@@ -170,7 +170,7 @@ async def start_interview(
     active_sessions[session_id] = {
         "status": "Connecting to audio stream...",
         "transcript": [],
-        "timestamp": datetime.datetime.now().isoformat(),
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "user_id": str(current_user.id) if current_user else None,
         "organizer_email": current_user.email if current_user else None,
         "organizer": current_user.email if current_user else None,
@@ -230,7 +230,7 @@ async def websocket_endpoint(
             active_sessions[session_id] = {
                 "status": "Initializing...",
                 "transcript": db_sess.get("transcript", []),
-                "timestamp": db_sess.get("timestamp", datetime.datetime.now().isoformat()),
+                "timestamp": db_sess.get("timestamp") or datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "jd": db_sess.get("jd") or "Senior Python Developer\nRequirements:\nPython, FastAPI, REST APIs, PostgreSQL, Docker, Async programming",
                 "resume": db_sess.get("resume") or "Candidate has 3 years of Python backend development experience.",
                 "custom_prompt": db_sess.get("custom_prompt", ""),
@@ -336,6 +336,9 @@ async def websocket_endpoint(
         await runner.run()
     except WebSocketDisconnect:
         logger.info(f"[Mia][{session_id}] WebSocket client disconnected.")
+        if "sess" in locals() and sess:
+            sess["is_active"] = False
+            sess["status"] = "Client Disconnected."
     except Exception as e:
         logger.error(f"[Mia][{session_id}] Error in WebSocket endpoint: {e}", exc_info=True)
         if "sess" in locals() and sess:
@@ -551,6 +554,88 @@ def resolve_actual_interviewer(rec: dict) -> Optional[str]:
 
     return None
 
+def is_session_ongoing(session_id: str, rec: dict, active_sessions: dict, copilot_active: dict) -> bool:
+    """
+    Authoritatively determines whether an interview/copilot session is currently in progress.
+    Precedence:
+    1. Terminal: Has finalized final_report (in rec or active in-memory session) -> False
+    2. Terminal: Has service_off flag on disk or session -> False
+    3. Terminal: Explicitly inactive (is_active == False) in runtime state -> False
+    4. Process validation: If local bot_process exists but exited (poll() is not None) -> False
+    5. Active runtime evidence:
+       - Present in active_sessions (interview) with is_active is True, not service_off, worker/bot valid
+       - Present in copilot_active with is_active is True, not service_off, no final_report, bot_process valid
+    6. Database/persisted sessions without live in-memory runtime activity -> False
+    """
+    sid = str(session_id)
+    # 1. Check final report terminal state (in record or in active sessions)
+    final_rep = rec.get("final_report")
+    if final_rep and isinstance(final_rep, dict) and final_rep.get("is_finalized") is True:
+        return False
+
+    # 2. Check disk service_off flag across default and copilot storage directories
+    if os.path.exists(os.path.join(Settings.DEFAULT_STORAGE_DIR, sid, "service_off.flag")) or \
+       os.path.exists(os.path.join(Settings.DEFAULT_STORAGE_DIR, "copilots", sid, "service_off.flag")) or \
+       os.path.exists(os.path.join("interviews", sid, "service_off.flag")):
+        return False
+
+    # 3. Check copilot_active (meeting observer / copilot session)
+    if sid in copilot_active:
+        cs = copilot_active[sid]
+        if cs.get("service_off"):
+            return False
+        cs_rep = cs.get("final_report")
+        if cs_rep and isinstance(cs_rep, dict) and cs_rep.get("is_finalized") is True:
+            return False
+        # Check bot subprocess if tracked locally: if exited, session is not ongoing
+        bot_proc = cs.get("bot_process")
+        if bot_proc and bot_proc.poll() is not None:
+            return False
+        if cs.get("is_active") is True:
+            return True
+
+    # 4. Check active_sessions (voice interview pipeline)
+    if sid in active_sessions:
+        sess = active_sessions[sid]
+        if sess.get("service_off"):
+            return False
+        # Check bot subprocess if tracked locally: if exited, session is not ongoing
+        bot_proc = sess.get("bot_process")
+        if bot_proc and bot_proc.poll() is not None:
+            return False
+        if sess.get("is_active") is True:
+            return True
+
+    return False
+
+
+def normalize_iso_timestamp(ts: Any) -> Optional[str]:
+    """
+    Normalizes any timestamp representation into a clean, timezone-aware ISO 8601 UTC string.
+    Ensures safe parsing across SQLite space separators and preserves genuine UTC instants.
+    """
+    if not ts:
+        return None
+    if isinstance(ts, datetime.datetime):
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=datetime.timezone.utc)
+        return ts.astimezone(datetime.timezone.utc).isoformat()
+    if isinstance(ts, str):
+        s = ts.strip()
+        if not s:
+            return None
+        # Handle space between date and time (e.g. SQLite raw string '2026-10-21 17:40:09.738686+00:00')
+        s = s.replace(" ", "T", 1)
+        try:
+            dt = datetime.datetime.fromisoformat(s.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=datetime.timezone.utc)
+            return dt.astimezone(datetime.timezone.utc).isoformat()
+        except Exception:
+            return s
+    return str(ts)
+
+
 @router.get("/interviews")
 async def list_interviews(
     request: Request,
@@ -600,9 +685,10 @@ async def list_interviews(
                 if sess_uid != user_id_str and sess_email != user_email:
                     continue
 
+            existing_rec = records_by_id.get(str(sid))
             records_by_id[str(sid)] = {
                 "session_id": str(sid),
-                "timestamp": sess.get("timestamp"),
+                "timestamp": (existing_rec.get("timestamp") if existing_rec else None) or sess.get("timestamp"),
                 "user_id": sess_uid or None,
                 "organizer_email": sess_email or user_email,
                 "organizer": sess_email or user_email,
@@ -637,13 +723,13 @@ async def list_interviews(
                     if not cs_id:
                         continue
 
-                    # If active in memory, prefer freshest in-memory transcript & timestamp
+                    # If active in memory, prefer freshest in-memory transcript
                     if cs_id in copilot_active:
                         active_c = copilot_active[cs_id]
                         engine = active_c.get("engine")
                         live_transcript = engine.get_transcript() if engine else active_c.get("transcript", cs.get("transcript", []))
                         cs["transcript"] = live_transcript
-                        if "timestamp" in active_c:
+                        if not cs.get("timestamp") and "timestamp" in active_c:
                             cs["timestamp"] = active_c["timestamp"]
 
                     if cs_id not in records_by_id:
@@ -675,12 +761,15 @@ async def list_interviews(
             except Exception as c_err:
                 logger.warning(f"Failed to list copilot sessions for merge: {c_err}")
 
-        # Resolve actual interviewer name and organizer fields for every record
+        copilot_active = getattr(request.app.state, "copilot_sessions", {})
+        # Resolve actual interviewer name, organizer fields, authoritative is_ongoing status, and normalized timestamp for every record
         for rec in records_by_id.values():
             rec["interviewer"] = resolve_actual_interviewer(rec)
             if not rec.get("organizer_email") and not rec.get("organizer"):
                 rec["organizer_email"] = "admin@voicebot.com" if is_admin else user_email
                 rec["organizer"] = rec["organizer_email"]
+            rec["is_ongoing"] = is_session_ongoing(rec["session_id"], rec, active_sessions, copilot_active)
+            rec["timestamp"] = normalize_iso_timestamp(rec.get("timestamp"))
 
         detailed_records = list(records_by_id.values())
         detailed_records.sort(key=lambda x: x.get("timestamp") or "", reverse=True)
@@ -705,19 +794,24 @@ async def get_interview(
     session_data = None
     if session_id in active_sessions:
         sess = active_sessions[session_id]
+        db_rec = {}
+        try:
+            db_rec = await repo.load_session(session_id)
+        except Exception:
+            db_rec = {}
         session_data = {
             "session_id": session_id,
-            "timestamp": sess.get("timestamp"),
-            "user_id": sess.get("user_id"),
-            "organizer_email": sess.get("organizer_email"),
-            "organizer": sess.get("organizer") or sess.get("organizer_email"),
-            "interviewer": sess.get("interviewer"),
-            "candidate_name": sess.get("candidate_name"),
-            "jd": sess.get("jd", ""),
-            "resume": sess.get("resume", ""),
-            "custom_prompt": sess.get("custom_prompt", ""),
-            "transcript": sess.get("transcript", []),
-            "final_report": sess.get("final_report")
+            "timestamp": db_rec.get("timestamp") or sess.get("timestamp"),
+            "user_id": sess.get("user_id") or db_rec.get("user_id"),
+            "organizer_email": sess.get("organizer_email") or db_rec.get("organizer_email"),
+            "organizer": sess.get("organizer") or sess.get("organizer_email") or db_rec.get("organizer"),
+            "interviewer": sess.get("interviewer") or db_rec.get("interviewer"),
+            "candidate_name": sess.get("candidate_name") or db_rec.get("candidate_name"),
+            "jd": sess.get("jd", "") or db_rec.get("jd", ""),
+            "resume": sess.get("resume", "") or db_rec.get("resume", ""),
+            "custom_prompt": sess.get("custom_prompt", "") or db_rec.get("custom_prompt", ""),
+            "transcript": sess.get("transcript", []) or db_rec.get("transcript", []),
+            "final_report": sess.get("final_report") or db_rec.get("final_report")
         }
     else:
         try:
@@ -736,19 +830,24 @@ async def get_interview(
                     if session_id in copilot_active:
                         sess = copilot_active[session_id]
                         engine = sess.get("engine")
+                        db_cs = {}
+                        try:
+                            db_cs = await copilot_repo.load_session(session_id)
+                        except Exception:
+                            db_cs = {}
                         session_data = {
                             "session_id": session_id,
-                            "timestamp": sess.get("timestamp"),
-                            "user_id": sess.get("user_id"),
-                            "organizer_email": sess.get("organizer_email"),
-                            "organizer": sess.get("organizer") or sess.get("organizer_email"),
-                            "interviewer": sess.get("interviewer"),
-                            "candidate_name": sess.get("candidate_name"),
-                            "jd": sess.get("jd", ""),
-                            "resume": sess.get("resume", ""),
-                            "custom_prompt": sess.get("custom_prompt", ""),
-                            "transcript": engine.get_transcript() if engine else sess.get("transcript", []),
-                            "final_report": sess.get("final_report")
+                            "timestamp": db_cs.get("timestamp") or sess.get("timestamp"),
+                            "user_id": sess.get("user_id") or db_cs.get("user_id"),
+                            "organizer_email": sess.get("organizer_email") or db_cs.get("organizer_email"),
+                            "organizer": sess.get("organizer") or sess.get("organizer_email") or db_cs.get("organizer"),
+                            "interviewer": sess.get("interviewer") or db_cs.get("interviewer"),
+                            "candidate_name": sess.get("candidate_name") or db_cs.get("candidate_name"),
+                            "jd": sess.get("jd", "") or db_cs.get("jd", ""),
+                            "resume": sess.get("resume", "") or db_cs.get("resume", ""),
+                            "custom_prompt": sess.get("custom_prompt", "") or db_cs.get("custom_prompt", ""),
+                            "transcript": engine.get_transcript() if engine else sess.get("transcript", db_cs.get("transcript", [])),
+                            "final_report": sess.get("final_report") or db_cs.get("final_report")
                         }
                     else:
                         cs = await copilot_repo.load_session(session_id)
@@ -781,8 +880,11 @@ async def get_interview(
         if owner_email and owner_email.strip().lower() != (user_email or "").strip().lower():
             raise HTTPException(status_code=403, detail="You do not have permission to view this session.")
 
-    # Resolve actual interviewer name
+    # Resolve actual interviewer name, authoritative is_ongoing status, and normalized timestamp
     session_data["interviewer"] = resolve_actual_interviewer(session_data)
+    copilot_active = getattr(request.app.state, "copilot_sessions", {})
+    session_data["is_ongoing"] = is_session_ongoing(session_id, session_data, active_sessions, copilot_active)
+    session_data["timestamp"] = normalize_iso_timestamp(session_data.get("timestamp"))
     return session_data
 
 @router.get("/interviews/{session_id}/recording")

@@ -46,7 +46,7 @@ class JSONFileInterviewRepository(IInterviewRepository):
         # Create initial metadata
         initial_data = {
             "session_id": session_id,
-            "timestamp": datetime.datetime.now().isoformat(),
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "jd": jd,
             "resume": resume,
             "custom_prompt": custom_prompt,

@@ -21,6 +21,7 @@ import { Badge } from '../components/Badge';
 import { Skeleton } from '../components/Loader';
 import { EmptyState } from '../components/EmptyState';
 import { Modal } from '../components/Modal';
+import { formatDateTimeIST, formatDateTimePartsIST } from '../utils/dateTime';
 
 
 /**
@@ -382,44 +383,16 @@ export const InterviewsList: React.FC = () => {
   const { data: sessions = [], isLoading, error } = useQuery<InterviewSession[]>({
     queryKey: ['interviews'],
     queryFn: listInterviews,
-    refetchInterval: 30000, // refresh every 30s to check for updates
-    staleTime: 10000, // consider fresh for 10s
+    refetchInterval: 10000, // refresh every 10s to detect live meeting start/stop
+    staleTime: 5000, // consider fresh for 5s
   });
 
   const formatDate = (isoString: string | null): string => {
-    if (!isoString) return 'Date unknown';
-    try {
-      const date = new Date(isoString);
-      return date.toLocaleDateString(undefined, {
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      });
-    } catch {
-      return isoString;
-    }
+    return formatDateTimeIST(isoString, 'Date unknown');
   };
 
   const formatDateTimeParts = (isoString: string | null): { date: string; time: string } => {
-    if (!isoString) return { date: 'Date unknown', time: '' };
-    try {
-      const d = new Date(isoString);
-      return {
-        date: d.toLocaleDateString(undefined, {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-        }),
-        time: d.toLocaleTimeString(undefined, {
-          hour: '2-digit',
-          minute: '2-digit',
-        }),
-      };
-    } catch {
-      return { date: isoString, time: '' };
-    }
+    return formatDateTimePartsIST(isoString);
   };
 
   // Filter records
@@ -562,33 +535,41 @@ export const InterviewsList: React.FC = () => {
                       </div>
                     </td>
                     <td className="px-2.5 py-3 whitespace-nowrap">
-                      {session.transcript.length > 0 ? (
+                      {session.is_ongoing ? (
+                        <Badge variant="ongoing">ONGOING</Badge>
+                      ) : session.transcript.length > 0 ? (
                         <Badge variant="success">Completed</Badge>
                       ) : (
                         <Badge variant="warning">No Transcript</Badge>
                       )}
                     </td>
                     <td className="px-3 py-3 text-right whitespace-nowrap">
-                      <div className="flex items-center justify-end gap-1.5">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="px-2.5 py-1 text-xs shrink-0"
-                          onClick={() => setSelectedSession(session)}
-                        >
-                          <Eye className="h-3.5 w-3.5 mr-1" />
-                          View
-                        </Button>
-                        <Button
-                          variant="primary"
-                          size="sm"
-                          className="px-2.5 py-1 text-xs shrink-0"
-                          onClick={() => navigate(`/copilots/${session.session_id}`)}
-                        >
-                          <FileText className="h-3.5 w-3.5 mr-1" />
-                          Results
-                        </Button>
-                      </div>
+                      {session.is_ongoing ? (
+                        <span className="inline-flex items-center text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200/80 px-2.5 py-1 rounded-md select-none">
+                          Live interview in progress
+                        </span>
+                      ) : (
+                        <div className="flex items-center justify-end gap-1.5">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="px-2.5 py-1 text-xs shrink-0"
+                            onClick={() => setSelectedSession(session)}
+                          >
+                            <Eye className="h-3.5 w-3.5 mr-1" />
+                            View
+                          </Button>
+                          <Button
+                            variant="primary"
+                            size="sm"
+                            className="px-2.5 py-1 text-xs shrink-0"
+                            onClick={() => navigate(`/copilots/${session.session_id}`)}
+                          >
+                            <FileText className="h-3.5 w-3.5 mr-1" />
+                            Results
+                          </Button>
+                        </div>
+                      )}
                     </td>
                   </tr>
                 );

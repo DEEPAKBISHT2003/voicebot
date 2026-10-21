@@ -38,7 +38,7 @@ async def start_copilot(
             "engine": engine,
             "status": "Connecting to audio stream...",
             "transcript": engine.get_transcript(),
-            "timestamp": datetime.datetime.now().isoformat(),
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "jd": req.jd,
             "resume": req.resume,
             "custom_prompt": req.custom_prompt,

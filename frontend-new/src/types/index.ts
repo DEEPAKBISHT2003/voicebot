@@ -23,6 +23,7 @@ export interface InterviewSession {
   organizer?: string;
   organizer_email?: string;
   candidate_name?: string;
+  is_ongoing?: boolean;
 }
 
 export interface StartSessionRequest {
