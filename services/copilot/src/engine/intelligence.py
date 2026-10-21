@@ -1,8 +1,12 @@
 import json
+import time
+import uuid
+from datetime import datetime, timezone
 from openai import AsyncOpenAI
 from loguru import logger
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Union
 from services.copilot.src.core.config import Settings
+from services.copilot.src.services.usage_service import usage_service
 
 
 def clean_json_loads(text: str) -> dict:
@@ -40,7 +44,8 @@ class ConversationIntelligenceEngine:
         self,
         transcript: List[Dict[str, Any]],
         jd: str = "",
-        resume: str = ""
+        resume: str = "",
+        session_id: Optional[Union[str, uuid.UUID]] = None,
     ) -> dict:
         """
         Sends the full conversation memory, JD, and resume to Groq LLM.
@@ -81,6 +86,8 @@ Analyze the conversation and output a structured JSON object with EXACTLY these 
 Respond ONLY with valid JSON.
 """
         try:
+            req_time = datetime.now(timezone.utc)
+            t0 = time.monotonic()
             chat_completion = await self.client.chat.completions.create(
                 messages=[
                     {"role": "user", "content": prompt}
@@ -88,12 +95,28 @@ Respond ONLY with valid JSON.
                 model=self.model,
                 response_format={"type": "json_object"}
             )
+            duration_ms = int((time.monotonic() - t0) * 1000)
+
+            if session_id and hasattr(chat_completion, "usage") and chat_completion.usage:
+                try:
+                    await usage_service.record_llm_usage(
+                        session_id=session_id,
+                        stage="intelligence",
+                        model=self.model,
+                        usage=chat_completion.usage,
+                        duration_ms=duration_ms,
+                        call_identifier="intelligence_analysis",
+                        request_time=req_time,
+                    )
+                except Exception as usage_err:
+                    logger.warning(f"[IntelligenceEngine] Failed to record usage for session {session_id}: {usage_err}")
+
             response_text = chat_completion.choices[0].message.content
             result = clean_json_loads(response_text)
             logger.info(f"Intelligence analysis complete: {result.get('interview_progress', {})}")
             return result
         except Exception as e:
-            logger.error(f"Error during conversation intelligence analysis: {e}")
+            logger.error(f"Error during conversation intelligence analysis: {e}. Usage cannot be verified or recorded.")
             return self._get_empty_state()
 
     def _get_empty_state(self) -> dict:

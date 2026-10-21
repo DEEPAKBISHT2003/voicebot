@@ -1,8 +1,12 @@
 import json
+import time
+import uuid
+from datetime import datetime, timezone
 from openai import AsyncOpenAI
 from loguru import logger
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Union
 from services.copilot.src.core.config import Settings
+from services.copilot.src.services.usage_service import usage_service
 
 def clean_json_loads(text: str) -> dict:
     """Safely parse JSON responses that may be wrapped in markdown codeblocks."""
@@ -36,7 +40,8 @@ class AICopilotEngine:
         transcript: List[Dict[str, Any]],
         jd: str = "",
         resume: str = "",
-        custom_prompt: str = ""
+        custom_prompt: str = "",
+        session_id: Optional[Union[str, uuid.UUID]] = None,
     ) -> dict:
         """
         Invokes Groq LLM to generate structured recommendations and observations.
@@ -155,6 +160,8 @@ Provide suggestions and structured guidance for the interviewer. Output a struct
 You must output ONLY valid JSON matching this schema. Do not output markdown code blocks or additional text.
 """
         try:
+            req_time = datetime.now(timezone.utc)
+            t0 = time.monotonic()
             chat_completion = await self.client.chat.completions.create(
                 messages=[
                     {"role": "user", "content": prompt}
@@ -162,6 +169,22 @@ You must output ONLY valid JSON matching this schema. Do not output markdown cod
                 model=self.model,
                 response_format={"type": "json_object"}
             )
+            duration_ms = int((time.monotonic() - t0) * 1000)
+
+            if session_id and hasattr(chat_completion, "usage") and chat_completion.usage:
+                try:
+                    await usage_service.record_llm_usage(
+                        session_id=session_id,
+                        stage="assistance",
+                        model=self.model,
+                        usage=chat_completion.usage,
+                        duration_ms=duration_ms,
+                        call_identifier="copilot_assistance",
+                        request_time=req_time,
+                    )
+                except Exception as usage_err:
+                    logger.warning(f"[CopilotEngine] Failed to record assistance usage for session {session_id}: {usage_err}")
+
             response_text = chat_completion.choices[0].message.content
             result = clean_json_loads(response_text)
             
@@ -179,7 +202,7 @@ You must output ONLY valid JSON matching this schema. Do not output markdown cod
             logger.info("Copilot assistant recommendations generated successfully.")
             return result
         except Exception as e:
-            logger.error(f"Error generating copilot assistant recommendations: {e}")
+            logger.error(f"Error generating copilot assistant recommendations: {e}. Usage cannot be verified or recorded.")
             return self._get_empty_state()
 
     def _get_empty_state(self) -> dict:
@@ -199,7 +222,8 @@ You must output ONLY valid JSON matching this schema. Do not output markdown cod
     async def generate_initial_suggestions(
         self,
         jd: str = "",
-        resume: str = ""
+        resume: str = "",
+        session_id: Optional[Union[str, uuid.UUID]] = None,
     ) -> List[str]:
         """
         Phase 2S: Generates exactly 2 initial interview question suggestions based on
@@ -232,6 +256,8 @@ Rules:
 }}
 """
         try:
+            req_time = datetime.now(timezone.utc)
+            t0 = time.monotonic()
             chat_completion = await self.client.chat.completions.create(
                 messages=[
                     {"role": "user", "content": prompt}
@@ -239,6 +265,22 @@ Rules:
                 model=self.model,
                 response_format={"type": "json_object"}
             )
+            duration_ms = int((time.monotonic() - t0) * 1000)
+
+            if session_id and hasattr(chat_completion, "usage") and chat_completion.usage:
+                try:
+                    await usage_service.record_llm_usage(
+                        session_id=session_id,
+                        stage="initial_suggestions_fallback",
+                        model=self.model,
+                        usage=chat_completion.usage,
+                        duration_ms=duration_ms,
+                        call_identifier="initial_suggestions",
+                        request_time=req_time,
+                    )
+                except Exception as usage_err:
+                    logger.warning(f"[CopilotEngine] Failed to record initial suggestions usage for session {session_id}: {usage_err}")
+
             response_text = chat_completion.choices[0].message.content
             result = clean_json_loads(response_text)
             raw_questions = result.get("initial_suggestions", [])
@@ -258,7 +300,7 @@ Rules:
             logger.info(f"[Phase2S] Generated {len(valid_questions)} initial suggestions: {valid_questions}")
             return valid_questions
         except Exception as e:
-            logger.error(f"[Phase2S] Error generating initial suggestions: {e}")
+            logger.error(f"[Phase2S] Error generating initial suggestions: {e}. Usage cannot be verified or recorded.")
             return []
 
     async def generate_dynamic_suggestions(
@@ -266,7 +308,8 @@ Rules:
         jd: str = "",
         resume: str = "",
         interviewer_question: str = "",
-        candidate_answer: str = ""
+        candidate_answer: str = "",
+        session_id: Optional[Union[str, uuid.UUID]] = None,
     ) -> List[str]:
         """
         Phase 2T: Generates dynamic interview question suggestions following
@@ -329,6 +372,8 @@ Return ONLY valid JSON matching this schema:
 }}
 """
         try:
+            req_time = datetime.now(timezone.utc)
+            t0 = time.monotonic()
             chat_completion = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -337,6 +382,22 @@ Return ONLY valid JSON matching this schema:
                 temperature=0.7,
                 response_format={"type": "json_object"}
             )
+            duration_ms = int((time.monotonic() - t0) * 1000)
+
+            if session_id and hasattr(chat_completion, "usage") and chat_completion.usage:
+                try:
+                    await usage_service.record_llm_usage(
+                        session_id=session_id,
+                        stage="dynamic_suggestions_fallback",
+                        model=self.model,
+                        usage=chat_completion.usage,
+                        duration_ms=duration_ms,
+                        call_identifier="dynamic_suggestions",
+                        request_time=req_time,
+                    )
+                except Exception as usage_err:
+                    logger.warning(f"[CopilotEngine] Failed to record dynamic suggestions usage for session {session_id}: {usage_err}")
+
             response_text = chat_completion.choices[0].message.content
             result = clean_json_loads(response_text)
             if isinstance(result, list):
@@ -364,7 +425,7 @@ Return ONLY valid JSON matching this schema:
             logger.info(f"[Phase2T] Generated {len(valid_questions)} dynamic suggestions: {valid_questions}")
             return valid_questions
         except Exception as e:
-            logger.error(f"[Phase2T] Error generating dynamic suggestions: {e}")
+            logger.error(f"[Phase2T] Error generating dynamic suggestions: {e}. Usage cannot be verified or recorded.")
             return [
                 "How did you handle that in your implementation?"
             ]
@@ -372,7 +433,8 @@ Return ONLY valid JSON matching this schema:
     async def generate_static_scenario_verification_questions(
         self,
         jd: str = "",
-        resume: str = ""
+        resume: str = "",
+        session_id: Optional[Union[str, uuid.UUID]] = None,
     ) -> Dict[str, List[str]]:
         """
         Phase 2X: Generates EXACTLY 5 Scenario questions and EXACTLY 5 Verification questions
@@ -426,6 +488,8 @@ Rules:
 }}
 """
         try:
+            req_time = datetime.now(timezone.utc)
+            t0 = time.monotonic()
             chat_completion = await self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -434,6 +498,22 @@ Rules:
                 temperature=0.7,
                 response_format={"type": "json_object"}
             )
+            duration_ms = int((time.monotonic() - t0) * 1000)
+
+            if session_id and hasattr(chat_completion, "usage") and chat_completion.usage:
+                try:
+                    await usage_service.record_llm_usage(
+                        session_id=session_id,
+                        stage="static_questions_fallback",
+                        model=self.model,
+                        usage=chat_completion.usage,
+                        duration_ms=duration_ms,
+                        call_identifier="static_questions",
+                        request_time=req_time,
+                    )
+                except Exception as usage_err:
+                    logger.warning(f"[CopilotEngine] Failed to record static questions usage for session {session_id}: {usage_err}")
+
             response_text = chat_completion.choices[0].message.content
             result = clean_json_loads(response_text)
             if not isinstance(result, dict):
@@ -471,6 +551,6 @@ Rules:
                 "verification_questions": valid_verifications
             }
         except Exception as e:
-            logger.error(f"[Phase2X] Error generating static scenario & verification questions: {e}")
+            logger.error(f"[Phase2X] Error generating static scenario & verification questions: {e}. Usage cannot be verified or recorded.")
             return {"scenario_questions": [], "verification_questions": []}
 

@@ -213,6 +213,7 @@ Respond ONLY with valid JSON. Do not include markdown fences or extraneous comme
 """
         try:
             logger.info(f"[PreCompiler] Submitting consolidated pre-compilation request for session {session_id}...")
+            req_time = datetime.datetime.now(datetime.timezone.utc)
             t0 = time.monotonic()
             chat_completion = await asyncio.wait_for(
                 self.client.chat.completions.create(
@@ -234,6 +235,7 @@ Respond ONLY with valid JSON. Do not include markdown fences or extraneous comme
                         usage=chat_completion.usage,
                         duration_ms=duration_ms,
                         call_identifier="precompiler",
+                        request_time=req_time,
                     )
                 except Exception as usage_err:
                     logger.warning(f"[PreCompiler] Failed to record usage telemetry for session {session_id}: {usage_err}")

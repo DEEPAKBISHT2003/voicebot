@@ -480,7 +480,8 @@ class CopilotSessionEngine:
             intel_task = self.intelligence_engine.analyze(
                 transcript=self.transcript,
                 jd=self.jd,
-                resume=self.resume
+                resume=self.resume,
+                session_id=self.session_id
             )
             tasks.append(intel_task)
 
@@ -489,7 +490,8 @@ class CopilotSessionEngine:
                 transcript=self.transcript,
                 jd=self.jd,
                 resume=self.resume,
-                custom_prompt=self.custom_prompt
+                custom_prompt=self.custom_prompt,
+                session_id=self.session_id
             )
             tasks.append(assist_task)
 
@@ -1169,7 +1171,8 @@ class CopilotSessionEngine:
                     jd=self.jd,
                     resume=self.resume,
                     interviewer_question=interviewer_q,
-                    candidate_answer=candidate_a
+                    candidate_answer=candidate_a,
+                    session_id=self.session_id
                 )
 
                 if len(suggestions) > 2:
@@ -1843,7 +1846,8 @@ Or when no complete Q/A exists:
                     jd=self.jd,
                     resume=self.resume,
                     interviewer_question=interviewer_q,
-                    candidate_answer=candidate_a
+                    candidate_answer=candidate_a,
+                    session_id=self.session_id
                 )
 
                 if len(suggestions) > 2:

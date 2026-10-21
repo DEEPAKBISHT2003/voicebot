@@ -8,6 +8,7 @@ import uuid
 from openai import AsyncOpenAI
 from loguru import logger
 from services.copilot.src.core.config import Settings
+from datetime import datetime, timezone
 from services.copilot.src.services.usage_service import usage_service
 
 
@@ -498,6 +499,7 @@ Return ONLY valid JSON matching this exact structure:
         )
 
         try:
+            req_time = datetime.now(timezone.utc)
             t0 = time.monotonic()
             chat_completion = await asyncio.wait_for(
                 self.client.chat.completions.create(
@@ -521,6 +523,7 @@ Return ONLY valid JSON matching this exact structure:
                         usage=chat_completion.usage,
                         duration_ms=duration_ms,
                         call_identifier=call_identifier,
+                        request_time=req_time,
                     )
                 except Exception as usage_err:
                     logger.warning(f"[UnifiedQAWorker] Failed to record usage telemetry for session {session_id}: {usage_err}")
