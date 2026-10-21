@@ -16,12 +16,103 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import httpx
 from loguru import logger
 from tortoise.functions import Sum, Count
+from tortoise.expressions import Q
+import zoneinfo
+from datetime import date, time as dt_time, timedelta, timezone
 
 from services.copilot.src.core.config import Settings
 from services.copilot.src.models.copilot import (
     CopilotSessionModel,
     CopilotLLMUsageRecordModel,
 )
+
+
+def parse_date_range(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    preset: Optional[str] = None,
+    timezone_str: str = "UTC"
+) -> Tuple[Optional[datetime.datetime], Optional[datetime.datetime], str, str]:
+    """
+    Parses and calculates date range boundaries using half-open intervals:
+    start_datetime <= timestamp < day_after_end_datetime.
+    
+    Returns:
+        (start_dt_utc, end_dt_utc, applied_preset, resolved_timezone)
+    """
+    try:
+        tz = zoneinfo.ZoneInfo(timezone_str) if timezone_str else zoneinfo.ZoneInfo("UTC")
+        resolved_tz_name = timezone_str or "UTC"
+    except Exception:
+        tz = zoneinfo.ZoneInfo("UTC")
+        resolved_tz_name = "UTC"
+
+    now_tz = datetime.datetime.now(tz)
+    today_d = now_tz.date()
+
+    # 1. Check explicit custom range
+    if start_date and end_date:
+        def _parse_endpoint(val: str, is_end: bool) -> datetime.datetime:
+            val = val.strip()
+            if "T" in val:
+                dt_val = datetime.datetime.fromisoformat(val.replace("Z", "+00:00"))
+                if dt_val.tzinfo is None:
+                    dt_val = dt_val.replace(tzinfo=tz)
+                return dt_val
+            else:
+                d_val = date.fromisoformat(val)
+                if is_end:
+                    return datetime.datetime.combine(d_val + timedelta(days=1), dt_time.min, tzinfo=tz)
+                else:
+                    return datetime.datetime.combine(d_val, dt_time.min, tzinfo=tz)
+
+        start_dt = _parse_endpoint(start_date, is_end=False)
+        end_dt = _parse_endpoint(end_date, is_end=True)
+
+        if start_dt > end_dt:
+            raise ValueError("Start date cannot be after end date")
+
+        return (
+            start_dt.astimezone(timezone.utc),
+            end_dt.astimezone(timezone.utc),
+            "custom",
+            resolved_tz_name
+        )
+
+    # 2. Handle Presets
+    effective_preset = (preset or "last_7_days").strip().lower()
+
+    if effective_preset == "today":
+        start_dt = datetime.datetime.combine(today_d, dt_time.min, tzinfo=tz)
+        end_dt = datetime.datetime.combine(today_d + timedelta(days=1), dt_time.min, tzinfo=tz)
+    elif effective_preset == "yesterday":
+        yest_d = today_d - timedelta(days=1)
+        start_dt = datetime.datetime.combine(yest_d, dt_time.min, tzinfo=tz)
+        end_dt = datetime.datetime.combine(today_d, dt_time.min, tzinfo=tz)
+    elif effective_preset == "last_7_days":
+        start_d = today_d - timedelta(days=6)
+        start_dt = datetime.datetime.combine(start_d, dt_time.min, tzinfo=tz)
+        end_dt = datetime.datetime.combine(today_d + timedelta(days=1), dt_time.min, tzinfo=tz)
+    elif effective_preset == "last_30_days":
+        start_d = today_d - timedelta(days=29)
+        start_dt = datetime.datetime.combine(start_d, dt_time.min, tzinfo=tz)
+        end_dt = datetime.datetime.combine(today_d + timedelta(days=1), dt_time.min, tzinfo=tz)
+    elif effective_preset == "this_month":
+        start_d = date(today_d.year, today_d.month, 1)
+        start_dt = datetime.datetime.combine(start_d, dt_time.min, tzinfo=tz)
+        end_dt = datetime.datetime.combine(today_d + timedelta(days=1), dt_time.min, tzinfo=tz)
+    else:
+        effective_preset = "last_7_days"
+        start_d = today_d - timedelta(days=6)
+        start_dt = datetime.datetime.combine(start_d, dt_time.min, tzinfo=tz)
+        end_dt = datetime.datetime.combine(today_d + timedelta(days=1), dt_time.min, tzinfo=tz)
+
+    return (
+        start_dt.astimezone(timezone.utc),
+        end_dt.astimezone(timezone.utc),
+        effective_preset,
+        resolved_tz_name
+    )
 
 
 class CopilotDashboardUsageService:
@@ -209,18 +300,40 @@ class CopilotDashboardUsageService:
                 "retrieved_at": now_iso,
             }
 
-    async def get_usage_summary(self) -> Dict[str, Any]:
+    async def get_usage_summary(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        preset: Optional[str] = None,
+        timezone_str: str = "UTC"
+    ) -> Dict[str, Any]:
         """
-        Calculates global dashboard-level usage totals from immutable records and sessions.
+        Calculates dashboard-level usage totals from immutable records and sessions
+        filtered by half-open interval: start_datetime <= timestamp < day_after_end_datetime.
         """
-        # 1. Aggregate usage metrics across all LLM usage records
-        all_records = await CopilotLLMUsageRecordModel.all()
+        start_utc, end_utc, applied_preset, tz_name = parse_date_range(
+            start_date=start_date,
+            end_date=end_date,
+            preset=preset,
+            timezone_str=timezone_str
+        )
+
+        # 1. Aggregate usage metrics across filtered LLM usage records
+        rec_query = CopilotLLMUsageRecordModel.all()
+        if start_utc:
+            rec_query = rec_query.filter(created_at__gte=start_utc)
+        if end_utc:
+            rec_query = rec_query.filter(created_at__lt=end_utc)
+
+        all_records = await rec_query
 
         total_prompt_tokens = 0
         total_completion_tokens = 0
         total_tokens = 0
         total_cost_dec = Decimal("0.000000")
+        deepseek_cost_dec = Decimal("0.000000")
         total_llm_calls = len(all_records)
+        deepseek_llm_calls = 0
 
         # Stage level map
         stage_map: Dict[str, Dict[str, Any]] = {}
@@ -237,6 +350,12 @@ class CopilotDashboardUsageService:
             total_completion_tokens += c_tok
             total_tokens += t_tok
             total_cost_dec += cost_d
+
+            # DeepSeek attribution
+            is_deepseek = bool(rec.model and str(rec.model).lower().startswith("deepseek"))
+            if is_deepseek:
+                deepseek_cost_dec += cost_d
+                deepseek_llm_calls += 1
 
             if rec.session_id:
                 sessions_with_usage_set.add(str(rec.session_id))
@@ -275,49 +394,86 @@ class CopilotDashboardUsageService:
         stage_breakdown.sort(key=lambda x: (-x["cost_usd"], x["stage"]))
 
         # 2. Aggregate session counts and meeting durations
-        all_sessions = await CopilotSessionModel.all()
+        sess_query = CopilotSessionModel.all()
+        if start_utc and end_utc:
+            sess_query = sess_query.filter(
+                (Q(meeting_started_at__gte=start_utc) & Q(meeting_started_at__lt=end_utc))
+                | (Q(meeting_started_at__isnull=True) & Q(timestamp__gte=start_utc) & Q(timestamp__lt=end_utc))
+            )
+        all_sessions = await sess_query
         total_sessions = len(all_sessions)
         total_meeting_seconds = 0
+        seen_sessions = set()
 
         for sess in all_sessions:
-            if sess.meeting_duration_seconds is not None and sess.meeting_duration_seconds > 0:
-                total_meeting_seconds += int(sess.meeting_duration_seconds)
+            if sess.session_id not in seen_sessions:
+                seen_sessions.add(sess.session_id)
+                if sess.meeting_duration_seconds is not None and sess.meeting_duration_seconds > 0:
+                    total_meeting_seconds += int(sess.meeting_duration_seconds)
 
         total_meeting_minutes = round(total_meeting_seconds / 60.0, 1)
 
         return {
+            "balance_consumed_usd": float(round(deepseek_cost_dec, 6)),
+            "total_cost_usd": float(round(total_cost_dec, 6)),
             "total_tokens": total_tokens,
             "prompt_tokens": total_prompt_tokens,
             "completion_tokens": total_completion_tokens,
-            "total_cost_usd": float(round(total_cost_dec, 6)),
             "total_llm_calls": total_llm_calls,
+            "deepseek_llm_calls": deepseek_llm_calls,
             "total_meeting_duration_seconds": total_meeting_seconds,
             "total_meeting_duration_minutes": total_meeting_minutes,
             "total_sessions": total_sessions,
             "sessions_with_usage": len(sessions_with_usage_set),
             "stage_breakdown": stage_breakdown,
+            "start_date": start_utc.isoformat() if start_utc else None,
+            "end_date": end_utc.isoformat() if end_utc else None,
+            "applied_preset": applied_preset,
+            "timezone": tz_name,
+            "cost_accounting_status": "authoritative",
         }
 
     async def get_session_usage_list(
         self,
         page: int = 1,
-        limit: int = 20
+        limit: int = 20,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        preset: Optional[str] = None,
+        timezone_str: str = "UTC"
     ) -> Dict[str, Any]:
         """
-        Provides paginated session-level usage list.
+        Provides paginated session-level usage list, optionally filtered by date range.
         """
         if page < 1:
             raise ValueError("Page must be greater than or equal to 1")
         if limit < 1 or limit > 100:
             raise ValueError("Limit must be between 1 and 100")
 
-        total_sessions = await CopilotSessionModel.all().count()
+        start_utc = None
+        end_utc = None
+        if start_date or end_date or preset:
+            start_utc, end_utc, _, _ = parse_date_range(
+                start_date=start_date,
+                end_date=end_date,
+                preset=preset,
+                timezone_str=timezone_str
+            )
+
+        sess_query = CopilotSessionModel.all()
+        if start_utc and end_utc:
+            sess_query = sess_query.filter(
+                (Q(meeting_started_at__gte=start_utc) & Q(meeting_started_at__lt=end_utc))
+                | (Q(meeting_started_at__isnull=True) & Q(timestamp__gte=start_utc) & Q(timestamp__lt=end_utc))
+            )
+
+        total_sessions = await sess_query.count()
         total_pages = (total_sessions + limit - 1) // limit if total_sessions > 0 else 0
 
         offset = (page - 1) * limit
         # Order by session timestamp descending so newest sessions always appear first
         sessions = (
-            await CopilotSessionModel.all()
+            await sess_query
             .order_by("-timestamp")
             .offset(offset)
             .limit(limit)

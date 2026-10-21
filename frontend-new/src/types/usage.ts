@@ -39,12 +39,19 @@ export interface UsageSummary {
   prompt_tokens: number;
   completion_tokens: number;
   total_cost_usd: number;
+  balance_consumed_usd?: number;
   total_llm_calls: number;
+  deepseek_llm_calls?: number;
   total_meeting_duration_seconds: number;
   total_meeting_duration_minutes: number;
   total_sessions: number;
   sessions_with_usage: number;
   stage_breakdown: StageUsage[];
+  start_date?: string | null;
+  end_date?: string | null;
+  applied_preset?: string | null;
+  timezone?: string | null;
+  cost_accounting_status?: string | null;
 }
 
 export interface UsageSessionItem {

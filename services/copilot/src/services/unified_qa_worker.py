@@ -8,6 +8,7 @@ import uuid
 from openai import AsyncOpenAI
 from loguru import logger
 from services.copilot.src.core.config import Settings
+from datetime import datetime, timezone
 from services.copilot.src.services.usage_service import usage_service
 
 
@@ -420,13 +421,20 @@ SECTION 4: DYNAMIC QUESTION SUGGESTIONS
 - Follow-Up Conversational Style Rules:
   * Sound like a real interviewer: Use natural, direct, spoken English appropriate for a live technical interview.
   * Ask ONE question at a time: Never combine multiple independent questions into one suggestion using "and", "also", or sequences of question marks. Each suggestion must have one primary question and clear conversational intent.
+  * Short, direct, and conversational: Aim for approximately 8 to 20 words. Eliminate verbose preambles, artificial lead-ins, and explanations of what the interviewer wants to know.
   * Specific and grounded: Probe what the candidate just claimed, trade-offs, or unclear details; never invent claims they didn't make.
+  * Avoid formulaic expressions: Do NOT use "Could you elaborate further on your approach?", "Could you explain in greater detail...", "Can you walk me through your overall approach and discuss...", or "What are the advantages and disadvantages of...".
+  * Avoid unnecessary probing when the candidate's answer was already clear and addressed the point.
   * Avoid academic filler, formal clichés, or interrogation tone (e.g. avoid "Could you elaborate further on your approach?").
   * Examples:
     - Instead of: "Can you explain how you implemented caching, what eviction strategy you selected, and how you handled cache invalidation?"
       Use: "You mentioned Redis caching. How did you handle cache invalidation?"
     - Instead of: "Could you elaborate further on the architectural considerations and trade-offs that informed your decision to employ asynchronous processing?"
       Use: "What made you choose async processing for this part?"
+    - Instead of: "Could you elaborate further on the architectural considerations that informed your decision to employ asynchronous processing?"
+      Use: "Why did you choose async processing here?"
+    - Instead of: "Could you provide further details regarding the challenges encountered during the implementation of your solution?"
+      Use: "What was the main challenge during implementation?"
     - Instead of: "What are the advantages and disadvantages of microservices?"
       Use: "You mentioned splitting the service into microservices. What problem were you trying to solve with that?"
     - Instead of: "Why didn't you use a better architecture, and how would you justify this design?"
@@ -491,6 +499,7 @@ Return ONLY valid JSON matching this exact structure:
         )
 
         try:
+            req_time = datetime.now(timezone.utc)
             t0 = time.monotonic()
             chat_completion = await asyncio.wait_for(
                 self.client.chat.completions.create(
@@ -514,6 +523,7 @@ Return ONLY valid JSON matching this exact structure:
                         usage=chat_completion.usage,
                         duration_ms=duration_ms,
                         call_identifier=call_identifier,
+                        request_time=req_time,
                     )
                 except Exception as usage_err:
                     logger.warning(f"[UnifiedQAWorker] Failed to record usage telemetry for session {session_id}: {usage_err}")

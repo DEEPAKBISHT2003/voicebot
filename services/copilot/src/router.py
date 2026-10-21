@@ -67,7 +67,7 @@ async def start_copilot(
             "report_status": "not_ready",
             "report_error": None,
             "transcript": engine.get_transcript(),
-            "timestamp": datetime.datetime.now().isoformat(),
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "user_id": str(current_user.id) if current_user else None,
             "organizer_email": current_user.email if current_user else None,
             "organizer": current_user.email if current_user else None,
@@ -577,13 +577,26 @@ async def get_usage_balance(
         }
 
 @router.get("/usage/summary")
-async def get_usage_summary():
+async def get_usage_summary(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    preset: Optional[str] = None,
+    timezone: Optional[str] = None,
+):
     """
-    Dashboard-level global usage totals across all sessions and stages.
+    Dashboard-level global usage totals across all sessions and stages,
+    filtered by date range or preset.
     """
     try:
         from services.copilot.src.services.dashboard_service import dashboard_service
-        return await dashboard_service.get_usage_summary()
+        return await dashboard_service.get_usage_summary(
+            start_date=start_date,
+            end_date=end_date,
+            preset=preset,
+            timezone_str=timezone or "UTC",
+        )
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         logger.error(f"[UsageAPI] Error fetching usage summary: {e}")
         raise HTTPException(status_code=500, detail="Failed to calculate usage summary")
@@ -591,10 +604,15 @@ async def get_usage_summary():
 @router.get("/usage/sessions")
 async def get_usage_sessions(
     page: int = 1,
-    limit: int = 20
+    limit: int = 20,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    preset: Optional[str] = None,
+    timezone: Optional[str] = None,
 ):
     """
-    Paginated session-level usage rollups including meeting duration, tokens, cost, and LLM call counts.
+    Paginated session-level usage rollups including meeting duration, tokens, cost, and LLM call counts,
+    optionally filtered by date range or preset.
     """
     if page < 1:
         raise HTTPException(status_code=400, detail="Page must be greater than or equal to 1")
@@ -602,7 +620,14 @@ async def get_usage_sessions(
         raise HTTPException(status_code=400, detail="Limit must be between 1 and 100")
     try:
         from services.copilot.src.services.dashboard_service import dashboard_service
-        return await dashboard_service.get_session_usage_list(page=page, limit=limit)
+        return await dashboard_service.get_session_usage_list(
+            page=page,
+            limit=limit,
+            start_date=start_date,
+            end_date=end_date,
+            preset=preset,
+            timezone_str=timezone or "UTC",
+        )
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:

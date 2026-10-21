@@ -1,12 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Wallet,
   DollarSign,
-  Layers,
   Clock,
-  Cpu,
-  Users,
   RefreshCw,
   ChevronLeft,
   ChevronRight,
@@ -14,7 +11,8 @@ import {
   AlertCircle,
   Copy,
   Check,
-  Zap,
+  Calendar,
+  RotateCcw,
 } from 'lucide-react';
 import {
   getUsageBalance,
@@ -22,12 +20,12 @@ import {
   getUsageSessions,
   getUsageSessionDetail,
 } from '../api/usage';
+import type { DateFilterParams } from '../api/usage';
 import type {
   BalanceResponse,
   UsageSummary,
   UsageSessionListResponse,
   UsageSessionDetail,
-  StageUsage,
   UsageCall,
 } from '../types/usage';
 import { Card } from '../components/Card';
@@ -37,13 +35,59 @@ import { Skeleton } from '../components/Loader';
 import { EmptyState } from '../components/EmptyState';
 import { Modal } from '../components/Modal';
 
+export type DatePreset =
+  | 'today'
+  | 'yesterday'
+  | 'last_7_days'
+  | 'last_30_days'
+  | 'this_month'
+  | 'custom';
+
 export const UsageDashboard: React.FC = () => {
   const queryClient = useQueryClient();
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
-  // 1. Balance Query
+  // Date Filter State
+  const [selectedPreset, setSelectedPreset] = useState<DatePreset>('last_7_days');
+  const [customStartDate, setCustomStartDate] = useState<string>('');
+  const [customEndDate, setCustomEndDate] = useState<string>('');
+  const [customError, setCustomError] = useState<string | null>(null);
+  const [appliedCustomRange, setAppliedCustomRange] = useState<{ start: string; end: string } | null>(null);
+
+  // Client timezone
+  const clientTimezone = useMemo(() => {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    } catch {
+      return 'UTC';
+    }
+  }, []);
+
+  // Compute Active Filter Parameters for Backend Queries
+  const filterParams = useMemo<DateFilterParams>(() => {
+    if (selectedPreset === 'custom') {
+      if (appliedCustomRange) {
+        return {
+          start_date: appliedCustomRange.start,
+          end_date: appliedCustomRange.end,
+          timezone: clientTimezone,
+        };
+      }
+      // If custom is chosen but not yet applied, fallback safely to last_7_days
+      return {
+        preset: 'last_7_days',
+        timezone: clientTimezone,
+      };
+    }
+    return {
+      preset: selectedPreset,
+      timezone: clientTimezone,
+    };
+  }, [selectedPreset, appliedCustomRange, clientTimezone]);
+
+  // 1. Balance Query (Global Provider Credit)
   const {
     data: balanceData,
     isLoading: isLoadingBalance,
@@ -54,25 +98,27 @@ export const UsageDashboard: React.FC = () => {
     staleTime: 30000,
   });
 
-  // 2. Summary Query
+  // 2. Summary Query (Filtered by Date Range / Preset)
   const {
     data: summaryData,
     isLoading: isLoadingSummary,
+    isFetching: isFetchingSummary,
     isError: isErrorSummary,
   } = useQuery<UsageSummary>({
-    queryKey: ['usage-summary'],
-    queryFn: getUsageSummary,
+    queryKey: ['usage-summary', filterParams],
+    queryFn: () => getUsageSummary(filterParams),
     staleTime: 30000,
   });
 
-  // 3. Paginated Sessions Query
+  // 3. Paginated Sessions Query (Filtered by Date Range / Preset)
   const {
     data: sessionsData,
     isLoading: isLoadingSessions,
+    isFetching: isFetchingSessions,
     isError: isErrorSessions,
   } = useQuery<UsageSessionListResponse>({
-    queryKey: ['usage-sessions', currentPage],
-    queryFn: () => getUsageSessions(currentPage, 20),
+    queryKey: ['usage-sessions', currentPage, filterParams],
+    queryFn: () => getUsageSessions(currentPage, 20, filterParams),
     staleTime: 30000,
   });
 
@@ -94,6 +140,44 @@ export const UsageDashboard: React.FC = () => {
       queryClient.setQueryData(['usage-balance'], data);
     },
   });
+
+  // Preset Selection Handler
+  const handlePresetChange = (newPreset: DatePreset) => {
+    setSelectedPreset(newPreset);
+    setCustomError(null);
+    setCurrentPage(1);
+    if (newPreset !== 'custom') {
+      setAppliedCustomRange(null);
+    }
+  };
+
+  // Custom Range Apply Handler
+  const handleApplyCustom = () => {
+    if (!customStartDate || !customEndDate) {
+      setCustomError('Please select both a start date and an end date.');
+      return;
+    }
+    if (customStartDate > customEndDate) {
+      setCustomError('Start date cannot be after end date.');
+      return;
+    }
+    setCustomError(null);
+    setAppliedCustomRange({
+      start: customStartDate,
+      end: customEndDate,
+    });
+    setCurrentPage(1);
+  };
+
+  // Reset Filter to Default
+  const handleResetFilter = () => {
+    setSelectedPreset('last_7_days');
+    setAppliedCustomRange(null);
+    setCustomStartDate('');
+    setCustomEndDate('');
+    setCustomError(null);
+    setCurrentPage(1);
+  };
 
   // Copy helper
   const handleCopy = (text: string) => {
@@ -148,6 +232,19 @@ export const UsageDashboard: React.FC = () => {
     }
   };
 
+  const formatDateRangeLabel = (startIso?: string | null, endIso?: string | null): string => {
+    if (!startIso || !endIso) return '';
+    try {
+      const s = new Date(startIso);
+      const e = new Date(endIso);
+      // For display, adjust end boundary backward by 1 second to show the true inclusive last day
+      const adjustedEnd = new Date(e.getTime() - 1000);
+      return `${s.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} – ${adjustedEnd.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`;
+    } catch {
+      return '';
+    }
+  };
+
   const formatStageName = (stage: string): string => {
     const map: Record<string, string> = {
       precompiler: 'Precompiler & JD Analysis',
@@ -156,12 +253,19 @@ export const UsageDashboard: React.FC = () => {
       qa_accuracy: 'Q/A Accuracy Evaluation',
       final_evaluation: 'Final Dossier Evaluation',
       final_eval_shadow: 'Final Eval Shadow',
+      assistance: 'Live Copilot Assistance',
+      dynamic_suggestions_fallback: 'Dynamic Suggestions Fallback',
+      initial_suggestions_fallback: 'Initial Suggestions Fallback',
+      static_questions_fallback: 'Static Verification Fallback',
+      intelligence: 'Conversation Intelligence',
     };
     return map[stage] || stage.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
   };
 
+  const isDataFetching = isFetchingSummary || isFetchingSessions;
+
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       {/* Header Section */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-border-gray">
         <div>
@@ -188,9 +292,112 @@ export const UsageDashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* Top KPI Metrics Cards (6-card Grid) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
-        {/* 1. DeepSeek Balance */}
+      {/* Date-Range Filter Control Bar */}
+      <div className="p-3 bg-white rounded-xl border border-border-gray shadow-xs space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center flex-wrap gap-2.5">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-primary">
+              <Calendar className="h-4 w-4 text-primary" />
+              <span>Time Period:</span>
+            </div>
+
+            {/* Single Dropdown Selector */}
+            <select
+              value={selectedPreset}
+              onChange={(e) => handlePresetChange(e.target.value as DatePreset)}
+              className="h-9 px-3 py-1.5 text-xs font-medium border border-border-gray rounded-lg bg-white text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary cursor-pointer shadow-xs"
+              aria-label="Filter usage by date range"
+            >
+              <option value="today">Today</option>
+              <option value="yesterday">Yesterday</option>
+              <option value="last_7_days">Last 7 Days</option>
+              <option value="last_30_days">Last 30 Days</option>
+              <option value="this_month">This Month</option>
+              <option value="custom">Custom Date Range</option>
+            </select>
+
+            {/* Active Range Dates Indicator */}
+            {summaryData?.start_date && summaryData?.end_date && (
+              <span className="text-xs text-muted-gray hidden md:inline-block">
+                ({formatDateRangeLabel(summaryData.start_date, summaryData.end_date)})
+              </span>
+            )}
+
+            {isDataFetching && (
+              <RefreshCw className="h-3.5 w-3.5 text-primary animate-spin ml-1" />
+            )}
+          </div>
+
+          {/* Reset Action */}
+          {selectedPreset !== 'last_7_days' && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleResetFilter}
+              className="h-8 px-2.5 text-xs text-muted-gray flex items-center gap-1.5 self-start sm:self-auto"
+            >
+              <RotateCcw className="h-3 w-3" />
+              Reset to Last 7 Days
+            </Button>
+          )}
+        </div>
+
+        {/* Custom Date Pickers Drawer (Revealed only when 'custom' is selected) */}
+        {selectedPreset === 'custom' && (
+          <div className="pt-3 border-t border-border-gray/60 flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-1.5">
+              <label htmlFor="custom-start-date" className="text-xs font-medium text-muted-gray">
+                Start Date:
+              </label>
+              <input
+                id="custom-start-date"
+                type="date"
+                value={customStartDate}
+                onChange={(e) => {
+                  setCustomStartDate(e.target.value);
+                  setCustomError(null);
+                }}
+                className="h-8 px-2.5 text-xs border border-border-gray rounded-lg bg-white text-primary focus:outline-primary"
+              />
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <label htmlFor="custom-end-date" className="text-xs font-medium text-muted-gray">
+                End Date:
+              </label>
+              <input
+                id="custom-end-date"
+                type="date"
+                value={customEndDate}
+                onChange={(e) => {
+                  setCustomEndDate(e.target.value);
+                  setCustomError(null);
+                }}
+                className="h-8 px-2.5 text-xs border border-border-gray rounded-lg bg-white text-primary focus:outline-primary"
+              />
+            </div>
+
+            <Button
+              size="sm"
+              onClick={handleApplyCustom}
+              disabled={!customStartDate || !customEndDate}
+              className="h-8 px-3.5 text-xs"
+            >
+              Apply
+            </Button>
+
+            {customError && (
+              <span className="text-xs text-red-600 font-medium">
+                {customError}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Top KPI Metrics Cards (3-card Grid: DeepSeek Balance, Balance Consumed, Meeting Time) */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {/* Card 1: DeepSeek Balance (Live Provider Balance) */}
         <Card className="flex flex-col justify-between p-4 bg-white border border-border-gray shadow-xs">
           <div className="flex items-center justify-between text-muted-gray mb-2">
             <span className="text-xs font-semibold uppercase tracking-wider">DeepSeek Balance</span>
@@ -212,58 +419,40 @@ export const UsageDashboard: React.FC = () => {
                 <Badge variant={balanceData.cached ? 'info' : 'success'} className="text-[10px] px-1.5 py-0">
                   {balanceData.cached ? 'Cached (60s)' : 'Live'}
                 </Badge>
-                <span className="text-[11px] text-muted-gray">{balanceData.currency}</span>
+                <span className="text-[11px] text-muted-gray">Remaining Provider Credit</span>
               </div>
             </div>
           )}
         </Card>
 
-        {/* 2. Total API Spend */}
+        {/* Card 2: Balance Consumed (DeepSeek API Cost for Selected Date Range) */}
         <Card className="flex flex-col justify-between p-4 bg-white border border-border-gray shadow-xs">
           <div className="flex items-center justify-between text-muted-gray mb-2">
-            <span className="text-xs font-semibold uppercase tracking-wider">Total API Spend</span>
+            <span className="text-xs font-semibold uppercase tracking-wider">Balance Consumed</span>
             <DollarSign className="h-4 w-4 text-emerald-600" />
-          </div>
-          {isLoadingSummary ? (
-            <Skeleton className="h-7 w-20 my-1" />
-          ) : isErrorSummary ? (
-            <div className="text-sm text-red-600">Error</div>
-          ) : (
-            <div>
-              <div className="text-2xl font-bold text-primary">
-                {formatCost(summaryData?.total_cost_usd)}
-              </div>
-              <span className="text-[11px] text-muted-gray">Exact Decimal rollup</span>
-            </div>
-          )}
-        </Card>
-
-        {/* 3. Total Tokens */}
-        <Card className="flex flex-col justify-between p-4 bg-white border border-border-gray shadow-xs">
-          <div className="flex items-center justify-between text-muted-gray mb-2">
-            <span className="text-xs font-semibold uppercase tracking-wider">Total Tokens</span>
-            <Layers className="h-4 w-4 text-blue-600" />
           </div>
           {isLoadingSummary ? (
             <Skeleton className="h-7 w-24 my-1" />
           ) : isErrorSummary ? (
-            <div className="text-sm text-red-600">Error</div>
+            <div className="text-sm text-red-600">Error calculating consumption</div>
           ) : (
             <div>
-              <div className="text-2xl font-bold text-primary">
-                {formatTokens(summaryData?.total_tokens)}
+              <div className="text-2xl font-bold text-emerald-700">
+                {formatCost(summaryData?.balance_consumed_usd ?? summaryData?.total_cost_usd)}
               </div>
-              <span className="text-[11px] text-muted-gray">
-                {formatTokens(summaryData?.prompt_tokens)} in / {formatTokens(summaryData?.completion_tokens)} out
-              </span>
+              <div className="flex items-center gap-1.5 mt-1">
+                <span className="text-[11px] text-muted-gray">
+                  {formatTokens(summaryData?.total_tokens)} tokens ({summaryData?.deepseek_llm_calls ?? summaryData?.total_llm_calls ?? 0} calls)
+                </span>
+              </div>
             </div>
           )}
         </Card>
 
-        {/* 4. Total Meeting Time */}
+        {/* Card 3: Total Meeting Time */}
         <Card className="flex flex-col justify-between p-4 bg-white border border-border-gray shadow-xs">
           <div className="flex items-center justify-between text-muted-gray mb-2">
-            <span className="text-xs font-semibold uppercase tracking-wider">Meeting Time</span>
+            <span className="text-xs font-semibold uppercase tracking-wider">Total Meeting Time</span>
             <Clock className="h-4 w-4 text-amber-600" />
           </div>
           {isLoadingSummary ? (
@@ -276,116 +465,16 @@ export const UsageDashboard: React.FC = () => {
                 {formatDuration(summaryData?.total_meeting_duration_seconds)}
               </div>
               <span className="text-[11px] text-muted-gray">
-                {summaryData?.total_meeting_duration_minutes ?? 0} mins total
-              </span>
-            </div>
-          )}
-        </Card>
-
-        {/* 5. Total LLM Calls */}
-        <Card className="flex flex-col justify-between p-4 bg-white border border-border-gray shadow-xs">
-          <div className="flex items-center justify-between text-muted-gray mb-2">
-            <span className="text-xs font-semibold uppercase tracking-wider">LLM Invocations</span>
-            <Cpu className="h-4 w-4 text-purple-600" />
-          </div>
-          {isLoadingSummary ? (
-            <Skeleton className="h-7 w-16 my-1" />
-          ) : isErrorSummary ? (
-            <div className="text-sm text-red-600">Error</div>
-          ) : (
-            <div>
-              <div className="text-2xl font-bold text-primary">
-                {summaryData?.total_llm_calls ?? 0}
-              </div>
-              <span className="text-[11px] text-muted-gray">Immutable call logs</span>
-            </div>
-          )}
-        </Card>
-
-        {/* 6. Total Sessions */}
-        <Card className="flex flex-col justify-between p-4 bg-white border border-border-gray shadow-xs">
-          <div className="flex items-center justify-between text-muted-gray mb-2">
-            <span className="text-xs font-semibold uppercase tracking-wider">Sessions</span>
-            <Users className="h-4 w-4 text-indigo-600" />
-          </div>
-          {isLoadingSummary ? (
-            <Skeleton className="h-7 w-16 my-1" />
-          ) : isErrorSummary ? (
-            <div className="text-sm text-red-600">Error</div>
-          ) : (
-            <div>
-              <div className="text-2xl font-bold text-primary">
-                {summaryData?.total_sessions ?? 0}
-              </div>
-              <span className="text-[11px] text-muted-gray">
-                {summaryData?.sessions_with_usage ?? 0} active with LLM
+                {summaryData?.total_meeting_duration_minutes ?? 0} mins across {summaryData?.total_sessions ?? 0} sessions
               </span>
             </div>
           )}
         </Card>
       </div>
 
-      {/* Stage-by-Stage Cost Breakdown Section */}
-      <Card className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-base font-semibold text-primary">Pipeline Stage Spend Breakdown</h2>
-            <p className="text-xs text-muted-gray mt-0.5">
-              Cost and token distribution per architectural stage derived directly from persisted usage logs.
-            </p>
-          </div>
-        </div>
-
-        {isLoadingSummary ? (
-          <div className="space-y-3 py-2">
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-10 w-full" />
-          </div>
-        ) : !summaryData?.stage_breakdown || summaryData.stage_breakdown.length === 0 ? (
-          <div className="text-center py-6 text-sm text-muted-gray">
-            No pipeline stages have incurred LLM usage yet.
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {summaryData.stage_breakdown.map((stageItem: StageUsage) => {
-              const totalCost = summaryData.total_cost_usd || 0;
-              const percentage = totalCost > 0 ? ((stageItem.cost_usd / totalCost) * 100).toFixed(1) : '0.0';
-
-              return (
-                <div key={stageItem.stage} className="space-y-1.5 p-3 rounded-lg bg-secondary/50 border border-border-gray/50">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-sm">
-                    <div className="font-medium text-primary flex items-center gap-2">
-                      <Zap className="h-3.5 w-3.5 text-amber-500" />
-                      {formatStageName(stageItem.stage)}
-                    </div>
-                    <div className="flex items-center gap-4 text-xs">
-                      <span className="text-muted-gray">{stageItem.calls} calls</span>
-                      <span className="text-muted-gray">{formatTokens(stageItem.total_tokens)} tokens</span>
-                      <span className="font-semibold text-primary">{formatCost(stageItem.cost_usd)}</span>
-                      <Badge variant="default" className="text-[10px] bg-white">
-                        {percentage}%
-                      </Badge>
-                    </div>
-                  </div>
-
-                  {/* Progress bar */}
-                  <div className="h-1.5 w-full bg-border-gray rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-primary rounded-full transition-all duration-300"
-                      style={{ width: `${Math.min(100, Math.max(0, Number(percentage)))}%` }}
-                    />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </Card>
-
       {/* Session Usage Table Section */}
       <Card className="space-y-4">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <div>
             <h2 className="text-base font-semibold text-primary">Session Consumption & Audit Trail</h2>
             <p className="text-xs text-muted-gray mt-0.5">
@@ -413,7 +502,7 @@ export const UsageDashboard: React.FC = () => {
         ) : !sessionsData?.items || sessionsData.items.length === 0 ? (
           <EmptyState
             title="No Usage Sessions Found"
-            description="Interview and copilot sessions will appear here once created."
+            description="Interview and copilot sessions for the selected period will appear here."
           />
         ) : (
           <div className="overflow-x-auto">
